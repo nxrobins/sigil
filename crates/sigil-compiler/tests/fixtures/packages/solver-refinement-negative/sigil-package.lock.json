@@ -1,0 +1,30 @@
+{
+  "compiler_requires": ">=0.1.0",
+  "format_version": "1",
+  "graph_hash": "sha256:6e5122534e456430c08a2169724bcc95284b5ac8a14cc2b0817d8daf204529c1",
+  "nodes": [
+    {
+      "content_hash": "sha256:e498c557f57c78abedef0d0f33145e2833ff4b861b21f083c1df046be768d95a",
+      "dependencies": [],
+      "features": [],
+      "manifest_hash": "sha256:ad9f90ac372abe6e117dc602e5150122c578a415de3eee058d4936f8e4301056",
+      "modules": [
+        "solver_probe"
+      ],
+      "package": "test/solver_probe",
+      "source": {
+        "kind": "workspace",
+        "locator": "."
+      },
+      "version": "1.0.0",
+      "yanked_observed": false
+    }
+  ],
+  "resolver": {
+    "contract": "sigil-resolver-v1",
+    "offline": true
+  },
+  "root": "test/solver_probe",
+  "root_manifest_hash": "sha256:ad9f90ac372abe6e117dc602e5150122c578a415de3eee058d4936f8e4301056",
+  "stdlib_hash": "sha256:55645d3dd4419b41f10dcf60b4f71260b74d3c02e2b89257dea0ac383e0cc427"
+}

@@ -1,0 +1,37 @@
+// expect-ok
+// Z3 corpus #60: axis-1 — Wall 4 Step 10 else-arm narrowing via negation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The else-arm receives the NEGATED predicate. `if x <= 0 { ... } else
+// { need_positive(x) }` — inside the else, `x` is narrowed to `x > 0`
+// (the negation of `x <= 0` per Step 10's hard-pinned table:
+// Le↔Gt). The call to `need_positive(x)` admits via Step 7's call-
+// site dispatcher.
+//
+// This exercises the N2-W4S10 negation table: `Le → Gt`. The else-arm
+// push uses `negate_refinement_clause` to flip the predicate; without
+// the flip, the else would narrow to `x <= 0` (the same as the then-
+// arm), which doesn't satisfy `where x > 0`.
+//
+// MUTATION CONTRACT
+//
+// Swapping the if/else bodies flips the expected outcome — the then-
+// arm would have `x <= 0` (insufficient for need_positive), firing
+// T224. Replacing `<=` with `<` similarly negates differently
+// (Lt → Ge).
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input <= 0 {
+            return 0;
+        } else {
+            return need_positive(input);
+        }
+    }
+}

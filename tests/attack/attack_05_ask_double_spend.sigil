@@ -1,0 +1,20 @@
+// Attack: move capability into spawn, then reference it again
+// expect-error: O001
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let child = spawn::<Worker>(fuel);
+        // fuel already consumed by spawn — double-spend attempt
+        let child2 = spawn::<Worker>(fuel); // MUTATION_SITE
+        return 1;
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}

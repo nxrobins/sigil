@@ -1,0 +1,41 @@
+// expect-error: T210
+// Z3 corpus #26: axis-1 — Wall 4 Step 1 refinement violation at construction.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The rejecting counterpart of fixture #25. The predicate
+// `where value > 100` declares a strict lower bound; the construction
+// supplies `value: 42`. Z3 returns `Sat` for `not(42 > 100)` (the
+// counterexample is the supplied value itself), so T210 fires at the
+// construction site.
+//
+// Per V11, the dispatch maps Z3's `Sat` outcome to a T210 with the
+// counterexample. The diagnostic carries (per V7) five fields:
+// predicate text, field name, supplied literal, Z3 verdict, source
+// span — enforced by the diagnostic-shape test in
+// `tests/diagnostic_messages.rs`.
+//
+// Positive-literal comparison chosen to avoid SIGIL's binary-subtraction
+// shape (`0 - 1`) which would be a `TypedExprKind::Binary` and fail V1's
+// literal-only check with T211 rather than the intended T210.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixture #25 — this is the negative-evidence half of the pair.
+// The verifier MUST reject; fixture #25 MUST accept.
+//
+// MUTATION CONTRACT
+//
+// Changing `42` to `101` (or any literal `> 100`) flips this fixture to
+// the expect-ok side and would drop T210. Removing `where value > 100;`
+// weakens the contract entirely and drops T210.
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx: Index = Index { value: 42 };  // MUTATION_SITE
+        return 1;
+    }
+}

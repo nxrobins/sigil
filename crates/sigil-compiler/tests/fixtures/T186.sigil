@@ -1,0 +1,49 @@
+// expect-error: T186
+//
+// T186 — array literal element type cannot be capability-typed.
+//
+// Third in the structural smuggling-channel closure series:
+//   T183 (records, step 25)  — LoadField channel
+//   T184 (enum payloads, 27) — EnumConstruct + match-binding channel
+//   T186 (array elements, 32) — Index channel
+//
+// Before step 32 of the supremum loop (axis 6, "fewer escape
+// hatches") this source compiled cleanly. A restricted cap could
+// be placed in an array literal `[restricted]` and then read back
+// via `arr[0]` — the `Index` AIR node produced a fresh cap binding
+// that Z3's authority tracker treated as full authority by default.
+// Same end state as T183 and T184: the restriction mask is lost
+// in transit through the aggregate.
+//
+// ABUSE VECTOR (verified live against the pre-step-32 commit, in
+// /tmp/cap_array2.sigil): `[restricted]` constructs the array; the
+// `arr[0]` Index produces a binding the type system marks `Fuel`
+// (the element type) but Z3 sees as a fresh full-authority cap.
+// `needs_full(smuggled)` passed the Call-sink check. The whole
+// pipeline compiled to a 410-byte WASM module with the unsafe
+// flow live at runtime.
+//
+// AFTER STEP 32: T186 fires on the array literal expression. The
+// downstream `arr[0]` indexing and `needs_full(smuggled)` call
+// are unreachable because the array literal is rejected first.
+//
+// THE TWO FIX PATHS (mirroring T183 and T184):
+//   1. Pass each cap by name through actor messages or function
+//      arguments (preserves Z3's per-binding authority tracking).
+//   2. Store an `i64` surrogate per slot (e.g. an index into a
+//      cap registry resolved at the recipient side under a real
+//      cap argument).
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let arr = [restricted];
+        let smuggled = arr[0];
+        return needs_full(smuggled);
+    }
+}

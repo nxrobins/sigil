@@ -1,0 +1,9 @@
+module fixture;
+
+// A state field assigned MORE THAN ONCE in `init` is a double-init (T124).
+cap type Fuel {}
+actor Worker {
+    state { mut n: i64 }
+    init(f: Fuel) { n = 0; n = 1; }
+    on Get() -> i64 { return n; }
+}

@@ -1,0 +1,32 @@
+// expect-ok
+// CVE Retrofit #10 (safe form): CVE-2018-1002105 — Kubernetes API escalation
+// Scope: STRUCTURAL
+//
+// LEGITIMATE INTENT
+//   A user-bound handler delegates a SUBSET of its admin authority to
+//   a worker. The K8s bug treated user input as if it carried admin
+//   authority directly; the safe form passes the actual admin cap
+//   via spawn arg.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   The worker's init parameter is typed `AdminAuth`. The spawn site
+//   passes the actual cap value from state, not an i64 user identifier.
+//   T096 would fire if anyone tried to substitute a non-cap value
+//   (this is exactly what the vulnerable fixture demonstrates).
+module cve;
+
+cap type AdminAuth {}
+
+actor Worker {
+    init(auth: AdminAuth) {}
+    on Ping() -> i64 { return 1; }
+}
+
+entry actor Main {
+    state { admin: AdminAuth }
+
+    on Start() -> i64 {
+        let _child = spawn::<Worker>(admin);
+        return 1;
+    }
+}

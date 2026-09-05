@@ -1,0 +1,11 @@
+module requires_guarded;
+pub fn needs_pos(x: i64) where x > 0 -> i64 {
+  return x;
+}
+pub fn caller(n: i64) -> i64 {
+  if (n > 0) {
+    return needs_pos(n);
+  } else {
+    return 0;
+  }
+}

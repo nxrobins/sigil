@@ -1,0 +1,11 @@
+// expect-error: T060
+// Cascade-guard fixture (a10 precision). Exercises the `Type::Error` poison
+// early-return in array literals (type_check/expressions.rs): the undefined
+// element poisons the array element type to `Error`, so NO spurious
+// element-type-mismatch sibling fires. Deleting that early-return makes a
+// second Error appear and turns the precision test red (report-once guard).
+module main;
+fn f() -> i64 {
+    let arr = [missing_elem, 1];
+    return 0;
+}

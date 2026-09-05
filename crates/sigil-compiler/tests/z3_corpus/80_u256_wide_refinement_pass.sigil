@@ -1,0 +1,24 @@
+// expect-ok
+// Z3 corpus #80: PR-U3-b2 — wide-BOUND refinement SATISFIED over a u256 field.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The expect-ok half of #79 and the UP3 accept-path witness: a wide cap
+// (`amount <= 10^29`, a LiteralWide bound) is satisfied by the supplied value 5,
+// so Z3 proves not(5 <= 10^29) is Unsat → Holds → clean compile. The workload
+// snapshot drives the production refinement_value_for + check_refinement path.
+//
+// MUTATION CONTRACT
+//
+// Changing `5` to a literal > 10^29 flips this to a T210 reject. Removing the
+// `where` clause drops the obligation entirely.
+module sigil;
+
+record Cap { amount: u256 } where amount <= 100000000000000000000000000000
+
+entry actor Main {
+    on Tick() -> i64 {
+        let c: Cap = Cap { amount: 5 };
+        return 1;
+    }
+}

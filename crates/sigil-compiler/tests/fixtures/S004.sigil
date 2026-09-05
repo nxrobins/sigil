@@ -1,0 +1,9 @@
+// S004: too many modules in compilation unit (cap = 256).
+// This fixture is generated programmatically in registry_wired.rs
+// because writing 257 module declarations by hand would defeat the
+// purpose. The test_registry_wired driver detects S004 via its
+// programmatic-fixture path.
+//
+// Sentinel: this file MUST exist so the framework knows S004 is wired.
+// The actual triggering source is generated at test time.
+SENTINEL_PROGRAMMATIC

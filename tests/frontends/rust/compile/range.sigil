@@ -1,0 +1,8 @@
+module range;
+record Range { lo: i64, hi: i64 } where lo <= hi
+pub fn width(r: Range) -> i64 {
+  return (r.hi - r.lo);
+}
+pub fn unit() -> Range {
+  return Range { lo: 0, hi: 1 };
+}

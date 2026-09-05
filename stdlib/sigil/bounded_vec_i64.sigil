@@ -1,0 +1,728 @@
+// stdlib::bounded_vec_i64 — BOUNDED, stack-backed vectors of `i64` (COMPLETENESS
+// Phase 2, the inner-ring thesis). Monomorphized fixed-N records — NOT parametric
+// const generics (the LOCKED decision); the family ships as concrete sizes. This
+// module carries the `i64` element type at three capacities: `_8`, `_64`, `_256`.
+// Each is an independent record + impl (the accepted cost of monomorphized slots);
+// they differ ONLY in the capacity `N` (the backing length, the `capacity()`
+// constant, the `is_full` bound, and the out-of-range force-trap index `data[N]`).
+//
+// Why bounded collections need NO `cap Alloc`:
+//   - Memory: the elements live in a FIXED `[i64; N]` array embedded in the record
+//     header — a BOUNDED allocation the fuel system accounts for statically as
+//     N*8 bytes, regardless of `count`. There is no `alloc()` call, so no `Alloc`
+//     effect (contrast `vec.sigil`, whose `push` grows the heap and carries
+//     `! { Alloc }`). The whole API below is `Alloc`-free.
+//   - Overflow is a RUNTIME TRAP, not a refinement: the SIGIL refinement system is
+//     construction-time and doesn't model mutation, so a full `push` is caught by
+//     the backing array's own bounds check — `self.data[self.count]` at
+//     `count == N` is `self.data[N]`, which trips the `idx >= N` array trap. A
+//     write therefore NEVER escapes the N*8-byte backing.
+//   - Integrity (the `count <= N` claim is trustworthy): these records are
+//     construction-SEALED (T258) — buildable only inside this module (via `new()`),
+//     never via a direct `BoundedVec_i64_8 { count: 99 }` literal in user code, so
+//     the length invariant cannot be forged.
+//
+// `count` is the length and `N` the capacity — the field is `count` (not `len`)
+// because `len`/`cap` would collide with the `len()`/`capacity()` method names
+// (the `vec.sigil` precedent). The `new()` backing is written with the array-repeat
+// literal `[0; N]` (the readable form for large N). Reference semantics like every
+// SIGIL record: `data` is a `u32` pointer packed in the compact 12-byte header
+// (`data_ptr @0`, `count: i64 @4`), so a by-value copy duplicates the header, not
+// the array (the same model as `Vec`).
+
+module bounded_vec_i64;
+
+// ── capacity 8 ───────────────────────────────────────────────────────────────
+
+record BoundedVec_i64_8 { data: [i64; 8], count: i64 }
+
+impl BoundedVec_i64_8 {
+    // Empty bounded vector — the ONLY public constructor (the record is sealed).
+    // No `Alloc`: the `[i64; 8]` backing is a fixed, statically-fuelled region.
+    pub fn new() -> BoundedVec_i64_8 {
+        return BoundedVec_i64_8 { data: [0; 8], count: 0 };
+    }
+
+    pub fn len(self: BoundedVec_i64_8) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedVec_i64_8) -> i64 {
+        return 8;
+    }
+
+    pub fn is_empty(self: BoundedVec_i64_8) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedVec_i64_8) -> bool {
+        return self.count == 8;
+    }
+
+    // Append `val`, returning the new length. When full (`count == 8`) the store
+    // target is `self.data[8]`, which trips the backing array's bounds trap — a
+    // bounded resource can't overflow its fixed backing. Mutates the shared header
+    // in place (`@Mut self`), like `Vec::push`.
+    pub fn push(self: BoundedVec_i64_8 @Mut, val: i64) -> i64 {
+        self.data[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Remove and return the last element, or `None` if empty.
+    pub fn pop(self: BoundedVec_i64_8 @Mut) -> Option<i64> {
+        if self.count == 0 {
+            return None;
+        } else {
+        }
+        self.count = self.count - 1;
+        return Some(self.data[self.count]);
+    }
+
+    // Read element `i`, or `None` if out of range. LEN-bounded: cells in
+    // `[count, 8)` (zero-initialized or popped-stale) are unreachable.
+    pub fn get(self: BoundedVec_i64_8, i: i64) -> Option<i64> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some(self.data[i]);
+    }
+
+    // Overwrite the live cell at `i` with `val`, returning `i`. LEN-bounded (the
+    // write counterpart of `get`): only an index in `[0, count)` is writable. An
+    // out-of-range `i` ABORTS via the explicit `trap()` primitive rather than
+    // silently writing the `[count, 8)` capacity tail or dropping the write.
+    pub fn set(self: BoundedVec_i64_8 @Mut, i: i64, val: i64) -> i64 {
+        if i < 0 {
+            trap();
+        } else {
+            if i >= self.count {
+                trap();
+            } else {
+                self.data[i] = val;
+            }
+        }
+        return i;
+    }
+}
+
+// ── capacity 64 ──────────────────────────────────────────────────────────────
+
+record BoundedVec_i64_64 { data: [i64; 64], count: i64 }
+
+impl BoundedVec_i64_64 {
+    pub fn new() -> BoundedVec_i64_64 {
+        return BoundedVec_i64_64 { data: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedVec_i64_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedVec_i64_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedVec_i64_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedVec_i64_64) -> bool {
+        return self.count == 64;
+    }
+
+    pub fn push(self: BoundedVec_i64_64 @Mut, val: i64) -> i64 {
+        self.data[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn pop(self: BoundedVec_i64_64 @Mut) -> Option<i64> {
+        if self.count == 0 {
+            return None;
+        } else {
+        }
+        self.count = self.count - 1;
+        return Some(self.data[self.count]);
+    }
+
+    pub fn get(self: BoundedVec_i64_64, i: i64) -> Option<i64> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some(self.data[i]);
+    }
+
+    pub fn set(self: BoundedVec_i64_64 @Mut, i: i64, val: i64) -> i64 {
+        if i < 0 {
+            trap();
+        } else {
+            if i >= self.count {
+                trap();
+            } else {
+                self.data[i] = val;
+            }
+        }
+        return i;
+    }
+}
+
+// ── capacity 256 ─────────────────────────────────────────────────────────────
+
+record BoundedVec_i64_256 { data: [i64; 256], count: i64 }
+
+impl BoundedVec_i64_256 {
+    pub fn new() -> BoundedVec_i64_256 {
+        return BoundedVec_i64_256 { data: [0; 256], count: 0 };
+    }
+
+    pub fn len(self: BoundedVec_i64_256) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedVec_i64_256) -> i64 {
+        return 256;
+    }
+
+    pub fn is_empty(self: BoundedVec_i64_256) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedVec_i64_256) -> bool {
+        return self.count == 256;
+    }
+
+    pub fn push(self: BoundedVec_i64_256 @Mut, val: i64) -> i64 {
+        self.data[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn pop(self: BoundedVec_i64_256 @Mut) -> Option<i64> {
+        if self.count == 0 {
+            return None;
+        } else {
+        }
+        self.count = self.count - 1;
+        return Some(self.data[self.count]);
+    }
+
+    pub fn get(self: BoundedVec_i64_256, i: i64) -> Option<i64> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some(self.data[i]);
+    }
+
+    pub fn set(self: BoundedVec_i64_256 @Mut, i: i64, val: i64) -> i64 {
+        if i < 0 {
+            trap();
+        } else {
+            if i >= self.count {
+                trap();
+            } else {
+                self.data[i] = val;
+            }
+        }
+        return i;
+    }
+}
+
+// ── functional transforms (COMPLETENESS Phase 2) ─────────────────────────────
+//
+// i64-only, `@ReadOnly self` (the bare receiver = default-frozen — these never
+// mutate self). `map`/`filter`/`filter_map`/`take` return a FRESH `BoundedVec_i64_N`
+// built via `::new()` (a fresh backing — not a header copy, so the result aliases
+// neither self nor any other source) + `push`; the seal guarantees `count <= N`, so
+// pushing `<= count` elements NEVER trips the `data[N]` trap. ALL Alloc-FREE (the
+// inner-ring thesis — `Vec`'s adapters need `cap Alloc`; these don't). Source reads
+// are `self.data[i]` for `i < self.count` (always a live cell — no `unwrap_or` mask).
+// The closure result is bound to a local before use (called exactly once per
+// element). The closure signatures are `Fn(i64)->…`, so a non-i64 element is a
+// type error, never a silent widen. `seed` (not the reserved `init`) names the fold
+// accumulator. The transform bodies carry NO capacity literal — only the type name
+// differs per size — so a size transposition is a compile error, not a silent trap.
+
+impl BoundedVec_i64_8 {
+    pub fn map(self: BoundedVec_i64_8, f: Fn(i64) -> i64) -> BoundedVec_i64_8 {
+        let mut out: BoundedVec_i64_8 = BoundedVec_i64_8::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let r: i64 = f(e);
+            let _n: i64 = out.push(r);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter(self: BoundedVec_i64_8, pred: Fn(i64) -> bool) -> BoundedVec_i64_8 {
+        let mut out: BoundedVec_i64_8 = BoundedVec_i64_8::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                let _n: i64 = out.push(e);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter_map(self: BoundedVec_i64_8, f: Fn(i64) -> Option<i64>) -> BoundedVec_i64_8 {
+        let mut out: BoundedVec_i64_8 = BoundedVec_i64_8::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let o: Option<i64> = f(e);
+            if o.is_some() {
+                let v: i64 = o.unwrap_or(0);
+                let _n: i64 = out.push(v);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn fold(self: BoundedVec_i64_8, seed: i64, g: Fn(i64, i64) -> i64) -> i64 {
+        let mut acc: i64 = seed;
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            acc = g(acc, e);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn sum(self: BoundedVec_i64_8) -> i64 {
+        let mut acc: i64 = 0;
+        let mut i: i64 = 0;
+        while i < self.count {
+            acc = acc + self.data[i];
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn any(self: BoundedVec_i64_8, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut found: bool = false;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                found = true;
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return found;
+    }
+
+    pub fn all(self: BoundedVec_i64_8, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut ok: bool = true;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                i = i + 1;
+            } else {
+                ok = false;
+                i = self.count;
+            }
+        }
+        return ok;
+    }
+
+    pub fn find(self: BoundedVec_i64_8, pred: Fn(i64) -> bool) -> Option<i64> {
+        let mut i: i64 = 0;
+        let mut out: Option<i64> = None;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                out = Some(e);
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    // Logical take: the first `min(n, count)` elements (bound unchanged). `lim`
+    // precomputed (no `&&`); `n <= 0` yields an empty result.
+    pub fn take(self: BoundedVec_i64_8, n: i64) -> BoundedVec_i64_8 {
+        let mut lim: i64 = n;
+        if self.count < n {
+            lim = self.count;
+        } else {
+        }
+        let mut out: BoundedVec_i64_8 = BoundedVec_i64_8::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _n: i64 = out.push(self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+impl BoundedVec_i64_64 {
+    pub fn map(self: BoundedVec_i64_64, f: Fn(i64) -> i64) -> BoundedVec_i64_64 {
+        let mut out: BoundedVec_i64_64 = BoundedVec_i64_64::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let r: i64 = f(e);
+            let _n: i64 = out.push(r);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter(self: BoundedVec_i64_64, pred: Fn(i64) -> bool) -> BoundedVec_i64_64 {
+        let mut out: BoundedVec_i64_64 = BoundedVec_i64_64::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                let _n: i64 = out.push(e);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter_map(self: BoundedVec_i64_64, f: Fn(i64) -> Option<i64>) -> BoundedVec_i64_64 {
+        let mut out: BoundedVec_i64_64 = BoundedVec_i64_64::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let o: Option<i64> = f(e);
+            if o.is_some() {
+                let v: i64 = o.unwrap_or(0);
+                let _n: i64 = out.push(v);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn fold(self: BoundedVec_i64_64, seed: i64, g: Fn(i64, i64) -> i64) -> i64 {
+        let mut acc: i64 = seed;
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            acc = g(acc, e);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn sum(self: BoundedVec_i64_64) -> i64 {
+        let mut acc: i64 = 0;
+        let mut i: i64 = 0;
+        while i < self.count {
+            acc = acc + self.data[i];
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn any(self: BoundedVec_i64_64, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut found: bool = false;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                found = true;
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return found;
+    }
+
+    pub fn all(self: BoundedVec_i64_64, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut ok: bool = true;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                i = i + 1;
+            } else {
+                ok = false;
+                i = self.count;
+            }
+        }
+        return ok;
+    }
+
+    pub fn find(self: BoundedVec_i64_64, pred: Fn(i64) -> bool) -> Option<i64> {
+        let mut i: i64 = 0;
+        let mut out: Option<i64> = None;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                out = Some(e);
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    pub fn take(self: BoundedVec_i64_64, n: i64) -> BoundedVec_i64_64 {
+        let mut lim: i64 = n;
+        if self.count < n {
+            lim = self.count;
+        } else {
+        }
+        let mut out: BoundedVec_i64_64 = BoundedVec_i64_64::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _n: i64 = out.push(self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+impl BoundedVec_i64_256 {
+    pub fn map(self: BoundedVec_i64_256, f: Fn(i64) -> i64) -> BoundedVec_i64_256 {
+        let mut out: BoundedVec_i64_256 = BoundedVec_i64_256::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let r: i64 = f(e);
+            let _n: i64 = out.push(r);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter(self: BoundedVec_i64_256, pred: Fn(i64) -> bool) -> BoundedVec_i64_256 {
+        let mut out: BoundedVec_i64_256 = BoundedVec_i64_256::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                let _n: i64 = out.push(e);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn filter_map(self: BoundedVec_i64_256, f: Fn(i64) -> Option<i64>) -> BoundedVec_i64_256 {
+        let mut out: BoundedVec_i64_256 = BoundedVec_i64_256::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            let o: Option<i64> = f(e);
+            if o.is_some() {
+                let v: i64 = o.unwrap_or(0);
+                let _n: i64 = out.push(v);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn fold(self: BoundedVec_i64_256, seed: i64, g: Fn(i64, i64) -> i64) -> i64 {
+        let mut acc: i64 = seed;
+        let mut i: i64 = 0;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            acc = g(acc, e);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn sum(self: BoundedVec_i64_256) -> i64 {
+        let mut acc: i64 = 0;
+        let mut i: i64 = 0;
+        while i < self.count {
+            acc = acc + self.data[i];
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    pub fn any(self: BoundedVec_i64_256, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut found: bool = false;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                found = true;
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return found;
+    }
+
+    pub fn all(self: BoundedVec_i64_256, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut ok: bool = true;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                i = i + 1;
+            } else {
+                ok = false;
+                i = self.count;
+            }
+        }
+        return ok;
+    }
+
+    pub fn find(self: BoundedVec_i64_256, pred: Fn(i64) -> bool) -> Option<i64> {
+        let mut i: i64 = 0;
+        let mut out: Option<i64> = None;
+        while i < self.count {
+            let e: i64 = self.data[i];
+            if pred(e) {
+                out = Some(e);
+                i = self.count;
+            } else {
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    pub fn take(self: BoundedVec_i64_256, n: i64) -> BoundedVec_i64_256 {
+        let mut lim: i64 = n;
+        if self.count < n {
+            lim = self.count;
+        } else {
+        }
+        let mut out: BoundedVec_i64_256 = BoundedVec_i64_256::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _n: i64 = out.push(self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+// ── zip / enumerate → BoundedPairVec (COMPLETENESS Phase 2) ───────────────────
+//
+// `zip(other)` pairs the live elements of two SAME-size bounded vectors up to
+// `min(self.count, other.count)`; `enumerate()` pairs each element with its i64
+// index. Both return a fresh `BoundedPairVec_i64_i64_N` (the tuple-element family),
+// built via its public `::new()` + `push` API (a cross-`bounded_*`-module record
+// can be built ONLY through its sealed public API, never a literal — T258). Reads
+// are `self.data[i]` / `other.data[i]` for `i < count` (a live cell). Alloc-free;
+// the result aliases neither source. (Cross-size zip is OUT — AG-P2-3; the
+// enumerate index is i64, not u32 — AG-P2-2.)
+
+impl BoundedVec_i64_8 {
+    pub fn zip(self: BoundedVec_i64_8, other: BoundedVec_i64_8) -> BoundedPairVec_i64_i64_8 {
+        let mut lim: i64 = self.count;
+        if other.count < lim {
+            lim = other.count;
+        } else {
+        }
+        let mut out: BoundedPairVec_i64_i64_8 = BoundedPairVec_i64_i64_8::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _p: i64 = out.push(self.data[i], other.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn enumerate(self: BoundedVec_i64_8) -> BoundedPairVec_i64_i64_8 {
+        let mut out: BoundedPairVec_i64_i64_8 = BoundedPairVec_i64_i64_8::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let _p: i64 = out.push(i, self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+impl BoundedVec_i64_64 {
+    pub fn zip(self: BoundedVec_i64_64, other: BoundedVec_i64_64) -> BoundedPairVec_i64_i64_64 {
+        let mut lim: i64 = self.count;
+        if other.count < lim {
+            lim = other.count;
+        } else {
+        }
+        let mut out: BoundedPairVec_i64_i64_64 = BoundedPairVec_i64_i64_64::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _p: i64 = out.push(self.data[i], other.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn enumerate(self: BoundedVec_i64_64) -> BoundedPairVec_i64_i64_64 {
+        let mut out: BoundedPairVec_i64_i64_64 = BoundedPairVec_i64_i64_64::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let _p: i64 = out.push(i, self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+impl BoundedVec_i64_256 {
+    pub fn zip(self: BoundedVec_i64_256, other: BoundedVec_i64_256) -> BoundedPairVec_i64_i64_256 {
+        let mut lim: i64 = self.count;
+        if other.count < lim {
+            lim = other.count;
+        } else {
+        }
+        let mut out: BoundedPairVec_i64_i64_256 = BoundedPairVec_i64_i64_256::new();
+        let mut i: i64 = 0;
+        while i < lim {
+            let _p: i64 = out.push(self.data[i], other.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fn enumerate(self: BoundedVec_i64_256) -> BoundedPairVec_i64_i64_256 {
+        let mut out: BoundedPairVec_i64_i64_256 = BoundedPairVec_i64_i64_256::new();
+        let mut i: i64 = 0;
+        while i < self.count {
+            let _p: i64 = out.push(i, self.data[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}

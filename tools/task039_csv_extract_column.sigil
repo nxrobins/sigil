@@ -1,0 +1,157 @@
+// TASK: csv extract column — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn append_segment(
+    out_ptr: i64 @Internal,
+    out_len_in: i64 @Internal,
+    file_ptr: i64 @Internal,
+    start: i64 @Internal,
+    end: i64 @Internal,
+) -> i64 @Internal ! {} {
+    let mut out_len: i64 @Internal = out_len_in;
+    let mut i: i64 @Internal = start;
+
+    while i < end {
+        let b: i64 @Internal = load8(file_ptr + i);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        i = i + 1;
+    }
+
+    return out_len;
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let raw: i64 @Internal = fs_read(input_ptr, split);
+
+        if raw < 0 {
+            return raw;
+        } else {
+            let mut target: i64 @Internal = 0;
+            let mut saw_digit: i64 @Internal = 0;
+            let mut idx_scan: i32 @Internal = input_ptr + split + one;
+
+            while idx_scan < input_ptr + input_len {
+                let b: i64 @Internal = load8(idx_scan);
+                if b >= 48 {
+                    if b <= 57 {
+                        target = target * 10 + b - 48;
+                        saw_digit = 1;
+                    } else {
+                    }
+                } else {
+                }
+                idx_scan = idx_scan + one;
+            }
+
+            if saw_digit == 0 {
+                return 0 - 400;
+            } else {
+                if target > 0 {
+                    target = target - 1;
+                } else {
+                }
+
+                let file_ptr: i64 @Internal = raw / 4294967296;
+                let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+                let out_ptr: i64 @Internal = alloc(file_len);
+                let mut out_len: i64 @Internal = 0;
+                let mut wrote_any: i64 @Internal = 0;
+                let mut in_header: i64 @Internal = 1;
+                let mut col_index: i64 @Internal = 0;
+                let mut col_start: i64 @Internal = 0;
+                let mut i: i64 @Internal = 0;
+
+                while i < file_len {
+                    let b: i64 @Internal = load8(file_ptr + i);
+
+                    if in_header == 1 {
+                        if b == 10 {
+                            in_header = 0;
+                            col_index = 0;
+                            col_start = i + 1;
+                        } else {
+                        }
+                    } else {
+                        if b == 44 {
+                            if col_index == target {
+                                if wrote_any == 1 {
+                                    store8(out_ptr + out_len, 10);
+                                    out_len = out_len + 1;
+                                } else {
+                                }
+                                out_len = append_segment(out_ptr, out_len, file_ptr, col_start, i);
+                                wrote_any = 1;
+                            } else {
+                            }
+                            col_index = col_index + 1;
+                            col_start = i + 1;
+                        } else {
+                            if b == 10 {
+                                if col_index == target {
+                                    if wrote_any == 1 {
+                                        store8(out_ptr + out_len, 10);
+                                        out_len = out_len + 1;
+                                    } else {
+                                    }
+                                    out_len = append_segment(out_ptr, out_len, file_ptr, col_start, i);
+                                    wrote_any = 1;
+                                } else {
+                                }
+                                col_index = 0;
+                                col_start = i + 1;
+                            } else {
+                            }
+                        }
+                    }
+
+                    i = i + 1;
+                }
+
+                if in_header == 0 {
+                    if col_start < file_len {
+                        if col_index == target {
+                            if wrote_any == 1 {
+                                store8(out_ptr + out_len, 10);
+                                out_len = out_len + 1;
+                            } else {
+                            }
+                            out_len = append_segment(out_ptr, out_len, file_ptr, col_start, file_len);
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+
+                return out_ptr * 4294967296 + out_len;
+            }
+        }
+    }
+}

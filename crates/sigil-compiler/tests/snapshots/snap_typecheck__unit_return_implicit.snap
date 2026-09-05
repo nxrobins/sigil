@@ -1,0 +1,67 @@
+---
+source: crates/sigil-compiler/tests/snap_typecheck.rs
+expression: "&typed"
+---
+TypedProgram {
+    modules: [
+        TypedModule {
+            def_id: DefId(
+                0,
+            ),
+            name: "m",
+            ring: Inner,
+            trusted: false,
+            span: Span {
+                start: 0,
+                end: 29,
+                source: SourceId(
+                    4294967295,
+                ),
+            },
+            functions: [
+                TypedFunction {
+                    name: "m::nothing",
+                    export_name: "m__nothing",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [],
+                    captures: [],
+                    ret: Unit,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [],
+                        span: Span {
+                            start: 27,
+                            end: 29,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: false,
+                    },
+                    span: Span {
+                        start: 10,
+                        end: 29,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+            ],
+        },
+    ],
+    records: {},
+    enums: {},
+    effect_registry: EffectRegistry {
+        effects: {
+            "FFI": 0,
+            "Unsafe": 1,
+        },
+        next_id: 2,
+    },
+    effect_ops: {},
+}

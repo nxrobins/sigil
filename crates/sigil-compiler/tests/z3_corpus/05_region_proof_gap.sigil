@@ -1,0 +1,21 @@
+// expect-shape: region_inner_assign
+// Z3 corpus #5: AIR-coverage probe for `region` body — positive test.
+//
+// Same load-bearing invariant as fixture #4, but for `region` (memory scope)
+// rather than `handle` (effect scope). Both call into the same
+// `lower_scoped_body_inline` helper after the AIR fix; this fixture is the
+// regression lock for the `region` half.
+//
+// AIR-SHAPE: `dummy`'s AIR must contain an `AirStmt::Assign` node for the
+// `let inner` binding inside the region body, plus the `RegionBegin` /
+// `RegionEnd` bookend stmts.
+#[ring(outer)]
+module ext;
+
+fn dummy() -> i64 ! { Alloc } {
+    region scratch(64) {
+        let inner: i64 = 42;
+        let _used: i64 = inner + 1;
+    };
+    return 1;
+}

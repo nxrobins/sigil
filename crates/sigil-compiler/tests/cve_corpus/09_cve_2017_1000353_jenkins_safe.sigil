@@ -1,0 +1,37 @@
+// expect-ok
+// CVE Retrofit #09 (safe form): CVE-2017-1000353 — Jenkins Java deserialization RCE
+// Scope: BY-CONSTRUCTION
+//
+// LEGITIMATE INTENT
+//   Accept structured data from an authenticated client and dispatch
+//   based on the data's kind. The Jenkins CVE existed because Java's
+//   `ObjectInputStream.readObject()` reified arbitrary class graphs from
+//   network bytes, triggering dangerous "gadget chains" via deserialized
+//   `Runnable`s and proxies.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   SIGIL has no `readObject`-style polymorphic deserializer. Actor
+//   messages are statically typed; the wire format is defined by the
+//   message-handler signature, and the receiver dispatches via SIGIL's
+//   typed message tag. There is no point at which untrusted bytes
+//   become a Runnable. The gadget-chain class is structurally
+//   inexpressible.
+module cve;
+
+actor Builder {
+    on RunBuild(job_id: i64) -> i64 { return job_id; }
+    on AbortBuild(job_id: i64) -> i64 { return 0; }
+}
+
+entry actor Main {
+    on Submit(builder: ActorRef<Builder>, kind: i64, job_id: i64) -> i64 {
+        // Dispatch by typed message tag; the receiver's handler
+        // signature pins the wire format. No polymorphic deserializer.
+        if kind == 1 {
+            builder.send(RunBuild(job_id));
+        } else {
+            builder.send(AbortBuild(job_id));
+        }
+        return 1;
+    }
+}

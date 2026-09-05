@@ -1,0 +1,31 @@
+module grantrole_statement;
+
+record R { _has: BoundedMap2_u256_u256_u256_64 }
+
+impl R {
+    pub fn new(admin: u256) -> R {
+        let mut __fe_c = R { _has: BoundedMap2_u256_u256_u256_64::new() };
+        let mut __fe_inl3_role: u256 = 0x00;
+        let mut __fe_inl3_a: u256 = admin;
+        let mut __fe_inl4_role: u256 = __fe_inl3_role;
+        let mut __fe_inl4_a: u256 = __fe_inl3_a;
+        if !((__fe_c._has.get_or(__fe_inl4_role, __fe_inl4_a, 0) == 1)) {
+            __fe_c._has.insert(__fe_inl3_role, __fe_inl3_a, 1);
+        }
+        return __fe_c;
+    }
+
+    pub fn hasRole(self: R, role: u256, a: u256) -> bool {
+        return (self._has.get_or(role, a, 0) == 1);
+    }
+
+    pub fn grantRole(self: R @Mut, role: u256, a: u256) {
+        let mut __fe_inl1_role: u256 = role;
+        let mut __fe_inl1_a: u256 = a;
+        let mut __fe_inl2_role: u256 = __fe_inl1_role;
+        let mut __fe_inl2_a: u256 = __fe_inl1_a;
+        if !((self._has.get_or(__fe_inl2_role, __fe_inl2_a, 0) == 1)) {
+            self._has.insert(__fe_inl1_role, __fe_inl1_a, 1);
+        }
+    }
+}

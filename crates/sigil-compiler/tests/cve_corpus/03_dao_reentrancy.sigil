@@ -1,0 +1,48 @@
+// expect-error: O001
+// CVE Retrofit #03: The DAO (2016) — Solidity reentrancy
+// Scope: CLASS
+//
+// ORIGINAL VULNERABILITY
+//   The DAO smart contract (Ethereum, 2016) sent ether to a withdrawer
+//   BEFORE deducting the withdrawn amount from internal state. A
+//   malicious receiver could re-enter `withdraw()` synchronously during
+//   the send, repeating the withdrawal arbitrarily. ~$60M of ETH was
+//   drained.
+//
+// SIGIL RETROFIT (closest analog, not faithful port)
+//   The DAO bug depends on SYNCHRONOUS re-entrant calls. SIGIL's actor
+//   model uses ASYNCHRONOUS message passing — synchronous reentrancy
+//   is architecturally inexpressible. The CLOSEST SIGIL analog is the
+//   linear-capability discipline: a withdrawal cap is consumed by
+//   `worker.send(...)`, and any attempt to use it again is rejected by
+//   the ownership checker with O001 (use-after-move).
+//
+// Why this resembles the original at the class level: both bugs
+// involve using a "right to withdraw" more than once. The DAO bug
+// abuses the timing of state updates; SIGIL's linear caps make the
+// "use it twice" pattern a compile-time error regardless of timing.
+//
+// MUTATION CONTRACT
+//   MUTATION_SITE: line N — the second `.send(Withdraw(...))`. Removing
+//   it leaves a single withdrawal; the cap is consumed exactly once
+//   and the program compiles cleanly.
+module cve;
+
+cap type Withdrawal {}
+
+actor Vault {
+    init(w: Withdrawal) {}
+    on Process(w: Withdrawal) -> i64 { return 1; }
+}
+
+entry actor Main {
+    // The withdrawal cap flows in as a linear message payload — moved once into
+    // `vref.send`, so the second send is a use-after-move (O001). (A cap HELD in
+    // actor state is borrow-only inside a handler — C010 — so this demonstrates
+    // the linear-move-once discipline with a flowing param.)
+    on Tick(vref: ActorRef<Vault>, withdraw_cap: Withdrawal) -> i64 {
+        vref.send(Process(withdraw_cap));
+        vref.send(Process(withdraw_cap));   // MUTATION_SITE
+        return 1;
+    }
+}

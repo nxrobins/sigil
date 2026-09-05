@@ -1,0 +1,28 @@
+id: task154_http_wc
+source_path: tools/task154_http_wc.sigil
+difficulty: ffi_net
+description: |
+  Write a Sigil tool that fetches the URL given as input via HTTP GET and
+  returns the number of whitespace-separated words in the response body as
+  an ASCII-decimal string. A "word" is a maximal run of non-whitespace
+  bytes; whitespace is space, tab, newline, and carriage return.
+
+  This is an FFI tool, so it lives in `#[ring(outer)] #[trusted] module tool;`.
+  Declare:
+      extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+  The tool exports
+      pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe }
+  Note `i32` parameters — the FFI ABI requires i32 pointer/length.
+
+  http_get returns a packed `(ptr * 4294967296 + len)` on success or a
+  negative error code (-403, -404, -413, -502); propagate a negative `raw`.
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["NetIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  net: ["example.com"]
+fuel_budget: 500000
+inputs:
+  - name: example_com
+    value: "https://example.com/"
+expected_output_strategy: capture_from_reference

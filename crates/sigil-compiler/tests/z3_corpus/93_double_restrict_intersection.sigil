@@ -1,0 +1,42 @@
+// expect-error: C003
+// Z3 corpus #93: axis-2 — double restrict with disjoint facets yields zero authority.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Restricting a cap twice with DISJOINT facet sets produces a cap with
+// zero effective authority. Starting with Fuel { burn, query }:
+//   restrict(burn) → {burn only}
+//   restrict(query) → {burn} ∩ {query} = ∅ (empty intersection)
+//
+// The resulting zero-authority cap cannot satisfy ANY sink. The function
+// `needs_fuel` takes `Fuel`, which requires full Fuel authority
+// (burn | query). Passing a zero-authority cap triggers C003.
+//
+// This extends fixture #79 (double_restrict_composes) which tests
+// double-restrict with OVERLAPPING facets on a 3-facet type. This
+// fixture tests the edge case: double-restrict on DISJOINT facets
+// produces the most restrictive possible outcome — total revocation.
+//
+// Without correct intersection semantics, an implementation might
+// treat the second restrict as a REPLACEMENT (yielding {query} alone)
+// rather than an intersection (yielding ∅). Both bugs would be caught
+// here — {query} alone also fails C003 since full authority requires
+// burn | query.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the sink
+// call. The zero-authority cap persists unused.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_fuel(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let only_burn: Fuel = fuel.restrict(burn);
+        let empty: Fuel = only_burn.restrict(query);
+        needs_fuel(empty);  // MUTATION_SITE
+        return 1;
+    }
+}

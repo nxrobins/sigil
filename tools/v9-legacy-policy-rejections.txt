@@ -1,0 +1,42 @@
+# Tools the CSIR v9 legacy-host occurrence policy refuses by design.
+#
+# Each of these performs a host call (fs_read / http_get) inside a branch on an
+# @Internal value, typically the error code of the previous host call. Without a host
+# profile every host operation's occurrence is declared Public (see
+# proofs/lean/LambdaSigil/V9BoundaryContracts.lean), so the second call's occurrence
+# would leak Internal control to the host and the production verifier refuses the
+# program with I013 (occurrence-policy detail 40). The CI compile-sweep pins exactly
+# that refusal for every path listed here, so a policy relaxation, a stale row, or an
+# unrelated failure all turn the sweep red. The same rows must compile with
+# `sigil check --host-profile ephemeral <tool>`: the ephemeral host declares every
+# operation it links with Internal occurrence, which is the host these tools run under
+# (sigil-runtime/src/ephemeral_profile.rs), so the sweep pins both verdicts.
+#
+# One repository-relative path per line; blank lines and # comments are ignored.
+tools/task046_compare_two_files.sigil
+tools/task059_fetch_two_urls_concat.sigil
+tools/task126_fs_csv_col_count.sigil
+tools/task131_fs_csv_longest_row.sigil
+tools/task134_fs_config_get.sigil
+tools/task136_fs_csv_kv.sigil
+tools/task139_fs_compare.sigil
+tools/task140_fs_extract_markers.sigil
+tools/task145_fs_split_nth.sigil
+tools/task147_fs_filter_length.sigil
+tools/task157_http_count_byte.sigil
+tools/task158_http_grep.sigil
+tools/task171_http_extract_markers.sigil
+tools/task176_omni_config_http.sigil
+tools/task177_omni_url_list.sigil
+tools/task178_omni_token.sigil
+tools/task180_omni_csv_url.sigil
+tools/task181_omni_template.sigil
+tools/task182_omni_threshold.sigil
+tools/task183_omni_concat_files.sigil
+tools/task184_omni_config_url.sigil
+tools/task185_omni_compare_urls.sigil
+tools/task186_omni_encode_query.sigil
+tools/task187_omni_deny_filter.sigil
+tools/task188_omni_format.sigil
+tools/task189_omni_validate.sigil
+tools/task190_omni_pipeline.sigil

@@ -1,0 +1,7 @@
+module fixture;
+
+pub fn f() -> i64 {
+    for i in 0..=3 {
+    }
+    return 0;
+}

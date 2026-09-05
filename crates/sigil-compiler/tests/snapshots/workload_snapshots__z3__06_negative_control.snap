@@ -1,0 +1,43 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [
+            AirCapabilityObligation {
+                var_id: VarId(
+                    3,
+                ),
+                cap_type: "Fuel",
+                required_mask: 3,
+                actual_mask: 3,
+                kind: Spawn,
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "C003",
+                    ),
+                    severity: Error,
+                    message: "`child_fuel` has `Fuel` authority {burn, query} but spawn argument requires {burn, query} (missing: {(none)})",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 791,
+                            end: 805,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+}

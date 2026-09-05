@@ -1,0 +1,6 @@
+module declassify_two;
+cap type Declassify {}
+pub fn two(a: i64 @Secret, b: i64 @Secret, __fe_declassify_cap_0: Declassify, __fe_declassify_cap_1: Declassify) -> i64 {
+  let x = declassify(a, __fe_declassify_cap_0);
+  return declassify(b, __fe_declassify_cap_1);
+}

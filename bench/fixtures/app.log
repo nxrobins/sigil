@@ -1,0 +1,5 @@
+INFO server started
+ERROR disk full
+WARN memory low
+ERROR connection timeout
+INFO request handled

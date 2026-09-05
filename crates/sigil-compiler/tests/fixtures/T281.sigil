@@ -1,0 +1,9 @@
+// T281 — a reference to a function type. Historically this shape was silently
+// degraded (the parser dropped the element's structure, losing its effect row
+// and any typo in it); it is now a hard error at the annotation.
+#[ring(outer)]
+module sigil;
+
+fn f(g: &Fn(i64) -> i64) -> i64 {
+    return 0;
+}

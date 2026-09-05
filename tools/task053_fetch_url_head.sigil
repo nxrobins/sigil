@@ -1,0 +1,27 @@
+// TASK: fetch url head — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let body_ptr: i64 @Internal = raw / 4294967296;
+        let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+        let mut out_len: i64 @Internal = body_len;
+
+        if out_len > 100 {
+            out_len = 100;
+        } else {
+        }
+
+        return body_ptr * 4294967296 + out_len;
+    }
+}

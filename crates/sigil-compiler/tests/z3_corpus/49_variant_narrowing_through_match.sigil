@@ -1,0 +1,56 @@
+// expect-ok
+// Z3 corpus #49: axis-1 — Wall 4 Step 6 pattern-match narrowing (positive).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 6 commit #3 introduces refinement narrowing through
+// pattern matches: when a `match` arm destructures a refined variant,
+// each pattern-bound identifier carries the variant's matching
+// Literal-RHS refinement clauses on its `TypedExpr.refinement`
+// sidecar (the same field Step 2 attaches to field-access reads).
+//
+// In this fixture, `match v { Positive(x) => ... }` binds `x` to the
+// `Positive` variant's i64 payload. Per N9-S6 the i-th binding maps
+// to the i-th declared field; per N22-S6 the attached clauses are
+// filtered to `RefinementRhs::Literal` only. The binding's refinement
+// is therefore `[x > 0]`.
+//
+// Inside the arm body, the construction `Positive(x)` re-builds a
+// `SignedInt::Positive`. The construction-site dispatcher (Step 6
+// commit #2's `check_variant_refinements_at_construction`) finds
+// `x` is non-literal, but its preserved refinement subsumes the
+// destination's `x > 0` predicate via Step 3's syntactic / Z3-backed
+// implication path. The construction is accepted.
+//
+// WITHOUT narrowing (commit #2 alone), this fixture would fire T211
+// because the supplied value is symbolic without preserved refinement.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 6 commit #2 named-payload + per-variant `where` clause.
+//   * Step 6 commit #3 `pattern_refinement_stack` on MonomorphTracker.
+//   * Step 6 commit #3 `lookup_pattern_refinement` in `infer_path_expr`.
+//   * Step 2 `TypedExpr.refinement` sidecar (PR #61).
+//   * Step 3 Z3-backed syntactic / semantic match dispatch (PR #62).
+//
+// MUTATION CONTRACT
+//
+// Replacing `Positive(x)` with `Positive(_)` (wildcard binding —
+// fixture 51) drops the refinement; the downstream construction
+// then fires T211.
+module sigil;
+
+enum SignedInt {
+    Positive(x: i64) where x > 0,
+    Negative(x: i64) where x < 0,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let v: SignedInt = Positive(7);
+        match v {
+            Positive(x) => { let p: SignedInt = Positive(x); return 1; },
+            Negative(y) => { return 0 - 1; },
+        }
+    }
+}

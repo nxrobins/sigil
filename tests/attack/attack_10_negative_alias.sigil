@@ -1,0 +1,16 @@
+// Attack: negative array index wraps to large unsigned value
+// expect-runtime: Trap
+// The unsigned bounds check (I32GeU) catches 0xFFFFFFFF >= 3
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let arr = [10, 20, 30];
+        let neg_idx = 0 - 1;
+        let x = arr[neg_idx];
+        return x;
+    }
+}

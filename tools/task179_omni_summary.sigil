@@ -1,0 +1,120 @@
+// TASK: omni summary — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn render_decimal(n_in: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    if n_in == 0 {
+        let out: i64 @Internal = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch: i64 @Internal = alloc(20);
+        let mut digits: i64 @Internal = 0;
+        let mut n: i64 @Internal = n_in;
+        while n > 0 {
+            let q: i64 @Internal = n / 10;
+            let d: i64 @Internal = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out: i64 @Internal = alloc(digits);
+        let mut i: i64 @Internal = 0;
+        while i < digits {
+            let b: i64 @Internal = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+fn xor_byte_pair(a_in: i64 @Internal, b_in: i64 @Internal) -> i64 @Internal ! {} {
+    let mut a: i64 @Internal = a_in;
+    let mut b: i64 @Internal = b_in;
+    let mut place: i64 @Internal = 1;
+    let mut result: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < 8 {
+        let ah: i64 @Internal = a / 2;
+        let bh: i64 @Internal = b / 2;
+        let ab: i64 @Internal = a - ah * 2;
+        let bb: i64 @Internal = b - bh * 2;
+        let s: i64 @Internal = ab + bb;
+        if s == 1 {
+            result = result + place;
+        } else {
+        }
+        a = ah;
+        b = bh;
+        place = place + place;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn hex_digit(n: i64 @Internal) -> i64 @Internal ! {} {
+    if n < 10 {
+        return 48 + n;
+    } else {
+        return 87 + n;
+    }
+}
+
+// Fetch URL, compute byte count and XOR checksum, return "bytes:N,xor:0xHH".
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let mut acc: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let b: i64 @Internal = load8(body_ptr + i);
+        acc = xor_byte_pair(acc, b);
+        i = i + 1;
+    }
+
+    let out: i64 @Internal = alloc(64);
+    let mut out_len: i64 @Internal = 0;
+    // "bytes:"
+    store8(out + out_len, 98); out_len = out_len + 1;
+    store8(out + out_len, 121); out_len = out_len + 1;
+    store8(out + out_len, 116); out_len = out_len + 1;
+    store8(out + out_len, 101); out_len = out_len + 1;
+    store8(out + out_len, 115); out_len = out_len + 1;
+    store8(out + out_len, 58); out_len = out_len + 1;
+    let bp: i64 @Internal = render_decimal(body_len);
+    let bp_p: i64 @Internal = bp / 4294967296;
+    let bp_l: i64 @Internal = bp - bp_p * 4294967296;
+    let mut m: i64 @Internal = 0;
+    while m < bp_l {
+        store8(out + out_len, load8(bp_p + m));
+        out_len = out_len + 1;
+        m = m + 1;
+    }
+    // ",xor:0x"
+    store8(out + out_len, 44); out_len = out_len + 1;
+    store8(out + out_len, 120); out_len = out_len + 1;
+    store8(out + out_len, 111); out_len = out_len + 1;
+    store8(out + out_len, 114); out_len = out_len + 1;
+    store8(out + out_len, 58); out_len = out_len + 1;
+    store8(out + out_len, 48); out_len = out_len + 1;
+    store8(out + out_len, 120); out_len = out_len + 1;
+    let hi: i64 @Internal = acc / 16;
+    let lo: i64 @Internal = acc - hi * 16;
+    store8(out + out_len, hex_digit(hi));
+    out_len = out_len + 1;
+    store8(out + out_len, hex_digit(lo));
+    out_len = out_len + 1;
+    return out * 4294967296 + out_len;
+}

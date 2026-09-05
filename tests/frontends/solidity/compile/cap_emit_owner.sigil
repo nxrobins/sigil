@@ -1,0 +1,17 @@
+module cap_emit_owner;
+
+cap type C_Deploy { mint_owner }
+cap type C_Owner mintable_by C_Deploy { all }
+
+record C { x: u256, balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new(__fe_deploy: &C_Deploy) -> (C, C_Owner) {
+        let __fe_c = C { x: 0, balances: BoundedMap_u256_u256_64::new() };
+        return (__fe_c, mint C_Owner for __fe_c);
+    }
+
+    pub fn setX(self: C @Mut, __fe_owner: &C_Owner, v: u256) {
+        self.x = v;
+    }
+}

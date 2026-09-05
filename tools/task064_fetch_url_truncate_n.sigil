@@ -1,0 +1,69 @@
+// TASK: fetch url truncate n — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let raw: i64 @Internal = http_get(input_ptr, split);
+
+        if raw < 0 {
+            return raw;
+        } else {
+            let mut n: i64 @Internal = 0;
+            let mut saw_digit: i64 @Internal = 0;
+            let mut parse_ptr: i32 @Internal = input_ptr + split + one;
+
+            while parse_ptr < input_ptr + input_len {
+                let b: i64 @Internal = load8(parse_ptr);
+                if b >= 48 {
+                    if b <= 57 {
+                        n = n * 10 + b - 48;
+                        saw_digit = 1;
+                    } else {
+                    }
+                } else {
+                }
+                parse_ptr = parse_ptr + one;
+            }
+
+            if saw_digit == 0 {
+                return 0 - 400;
+            } else {
+                let body_ptr: i64 @Internal = raw / 4294967296;
+                let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+                let mut out_len: i64 @Internal = body_len;
+
+                if out_len > n {
+                    out_len = n;
+                } else {
+                }
+
+                return body_ptr * 4294967296 + out_len;
+            }
+        }
+    }
+}

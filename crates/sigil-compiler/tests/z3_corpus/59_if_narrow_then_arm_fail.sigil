@@ -1,0 +1,39 @@
+// expect-error: T224
+// Z3 corpus #59: axis-1 — Wall 4 Step 10 then-arm narrowing doesn't help.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Narrowing produces refinement clauses; those clauses must SUBSUME
+// the callee's required refinement to admit the call. Here `if x < 0`
+// narrows `x` to `x < 0` — but the callee `need_positive` requires
+// `where x > 0`. The narrowing IS pushed into the frame; the call-
+// site dispatcher (Step 7's Case 2) sees the preserved refinement,
+// tries syntactic match (fails: `< 0` ≠ `> 0`), tries Z3 subsumption
+// (Sat for negation: x < 0 does NOT imply x > 0), and fires T224
+// (call-site argument violates parameter refinement).
+//
+// This is a positive proof that narrowing IS working — the dispatcher
+// sees the narrowed clause and Z3 correctly rejects it. Compare to
+// fixture 62 (T211) where no narrowing is in scope at all.
+//
+// MUTATION CONTRACT
+//
+// Replacing `x < 0` with `x > 0` flips to expect-ok (fixture 58's
+// pattern). The mutation site is the call, since deleting it
+// resolves the type-error.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input < 0 {
+            let _val: i64 = need_positive(input);  // MUTATION_SITE
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}

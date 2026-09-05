@@ -1,0 +1,53 @@
+// expect-error: T211
+// Z3 corpus #51: axis-1 — Wall 4 Step 6 wildcard pattern drops refinement.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A13-S6: wildcard `_` patterns do NOT bind any identifier and
+// therefore do NOT attach any refinement. This is the BOUNDARY of
+// Step 6 commit #3's pattern-narrowing mechanism.
+//
+// In this fixture, `match v { Positive(_) => ... }` matches the
+// `Positive` variant but binds the payload to a wildcard. Inside
+// the arm body, there is no narrowed `x` in scope. We instead
+// reference a separate symbolic-with-no-refinement `i64` value
+// (a non-narrowed local), so the construction-site dispatcher
+// receives a `TypedExpr` with `refinement: None` — same as Step 1's
+// `T211` case (symbolic without preserved refinement).
+//
+// The fixture demonstrates that the narrowing fires AT THE BOUND
+// IDENTIFIER, not at the variant match itself. Wildcards skip the
+// `arm_env.insert(...)` branch in the match-binding loop, and that
+// branch is also where Step 6 commit #3 calls
+// `pattern_refinement_stack.last_mut()?.insert(...)`. Skipping the
+// insert means no attachment — exactly as the spec intends.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 6 commit #3 wildcard-skip behavior of the binding loop.
+//
+// MUTATION CONTRACT
+//
+// Replacing `Positive(_)` with `Positive(x)` AND replacing the use
+// site to reference `x` would flip this fixture to the expect-ok
+// path (matching fixture 49's behavior).
+module sigil;
+
+enum SignedInt {
+    Positive(x: i64) where x > 0,
+    Negative(x: i64) where x < 0,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let v: SignedInt = Positive(7);
+        let symbolic: i64 = 0;
+        match v {
+            Positive(_) => {
+                let p: SignedInt = Positive(symbolic);  // MUTATION_SITE
+                return 1;
+            },
+            Negative(y) => { return 0 - 1; },
+        }
+    }
+}

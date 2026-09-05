@@ -1,0 +1,8 @@
+module solver_probe;
+
+record Index { value: i64 } where value > 100
+
+pub fn violate() -> i64 {
+    let idx: Index = Index { value: 42 };
+    return idx.value;
+}

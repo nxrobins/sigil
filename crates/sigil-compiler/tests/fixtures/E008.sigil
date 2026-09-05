@@ -1,0 +1,16 @@
+// E008 — a clause-form `handle` does not cover its effect's operations. `Calc`
+// declares `add` and `sub`, but only `add` has a clause, so `sub` is uncovered.
+module sigil;
+
+effect Calc {
+    fn add(a: i64, b: i64) -> i64;
+    fn sub(a: i64, b: i64) -> i64;
+}
+
+fn provider() -> i64 {
+    return 1;
+}
+
+fn f() -> i64 {
+    return handle provider() { Calc.add(a, b) => 0 };
+}

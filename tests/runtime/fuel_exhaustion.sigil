@@ -1,0 +1,21 @@
+// expect-runtime: FuelExhausted
+// Exhaust fuel via a tight while loop.
+// Back-edge fuel insertion burns 1 fuel per iteration.
+module sigil;
+cap type Fuel {}
+
+fn burn(n: i64) -> i64 {
+    let i: i64 = 0;
+    while i < n {
+        let i = i + 1;
+    }
+    return i;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        return burn(10000);
+    }
+}

@@ -1,0 +1,33 @@
+// expect-error: T210
+// Z3 corpus #43: axis-1 — Wall 4 Step 4 cross-field refinement (refutation).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Construction `Range { lo: 10, hi: 5 }` violates `where lo <= hi`
+// because 10 > 5. Z3's 2-variable query finds the counterexample
+// `lhs = 10, rhs = 5`; T210 fires with the cross-field message
+// format `lhs = <a>, rhs = <b>` (N8).
+//
+// V36 + N8: the message embeds both counterexample values in the
+// distinct cross-field format. The single-variable `"x = <v>"` format
+// (Step 3's V36 substring) is NOT used here per V42's mutual-exclusivity
+// invariant.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixture 42 + T210's emission path with cross-field detail.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the offending construction; the
+// record decl stays. Compiles.
+module sigil;
+
+record Range { lo: i64, hi: i64 } where lo <= hi
+
+entry actor Main {
+    on Tick() -> i64 {
+        let r: Range = Range { lo: 10, hi: 5 };  // MUTATION_SITE
+        return 1;
+    }
+}

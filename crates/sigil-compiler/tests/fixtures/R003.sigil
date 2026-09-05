@@ -1,0 +1,37 @@
+// expect-error: R003
+//
+// R003 — inner-ring code cannot call extern functions.
+//
+// Before step 24 of the supremum loop (axis 6, "fewer escape hatches")
+// this exact source compiled cleanly and produced WASM with a direct
+// FFI call from inner-ring code. The ring_check pass had a no-op for
+// inner-ring modules with the comment "forward-looking — no extern
+// syntax exists yet, so this is a no-op." Extern syntax DOES exist
+// today, so the no-op was a real bypass.
+//
+// ABUSE VECTOR (verified against the pre-change commit):
+// An inner-ring module declares `extern "C" fn foo() ! { FFI, Unsafe }`
+// and calls it from its own function. The compiler accepted this and
+// emitted a WASM module with an FFI call running in the inner ring —
+// exactly the privilege the ring system is meant to quarantine to the
+// outer ring.
+//
+// After step 24, ring_check's Inner-ring branch walks each function
+// body for `TypedExprKind::ExternCall` and emits R003 with the
+// offending callee name. The diagnostic suggests two copyable fixes
+// (move to outer/trusted, or use `grant(&cap, fn(ref) -> ...)` to
+// cross the ring).
+//
+// NOTE (step 30 / E003 update): use_it must NOT declare
+// `! { FFI, Unsafe }` in its effect row, because step 30's E003
+// check rejects inner-ring functions that declare privilege
+// effects (Unsafe / FFI). The R003 check (body-level extern call)
+// still fires on the call to foo() regardless of caller's effect
+// row — R003 is what this fixture pins.
+module ext;
+
+extern "C" fn foo() -> i64 ! { FFI, Unsafe };
+
+fn use_it() -> i64 @Internal {
+    return foo();
+}

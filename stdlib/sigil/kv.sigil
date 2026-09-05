@@ -1,0 +1,64 @@
+// stdlib `kv` module — durable key-value storage.
+//
+// The first storage primitive designed for STATE, not files: values
+// put in one ephemeral run are readable in later runs. The host backs
+// each namespace with a directory named in the grant; keys are opaque
+// bytes (hashed host-side to backing-file names, so any byte sequence
+// up to 1 KB is a valid key and key bytes never touch path
+// resolution).
+//
+// Tools that `use sigil::kv;` MUST declare `#[ring(outer)] #[trusted]`
+// on their own module (per R004 / G2, same as `fs` / `http`).
+//
+// Grants required (namespace is matched by exact string compare,
+// fail-closed):
+//   - `kv::get`               → `IoGrants.kv` entry for the namespace.
+//   - `kv::put` / `kv::delete` → `IoGrants.kv_write` entry for the
+//     namespace.
+// Read and write are SEPARATE grants — a read grant does not confer
+// write access.
+//
+// Durability matches `fs::write` (OS write-back); a put is atomic —
+// a concurrent reader sees the old value or the new one, never a torn
+// write.
+//
+// Determinism: like `fs`, deterministic relative to KV state.
+//
+// Taint: every parameter and return is `@Internal`. Durable storage
+// traffics in classified data by nature — a namespace or key can be
+// derived from a network response, and a stored value is exactly the
+// kind of thing that came from one. The `@Internal` returns said this
+// already; the parameters now say it too, so a caller need not launder
+// an `@Internal` key to write it. `@Secret` values still require an
+// explicit declassification to store, which is the intended gate.
+#[ring(outer)] #[trusted] module kv;
+
+effect KvIO;
+
+extern "C" fn kv_get(ns: i32, ns_len: i32, key: i32, key_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn kv_put(ns: i32, ns_len: i32, key: i32, key_len: i32, val: i32, val_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn kv_delete(ns: i32, ns_len: i32, key: i32, key_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read the value stored under `key` in `ns`. Returns the packed
+// `(ptr << 32 | len)` of the value bytes on success, or a negative
+// error code: -403 no read grant for the namespace, -404 key absent,
+// -413 key > 1 KB or stored value > 5 MB, -400 malformed arguments,
+// -500 host failure.
+pub fn get(ns_ptr: i32 @Internal, ns_len: i32 @Internal, key_ptr: i32 @Internal, key_len: i32 @Internal) -> i64 @Internal ! { KvIO, Alloc, FFI, Unsafe } {
+    return kv_get(ns_ptr, ns_len, key_ptr, key_len);
+}
+
+// Store `val` under `key` in `ns`, creating or replacing it. Returns 0
+// on success, or a negative error code: -403 no write grant, -413 key
+// > 1 KB or value > 5 MB, -400 malformed arguments, -500 host failure
+// (including a missing grant root — creating it is the granter's job).
+pub fn put(ns_ptr: i32 @Internal, ns_len: i32 @Internal, key_ptr: i32 @Internal, key_len: i32 @Internal, val_ptr: i32 @Internal, val_len: i32 @Internal) -> i64 @Internal ! { KvIO, FFI, Unsafe } {
+    return kv_put(ns_ptr, ns_len, key_ptr, key_len, val_ptr, val_len);
+}
+
+// Remove `key` from `ns`. Returns 0 on success, -404 if the key was
+// absent, -403 no write grant, -413 key > 1 KB, -400 malformed
+// arguments, -500 host failure.
+pub fn delete(ns_ptr: i32 @Internal, ns_len: i32 @Internal, key_ptr: i32 @Internal, key_len: i32 @Internal) -> i64 @Internal ! { KvIO, FFI, Unsafe } {
+    return kv_delete(ns_ptr, ns_len, key_ptr, key_len);
+}

@@ -1,0 +1,42 @@
+// expect-ok
+// Z3 corpus #25: axis-1 — Wall 4 Step 1 refinement predicate (positive evidence).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 1 lifts Z3-backed refinement from caps to plain records.
+// `record Index { value: i64 } where value >= 0` declares an
+// invariant that the type checker discharges at every construction
+// site via a Z3 query keyed on the predicate + supplied literal.
+//
+// This fixture is the positive-evidence side of the pair (fixture
+// #26 is the rejecting counterpart). The construction `Index {
+// value: 42 }` satisfies `value >= 0`: Z3 returns `Unsat` for
+// `not(42 >= 0)`, so no diagnostic fires and compilation succeeds.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Parser extension: optional `where` clause immediately after a
+//     record's closing `}`, with `Ident RelOp IntLiteral` grammar.
+//   * AST extension: `RecordDef.refinements: Vec<RefinementClause>`.
+//   * Type-check integration: `infer_record_construct_expr` calls into
+//     `z3_capability::check_refinement` for each declared clause at
+//     each construction site (V15 single-entry rule).
+//   * Z3 emission: `check_refinement` asserts the supplied literal
+//     and the negation of the predicate; cache-key disjointness from
+//     cap-flow queries enforced by the `refine__` variable prefix (V3).
+//
+// MUTATION CONTRACT
+//
+// Not applicable. Removing `where value >= 0;` weakens the contract
+// but the construction still compiles. Changing `42` to `-1` flips
+// this fixture into the #26 case (T210 expected error).
+module sigil;
+
+record Index { value: i64 } where value >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx: Index = Index { value: 42 };
+        return 1;
+    }
+}

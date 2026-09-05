@@ -1,0 +1,86 @@
+[package]
+name = "sigil-runtime"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# Phase 5a-1.6 / I21 / AP17: typed trace events for FFI shim entries,
+# exits, and grant decisions. Default-off; enable with
+# `cargo build --features trace`. Mirrors the same flag in sigil-compiler.
+trace = ["dep:tracing"]
+# Self-hosting Cap<Z3>: the `z3_check` host shim (ephemeral.rs) that lets a
+# compiled SIGIL program drive the SMT solver across the WASM boundary. Pulls
+# in the native z3 crate; OFF by default so the deployed runtime's TCB carries
+# no solver unless explicitly built with it. Mirrors sigil-compiler's `solver`.
+solver = ["dep:z3"]
+# The DDC comparison (docs/CLAIMS.md claim 40): executing the whole certified source under the
+# independent Python interpreter takes ~8 min under CPython (~2 min under PyPy, which the lane
+# uses), which pushed the `test` lane past its 30-minute timeout when it ran inside it.
+# Gated OFF by default so it runs in its OWN parallel CI lane instead of serialising into the
+# critical path. CI lanes have no `needs:` between them, so a parallel lane is effectively free.
+#
+# A feature gate is a second way to have a proof that never runs — the exact hole
+# `pin6_no_claim_is_proven_by_an_ignored_test` closes for `#[ignore]`. That is why
+# `interp_ddc_lane_is_wired_in_ci` exists: it reads the workflow and asserts a lane actually
+# invokes this target. Do not gate a claim's proof without an equivalent check.
+ddc = []
+
+[dependencies]
+sigil-abi = { workspace = true }
+# ureq 3.x: the HTTP shim's blocking client. `platform-verifier` trusts the
+# OS/platform certificate store (public web + private/enterprise CAs) via
+# rustls-platform-verifier -> rustls-native-certs 0.8 / rustls-pki-types, which
+# does NOT pull the unmaintained rustls-pemfile (RUSTSEC-2025-0134) that the
+# older ureq 2.x `native-certs` feature did. Default `rustls` (+ webpki-roots)
+# and `gzip` stay on. Redirects are disabled at the agent and followed manually
+# in `http_fetch` so every hop is re-validated against the grants (finding P1).
+ureq = { version = "3", features = ["platform-verifier"] }
+url = "2.5"
+# 43.0.1 fixes a cluster of RUSTSEC-2026 wasmtime advisories, including the
+# critical Cranelift/Winch sandbox-escape ones (RUSTSEC-2026-0095/0096) that are
+# directly load-bearing for this project's wasm sandbox. Do not float below it.
+wasmtime = "47.0.4"
+sha2 = "0.10"
+wasmparser = "0.246"
+# Match Module::new's binary-or-text input support before inspecting security
+# requirements. Compile the same normalized bytes that the guard inspects.
+wat = "1"
+getrandom = "0.2"
+tracing = { version = "0.1", optional = true }
+# Optional: only compiled under `--features solver` (see [features]). Version
+# pinned to match sigil-compiler for cross-build verdict reproducibility.
+z3 = { version = "0.12", optional = true }
+
+# Unix-only: `O_NOFOLLOW` / `ELOOP` constants for the no-follow FsWrite open
+# (fs grant-escape hardening). Only constants are referenced — no unsafe
+# libc calls, so the crate's `#![forbid(unsafe_code)]` still holds.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+sigil-compiler = { path = "../sigil-compiler", default-features = false }
+# SOL-uintN end-to-end trap proof: translate a Solidity uintN contract and RUN it to
+# confirm an overflow traps (sigil-frontends → sigil-compiler; no cycle back to runtime).
+sigil-frontends = { path = "../sigil-frontends" }
+# Four-Pillar Testing Infrastructure (PR 4): proptest state-machine
+# fuzzers for fuel + capability-table invariants. sigil-test-utils
+# carries the shared snapshot/pipeline helpers from PRs 1-3.
+proptest = { workspace = true }
+sigil-test-utils = { workspace = true }
+# The normal wasmparser dependency also supports the Stage-3-A test's read-only
+# lookup of `run_from_str` + `BUMP_PTR` before splicing raw tool_main glue.
+
+# Solver-only integration test (mirrors sigil-compiler's gating): a whole-file
+# `#![cfg(feature = "solver")]` binary that would otherwise compile and link to
+# an EMPTY test binary in the default lane. `required-features` skips building
+# it unless `solver` is on. It builds and runs in the `solver` job via
+# `cargo test -p sigil-runtime --features solver --lib --test z3_capability_shim`.
+[[test]]
+name = "z3_capability_shim"
+required-features = ["solver"]
+
+[[test]]
+name = "interp_ddc"
+required-features = ["ddc"]

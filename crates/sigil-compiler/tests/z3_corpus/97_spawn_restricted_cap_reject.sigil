@@ -1,0 +1,38 @@
+// expect-error: C003
+// Z3 corpus #97: axis-2 — restricted cap at Spawn sink rejects.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Spawning a child actor with a restricted cap is rejected. The Spawn
+// sink requires the same full-authority guarantee as Call and Send.
+// This completes the sink-coverage matrix for restriction:
+//   - #1: restrict → Call sink ✓
+//   - #83: restrict → Send sink ✓
+//   - #7: restrict → Return sink ✓
+//   - #97: restrict → Spawn sink ✓ (this fixture)
+//
+// The Spawn sink is distinct because it's creating a new actor's
+// initial state. If a restricted cap were silently accepted as an
+// actor's initial capability, the child actor would operate under
+// partial authority without the type system making this visible to
+// the child's code — a privilege confusion vulnerability.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the spawn.
+// The restricted cap persists unused.
+module sigil;
+cap type Fuel { burn, query }
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let child = spawn::<Worker>(restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

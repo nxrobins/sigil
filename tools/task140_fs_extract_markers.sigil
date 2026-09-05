@@ -1,0 +1,150 @@
+// TASK: fs extract markers — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "path:START:END". Extract lines strictly between lines equal to START and END.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep1: i32 = input_len;
+    let mut sep2: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep1 == input_len {
+                sep1 = scan;
+            } else {
+                if sep2 == input_len {
+                    sep2 = scan;
+                } else {
+                }
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep1 == input_len {
+        return 0 - 400;
+    } else {
+    }
+    if sep2 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw: i64 @Internal = fs_read(input_ptr, sep1);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    let start_off_i32: i32 @Internal = sep1 + one_i32;
+    let start_len_i32: i32 @Internal = sep2 - start_off_i32;
+    let end_off_i32: i32 @Internal = sep2 + one_i32;
+    let end_len_i32: i32 @Internal = input_len - end_off_i32;
+
+    // Count start/end lengths in i64
+    let mut start_len: i64 @Internal = 0;
+    let mut c1: i32 @Internal = zero_i32;
+    while c1 < start_len_i32 {
+        start_len = start_len + 1;
+        c1 = c1 + one_i32;
+    }
+    let mut end_len: i64 @Internal = 0;
+    let mut c2: i32 @Internal = zero_i32;
+    while c2 < end_len_i32 {
+        end_len = end_len + 1;
+        c2 = c2 + one_i32;
+    }
+
+    let out: i64 @Internal = alloc(file_len);
+    let mut out_len: i64 @Internal = 0;
+    let mut in_region: i64 @Internal = 0;
+
+    let mut line_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= file_len {
+        let mut eol: i64 @Internal = 0;
+        if i == file_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(file_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+            }
+        }
+        if eol == 1 {
+            let ln: i64 @Internal = i - line_start;
+            // Compare to START
+            let mut is_start: i64 @Internal = 0;
+            if ln == start_len {
+                is_start = 1;
+                let mut k: i64 @Internal = 0;
+                let mut k32: i32 @Internal = zero_i32;
+                while k < start_len {
+                    let fb: i64 @Internal = load8(file_ptr + line_start + k);
+                    let ib: i64 @Internal = load8(input_ptr + start_off_i32 + k32);
+                    if fb == ib {
+                    } else {
+                        is_start = 0;
+                    }
+                    k = k + 1;
+                    k32 = k32 + one_i32;
+                }
+            } else {
+            }
+            let mut is_end: i64 @Internal = 0;
+            if ln == end_len {
+                is_end = 1;
+                let mut k3: i64 @Internal = 0;
+                let mut k332: i32 @Internal = zero_i32;
+                while k3 < end_len {
+                    let fb2: i64 @Internal = load8(file_ptr + line_start + k3);
+                    let ib2: i64 @Internal = load8(input_ptr + end_off_i32 + k332);
+                    if fb2 == ib2 {
+                    } else {
+                        is_end = 0;
+                    }
+                    k3 = k3 + 1;
+                    k332 = k332 + one_i32;
+                }
+            } else {
+            }
+
+            if is_start == 1 {
+                in_region = 1;
+            } else {
+                if is_end == 1 {
+                    in_region = 0;
+                } else {
+                    if in_region == 1 {
+                        let mut m: i64 @Internal = line_start;
+                        while m < i {
+                            let mb: i64 @Internal = load8(file_ptr + m);
+                            store8(out + out_len, mb);
+                            out_len = out_len + 1;
+                            m = m + 1;
+                        }
+                        store8(out + out_len, 10);
+                        out_len = out_len + 1;
+                    } else {
+                    }
+                }
+            }
+            line_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return out * 4294967296 + out_len;
+}

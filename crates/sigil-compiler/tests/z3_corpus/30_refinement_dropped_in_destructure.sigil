@@ -1,0 +1,52 @@
+// expect-ok
+// Z3 corpus #30: axis-1 — Wall 4 Step 7 closes the let-binding gap.
+//
+// WHAT THIS FIXTURE PROVES (HISTORY)
+//
+// Originally (Step 2 era, PR #61): this fixture was `expect-error: T211`.
+// Step 2's V15 anti-goaled let-binding propagation: refinements travel
+// through `TypedExprKind::FieldAccess` ONLY, not through `let`
+// bindings. `let x: i64 = idx.value;` discarded the refinement;
+// subsequent reads of `x` saw a plain `Type::I64` with
+// `refinement: None`, and `Mirror { copy: x }` fired T211.
+//
+// Wall 4 Step 7 (PR #66) intentionally LIFTS this anti-goal with the
+// N38-S7 mechanism: `check_let_stmt` now pushes the RHS expression's
+// preserved refinement into `tracker.pattern_refinement_stack`'s top
+// frame keyed by the bound name. Subsequent reads via
+// `infer_path_expr` attach the refinement via Step 6's
+// `lookup_pattern_refinement`. Step 7's design intent: cross-function
+// flow (`let n = make_positive(); validate(n);` — fixture 56) requires
+// this preservation, so the let-binding gap is closed for ALL Vec
+// `RefinementRhs::Literal` clauses.
+//
+// FIXTURE STATUS AFTER STEP 7: `expect-ok`. The Step 2 V30 hint text
+// still applies for cases where refinement IS lost (e.g., through
+// `as` casts per fixture 36 / V28 — Step 7 doesn't extend N38-S7 to
+// `Coerce` nodes).
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Step 7 N38-S7: `check_let_stmt`'s `tracker.pattern_refinement_stack.
+// last_mut()?.insert(name, refinement)` for `Some(refinement)` RHS.
+// The frame is initialized at function entry by `check_function_block`
+// per N9-S7.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the `Mirror { copy: x }` construction.
+// What remains compiles cleanly. Mutation invariant preserved.
+module sigil;
+
+record Index { value: i64 } where value >= 0
+
+record Mirror { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx: Index = Index { value: 42 };
+        let x: i64 = idx.value;
+        let m: Mirror = Mirror { copy: x };  // MUTATION_SITE
+        return 1;
+    }
+}

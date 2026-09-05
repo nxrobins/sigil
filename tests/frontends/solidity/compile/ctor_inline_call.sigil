@@ -1,0 +1,11 @@
+module ctor_inline_call;
+
+record C { x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        let mut __fe_c = C { x: 0 };
+        __fe_c.x = 42;
+        return __fe_c;
+    }
+}

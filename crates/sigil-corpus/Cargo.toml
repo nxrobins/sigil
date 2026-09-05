@@ -1,0 +1,24 @@
+[package]
+name = "sigil-corpus"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+# Training-corpus extraction tool (docs/specs/training-corpus.md). Turns the
+# committed self-hosting artifacts into compiler-validated JSONL training
+# records. Depends on sigil-compiler with default features OFF so it never
+# pulls Z3 (the solver lane) — it only needs the core compile + registry API.
+
+[[bin]]
+name = "sigil-corpus"
+path = "src/main.rs"
+
+[dependencies]
+sigil-compiler = { path = "../sigil-compiler", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = { workspace = true }
+# Robust Rust-source parsing for the inline_program extractor: decodes string
+# literals (escapes, raw strings, line-continuations) that carry SIGIL programs
+# embedded in the differential/diagnostic test harnesses.
+syn = { version = "2", features = ["full", "visit", "parsing"] }

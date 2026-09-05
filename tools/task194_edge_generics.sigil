@@ -1,0 +1,56 @@
+// TASK: edge generics — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+        while n > 0 {
+            let q = n / 10;
+            let d = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out = alloc(digits);
+        let mut i = 0;
+        while i < digits {
+            let b = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+// Parse decimal from input, run through generic identity, return.
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut n: i64 = 0;
+    let mut i: i64 = 0;
+    while i < input_len {
+        let b: i64 = load8(input_ptr + i);
+        if b > 47 {
+            if b < 58 {
+                n = n * 10 + b - 48;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    let passed: i64 = identity::<i64>(n);
+    return render_decimal(passed);
+}

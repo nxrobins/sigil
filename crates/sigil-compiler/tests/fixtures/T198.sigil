@@ -1,0 +1,8 @@
+// expect-error: T198
+//
+// T198 — invalid parametric capability declaration. Stage 1 of the
+// deadline-typed cap rollout supports exactly one parameter of type
+// `i64`. Empty parameter lists and non-`i64` parameter types fail
+// at parse time.
+module main;
+cap type Approval(deadline: bool) {}

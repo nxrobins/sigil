@@ -1,0 +1,5 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: summary
+---
+<TYPE_CHECK_FAILED: ["T211"]>

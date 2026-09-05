@@ -1,0 +1,32 @@
+// expect-error: T210
+// Z3 corpus #78: PR-U3 — refinement violation at construction over a u256 field.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The single-field record LHS gate now admits u256 (PR-U3 NC-1, u256-ONLY).
+// The predicate `where amount >= 100` is discharged by Z3 over the supplied
+// SMALL literal (50), which fits i64 and reaches the existing i64 check path.
+// (A wider value would be Literal::Int256 -> extract None -> T211, never
+// narrowed-then-discharged; a wide clause RHS is rejected at parse.) Z3 returns
+// Sat for not(50 >= 100), so T210 fires at the construction site.
+//
+// This is the legacy/v2 PARITY witness for u256 (NC-4): both walkers must emit
+// byte-identical T210, since they share the i64 discharge spine — the only
+// structurally-observable shadow direction is legacy-accept, but pinning the
+// reject here guards the discharge from regressing.
+//
+// MUTATION CONTRACT
+//
+// Changing `50` to `100` (or any literal >= 100) flips this to the expect-ok
+// side and drops T210. Removing `where amount >= 100` drops T210. A WIDE
+// supplied literal (> i64::MAX) drops T210 in favor of T211 (fail-closed wide).
+module sigil;
+
+record Balance { amount: u256 } where amount >= 100
+
+entry actor Main {
+    on Tick() -> i64 {
+        let b: Balance = Balance { amount: 50 };  // MUTATION_SITE
+        return 1;
+    }
+}

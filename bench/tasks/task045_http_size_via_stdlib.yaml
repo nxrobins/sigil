@@ -1,0 +1,30 @@
+id: task045_http_size_via_stdlib
+source_path: tools/task045_http_size_via_stdlib.sigil
+difficulty: ffi_net
+description: |
+  Same task as task151 (fetch a URL and return its body size as ASCII
+  decimal), but the agent must use `sigil::http::get` instead of
+  declaring a raw `extern "C" fn http_get`.
+
+  Required imports:
+      use sigil::http;
+
+  Then:
+      let raw = http::get(input_ptr, input_len);
+
+  http::get returns packed (ptr * 4294967296 + len) on success, or a
+  negative HTTP-style error code (-403, -404, -413, -502).
+
+  This task uses FFI-backed http, so the tool MUST declare
+  `#[ring(outer)] #[trusted]` per R004.
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["NetIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  net: ["example.com"]
+fuel_budget: 500000
+inputs:
+  - name: example_com
+    value: "https://example.com/"
+expected_output_strategy: capture_from_reference
+stdlib_imports: ["http"]

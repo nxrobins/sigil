@@ -1,0 +1,28 @@
+// expect-ok
+// CVE Retrofit #07 (safe form): CVE-2014-3704 — Drupalgeddon SQL injection
+// Scope: BY-CONSTRUCTION
+//
+// LEGITIMATE INTENT
+//   Build a database query from typed inputs. The Drupalgeddon bug
+//   existed because PHP's array-placeholder expansion let an attacker
+//   override the query structure by passing a hash-keyed array.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   SIGIL has no string-to-SQL evaluator and no PHP-style array
+//   placeholder expansion. Database access would go through an actor
+//   with typed message handlers: each query is a message with typed
+//   parameters, not a string template. The injection class is
+//   structurally inexpressible.
+module cve;
+
+actor Database {
+    on Lookup(user_id: i64) -> i64 { return user_id; }
+}
+
+entry actor Main {
+    on Start(db: ActorRef<Database>, user_id: i64) -> i64 {
+        // Typed message: the user_id flows as i64, never as a SQL fragment.
+        db.send(Lookup(user_id));
+        return 1;
+    }
+}

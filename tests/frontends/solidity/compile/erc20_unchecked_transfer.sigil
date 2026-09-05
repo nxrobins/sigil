@@ -1,0 +1,18 @@
+module erc20_unchecked_transfer;
+
+record Token { balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn transfer(self: Token @Mut, __fe_sender: u256, to: u256, amount: u256) {
+        let mut __fe_inl0_from: u256 = __fe_sender;
+        let mut __fe_inl0_to: u256 = to;
+        let mut __fe_inl0_amount: u256 = amount;
+        let mut __fe_inl0_fromBalance: u256 = self.balances.get_or(__fe_inl0_from, 0);
+        trap_if(!((__fe_inl0_fromBalance >= __fe_inl0_amount)));
+        self.balances.transfer(__fe_inl0_from, __fe_inl0_to, __fe_inl0_amount);
+    }
+}

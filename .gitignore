@@ -1,0 +1,60 @@
+/target
+**/target
+.dotscope/
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Worktree checkouts
+.claude/worktrees/
+# Agent worktrees checked out INSIDE the repo (`git worktree add .worktrees/<name>`): a
+# 2.4 GB checkout sat here untracked on 2026-08-22. `git add -A` would record its `.git`
+# pointer as a bogus gitlink rather than the files -- a broken commit either way.
+.worktrees/
+.claude/settings.json
+.cursor/mcp.json
+
+# Local tool artifacts
+**/.scopes
+**/intent.yaml
+intent.yaml
+results.log
+
+# Runtime state
+sigil_templates.db
+*.db
+.claude/scheduled_tasks.lock
+
+# Local corpus output (crates/sigil-corpus writes corpus/out by default) and large local
+# model artifacts: multi-GB checkpoints and fused weights are never git objects. `models/`
+# once sat at 28 GB untracked-but-not-ignored, one `git add -A` away from a broken commit.
+/corpus/
+adapters/
+models/
+
+# Test scratch
+tmp/
+
+# Operator-local pipeline state: stage markers, PIDs, and logs are stale the moment the
+# run they describe ends.
+/var/
+
+# Bench run artifacts (reports, results.jsonl, run_config.json, transcript
+# archives). These are the OUTPUT of an eval run — operator-local experiment
+# records, not repo source: reproducible by re-running, and they carry
+# machine-specific paths + per-run model names.
+bench/runs/
+
+.DS_Store
+
+# proptest saves failing-case seeds here; regenerated locally, not tracked
+*.proptest-regressions
+
+# Throwaway probes while developing the independent interpreter. Ignored so a stray one can
+# neither be committed nor fail the hygiene lane's ruff step — which it did once.
+interp/_*.py
+
+# A local demo checkout and a generated root-level copy that both sat
+# untracked-but-not-ignored, the same `git add -A` exposure as models/ above.
+/pi/
+/sigil_system_prompt.md

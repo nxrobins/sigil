@@ -1,0 +1,6 @@
+# Compact bench/runs entries that support claims in current documentation.
+# Each entry contains a preregistration, summary, report, and hash-verified
+# pointer to externally retained raw transcripts.
+20260621T012217Z-ab
+20260621T054956Z-ab
+20260621T143440Z-ab

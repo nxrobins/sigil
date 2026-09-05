@@ -1,0 +1,27 @@
+// expect-shape: handle_inner_assign
+// Z3 corpus #4: AIR-coverage probe for `handle` body — positive test.
+//
+// PRE-FIX (silent-drop bug): the `let inner = 42;` inside the handle was
+// silently dropped at AIR lowering. Anything depending on `inner` was also
+// dropped. The function compiled but the inner statements were invisible to
+// every downstream pass (Z3, ownership, taint).
+//
+// POST-FIX: `lower_scoped_body_inline` lowers the let into the calling AIR
+// block. The harness asserts `dummy`'s AIR contains an `AirStmt::Assign`
+// node for the inner let — without that assertion, a future regression
+// re-introducing silent-drop would slip through.
+//
+// Cap-typed lets inside handle aren't expressible today (handle is outer-
+// ring, caps are inner-ring), so this fixture uses a non-cap let to exercise
+// the lowering. The AIR-shape probe is what makes the fixture load-bearing.
+#[ring(outer)]
+module ext;
+effect NetIO;
+
+fn dummy() -> i64 ! { NetIO } {
+    handle NetIO {
+        let inner: i64 = 42;
+        let _used: i64 = inner + 1;
+    };
+    return 1;
+}

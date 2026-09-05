@@ -1,0 +1,38 @@
+// expect-ok
+// Z3 corpus #42: axis-1 — Wall 4 Step 4 cross-field refinement (positive).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 4 admits `where <lhs_field> <op> <rhs_field>` cross-field
+// refinement clauses. The parser produces `RefinementRhs::Field(rhs)`.
+// The construction-site dispatcher routes through the 9-case matrix;
+// when BOTH the LHS field's and RHS field's supplied values are
+// integer literals (the V72 case 1 + N4 no-operator-mirroring path),
+// `check_refinement_xfield` runs a 2-variable Z3 query with
+// `refine__lhs` + `refine__rhs` variables.
+//
+// Construction `Range { lo: 5, hi: 10 }` supplies lo=5, hi=10. Z3
+// proves `lo <= hi` (specifically `5 <= 10`) — Unsat on the negation
+// query — and the construction is accepted.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 4 parser extension: bare-Ident RHS → `RefinementRhs::Field(_)`.
+//   * `check_refinement_xfield` 2-variable Z3 query (N1 + N4).
+//   * V72 case 1 dispatcher routing.
+//   * V60 (T219) gate: both LHS and RHS must be i64.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok). Swapping the values (`lo: 10, hi: 5`)
+// flips to a T210 case (fixture 43 demonstrates).
+module sigil;
+
+record Range { lo: i64, hi: i64 } where lo <= hi
+
+entry actor Main {
+    on Tick() -> i64 {
+        let r: Range = Range { lo: 5, hi: 10 };
+        return 1;
+    }
+}

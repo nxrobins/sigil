@@ -1,0 +1,221 @@
+// stdlib::bounded_map_str — BOUNDED, stack-backed maps keyed by `str`
+// (COMPLETENESS Phase 4): `BoundedMap_str_str_64` (str→str) and
+// `BoundedMap_str_i64_64` (str→i64) — the config/protocol shapes. Same recipe as
+// `bounded_map_i64_i64` (parallel fixed `[str; 64]` keys + values, `count`
+// live-prefix, linear scan, sealed, Alloc-free, full+new force-traps) with TWO
+// deltas: the backing init is `[""; 64]` (the empty-string literal fills the
+// fixed array; cells >= count are NEVER scanned, so `""` is a legal key), and the
+// key comparison is CONTENT equality `str_bytes_eq(self.keys[i], key)` — chosen
+// when `==` on `str` was still POINTER identity (two distinct objects with the
+// same bytes would wrongly miss). Since PR #699 `==` also byte-compares; the
+// helper stays as the house idiom. `str_bytes_eq` (stdlib::strings, length-first
+// byte compare) is co-injected alongside this module; Option is co-injected for
+// `get`.
+
+module bounded_map_str;
+
+// ── str → str ──────────────────────────────────────────────────────────────
+
+record BoundedMap_str_str_64 { keys: [str; 64], vals: [str; 64], count: i64 }
+
+impl BoundedMap_str_str_64 {
+    pub fn new() -> BoundedMap_str_str_64 {
+        return BoundedMap_str_str_64 { keys: [""; 64], vals: [""; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedMap_str_str_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedMap_str_str_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedMap_str_str_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedMap_str_str_64) -> bool {
+        return self.count == 64;
+    }
+
+    pub fn insert(self: BoundedMap_str_str_64 @Mut, key: str, val: str) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                self.vals[i] = val;
+                return self.count;
+            } else {
+            }
+            i = i + 1;
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn try_insert(self: BoundedMap_str_str_64 @Mut, key: str, val: str) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                self.vals[i] = val;
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        if self.count == 64 {
+            return false;
+        } else {
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn get(self: BoundedMap_str_str_64, key: str) -> Option<str> {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return Some(self.vals[i]);
+            } else {
+            }
+            i = i + 1;
+        }
+        return None;
+    }
+
+    pub fn get_or(self: BoundedMap_str_str_64, key: str, default: str) -> str {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return self.vals[i];
+            } else {
+            }
+            i = i + 1;
+        }
+        return default;
+    }
+
+    pub fn contains_key(self: BoundedMap_str_str_64, key: str) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}
+
+// ── str → i64 ──────────────────────────────────────────────────────────────
+
+record BoundedMap_str_i64_64 { keys: [str; 64], vals: [i64; 64], count: i64 }
+
+impl BoundedMap_str_i64_64 {
+    pub fn new() -> BoundedMap_str_i64_64 {
+        return BoundedMap_str_i64_64 { keys: [""; 64], vals: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedMap_str_i64_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedMap_str_i64_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedMap_str_i64_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedMap_str_i64_64) -> bool {
+        return self.count == 64;
+    }
+
+    pub fn insert(self: BoundedMap_str_i64_64 @Mut, key: str, val: i64) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                self.vals[i] = val;
+                return self.count;
+            } else {
+            }
+            i = i + 1;
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn try_insert(self: BoundedMap_str_i64_64 @Mut, key: str, val: i64) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                self.vals[i] = val;
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        if self.count == 64 {
+            return false;
+        } else {
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn get(self: BoundedMap_str_i64_64, key: str) -> Option<i64> {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return Some(self.vals[i]);
+            } else {
+            }
+            i = i + 1;
+        }
+        return None;
+    }
+
+    pub fn get_or(self: BoundedMap_str_i64_64, key: str, default: i64) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return self.vals[i];
+            } else {
+            }
+            i = i + 1;
+        }
+        return default;
+    }
+
+    pub fn contains_key(self: BoundedMap_str_i64_64, key: str) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ki: str = self.keys[i];
+            if ki.bytes_eq(key) {
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}

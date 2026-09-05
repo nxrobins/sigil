@@ -1,0 +1,2095 @@
+// SH-MONO differential monomorphizer; see docs/specs/self-hosting-completion-ladder.md.
+// (This leading comment lets the differential's `\nmodule monomorph;\n` strip match, exactly
+// like the other selfhost modules — keeping all fns in the merged `module tool;`.)
+module monomorph;
+
+// SH-MONO MONO-1/2 — `mn_census`: WHICH monomorphized instances the oracle's
+// inline-in-typecheck instantiation creates (single module; free generic fns with bare-T
+// params; scalar/plain-record type-args; TRANSITIVE instantiation from generic bodies;
+// generic impl-method instances via let-bound/param receivers; concrete-impl methods as
+// monos), plus `mn_layouts` — the record/enum concrete-layout keys (payload-driven generic
+// ENUM keys; records never get concrete keys, the pinned asymmetry). The census output
+// mirrors the oracle's typed-program function list: monomorphic fn bare names in decl order,
+// then instance mangles in WALK order (X-M8 — the harness sorts for the census slices; order
+// becomes load-bearing at MONO-3). Composed after typecheck.sigil — the prelude and all typing
+// reuse tc's own helpers verbatim (X-M3): tc_build_recs/caps/sigs/traits,
+// tc_fn_has_type_params, tc_seed_params, tc_annot_tag, tc_typearg_codes, tc_emit_expr,
+// tc_scalar_mangle, tc_sig_find, tc_bind_targs, tc_atoi, tc_seg_at, tc_variant_index.
+//
+// THE X-M7 BINDING RULE (the oracle's unify, resolve.rs:886-903 — first TOP-LEVEL binding
+// wins): binding(tj) = argtypes[first pj with parmtp[pj] == tj]. A bare literal arg types as
+// i64 under TC_NO_EXPECT, so `id2(5, x: u32)` -> id2__i64 and `id2(x, 5)` -> id2__u32.
+//
+// THE TRANSITIVE SHAPE (the MONO-0/2 post-order pins): mn_register mirrors the oracle's
+// cache-before-check + push-after-body — mark seen (pre-order; breaks self-recursion), walk
+// the generic BODY with a SUBSTITUTION env (bare-T param binds patched to the instance's
+// concrete tags — the discovered inner instances emit FIRST), then push the instance
+// (post-order). Depth-capped at MN_DEPTH_MAX (the oracle's MAX_MONOMORPH_DEPTH mirror).
+// Any unresolvable binding skips the WHOLE instance fail-soft — out-of-surface is a missing
+// entry the differential names, never a wrong mangle.
+
+const MN_DEPTH_MAX: i64 = 64;
+
+// Is `name` already in the dedup set?
+fn mn_seen_has(seen: Vec<str>, name: str) -> bool {
+    let n: i64 = seen.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let cand: str = seen.get(i);
+        if cand.bytes_eq(name) {
+            return true;
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Mangle one binding tag: scalar -> tc_scalar_mangle, record/enum -> the rdefs name, anything
+// else -> "" (the caller skips the instance).
+fn mn_mangle_tag(tag: i64, rdefs: Vec<TcRec>) -> str {
+    if tag >= TC_REC_BASE {
+        let idx: i64 = tag - TC_REC_BASE;
+        if idx < rdefs.len() {
+            let r: TcRec = rdefs.get(idx);
+            return r.name;
+        } else {
+        }
+        return "";
+    } else {
+    }
+    return tc_scalar_mangle(tag);
+}
+
+// The generic-fn (or generic-impl-method) node id registered under `name`, or -1.
+fn mn_tbl_find(names: Vec<str>, ids: Vec<i64>, name: str) -> i64 {
+    let n: i64 = names.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let cand: str = names.get(i);
+        if cand.bytes_eq(name) {
+            return ids.get(i);
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Join `__`-prefixed `$`-separated mangles onto `base`.
+fn mn_join_mangles(base: str, mangles: Vec<str>) -> str ! { Alloc } {
+    let mut inst: str = base.concat("__");
+    let mc: i64 = mangles.len();
+    let mut mi: i64 = 0;
+    while mi < mc {
+        let seg: str = mangles.get(mi);
+        if mi > 0 {
+            let dollar: str = "$";
+            inst = inst.concat(dollar);
+        } else {
+        }
+        inst = inst.concat(seg);
+        mi = mi + 1;
+    }
+    return inst;
+}
+
+// Seed an instance body's binds: tc_seed_params as-is, then PATCH each param whose
+// parmtp[pj] >= 0 to the instance's concrete binding tag (the substitution env — inside the
+// body, tc_emit_expr then types the bare-T params concretely and the MONO-1 machinery works
+// unchanged). `selfpatch >= 0` additionally patches param 0 (`self`, house style) to the
+// receiver's tag + targs so `self.field` resolves through tc's fparmtp substitution.
+fn mn_seed_subst(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, parmtp: Vec<i64>, bindings: Vec<i64>, selfpatch: i64, selftargs: str, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+    let base: i64 = binds.len();
+    let sp: i64 = tc_seed_params(nodes, kids, fnid, binds, rdefs, cdefs);
+    let plen: i64 = parmtp.len();
+    let bc: i64 = bindings.len();
+    let mut pj: i64 = 0;
+    while pj < plen {
+        let mt: i64 = parmtp.get(pj);
+        if mt >= 0 {
+            if mt < bc {
+                let idx: i64 = base + pj;
+                if idx < binds.len() {
+                    let old: TcBind = binds.get(idx);
+                    let nb: i64 = binds.set(idx, TcBind { name: old.name, tag: bindings.get(mt), detail: "", targs: "" });
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        pj = pj + 1;
+    }
+    if selfpatch >= 0 {
+        let sidx: i64 = base;
+        if sidx < binds.len() {
+            let olds: TcBind = binds.get(sidx);
+            let nbs: i64 = binds.set(sidx, TcBind { name: olds.name, tag: selfpatch, detail: "", targs: selftargs });
+        } else {
+        }
+    } else {
+    }
+    return 0;
+}
+
+// Resolve + register a FREE generic call's instance: bindings via first-binding-wins, mangle,
+// pre-order seen-guard, transitive body walk (subst env), post-order emission.
+fn mn_register(nodes: Arena<PNode>, kids: Vec<i64>, name: str, sg: TcSig, argtypes: Vec<i64>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let tpc: i64 = sg.tpbounds.len();
+    let plen: i64 = sg.parmtp.len();
+    let argc: i64 = argtypes.len();
+    let mut bindings: Vec<i64> = Vec::new();
+    let mut mangles: Vec<str> = Vec::new();
+    let mut ok: bool = true;
+    let mut tj: i64 = 0;
+    while tj < tpc {
+        // first-binding-wins: the FIRST param that bare-IS tj and has a provided arg.
+        let mut binding: i64 = 0 - 1;
+        let mut pj: i64 = 0;
+        while pj < plen {
+            let mt: i64 = sg.parmtp.get(pj);
+            if mt == tj {
+                if pj < argc {
+                    if binding < 0 {
+                        binding = argtypes.get(pj);
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            pj = pj + 1;
+        }
+        if binding < 0 {
+            ok = false;
+        } else {
+            let m: str = mn_mangle_tag(binding, rdefs);
+            if m.len() == 0 {
+                ok = false;
+            } else {
+                let qm: i64 = mangles.push(m);
+                let qb: i64 = bindings.push(binding);
+            }
+        }
+        tj = tj + 1;
+    }
+    if ok {
+        let inst: str = mn_join_mangles(name, mangles);
+        if mn_seen_has(seen, inst) {
+        } else {
+            let qs: i64 = seen.push(inst);
+            if depth < MN_DEPTH_MAX {
+                let fnid: i64 = mn_tbl_find(gfn_names, gfn_ids, name);
+                if fnid >= 0 {
+                    let bid: i64 = tc_fn_body(nodes, kids, fnid);
+                    if bid >= 0 {
+                        let mut binds2: Vec<TcBind> = Vec::new();
+                        let ss: i64 = mn_seed_subst(nodes, kids, fnid, sg.parmtp, bindings, 0 - 1, "", binds2, rdefs, cdefs);
+                        let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            let withsemi: str = inst.concat(";");
+            let qo: i64 = out.push(withsemi);
+        }
+    } else {
+    }
+    return 0;
+}
+
+// Resolve + register a generic IMPL-METHOD call's instance (`b.get()` on `BoxG<i64>` ->
+// `BoxG__get__i64` — the pinned {Type}__{method}__{targs} chained mangle). `targcodes` are the
+// receiver's concrete type-arg codes (from the bind's targs). Same pre-order-guard +
+// transitive-body + post-order shape as mn_register.
+fn mn_register_method(nodes: Arena<PNode>, kids: Vec<i64>, recname: str, method: str, targcodes: Vec<i64>, rtag: i64, rtargs: str, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let mut mangles: Vec<str> = Vec::new();
+    let mut ok: bool = true;
+    let tn: i64 = targcodes.len();
+    let mut ti: i64 = 0;
+    while ti < tn {
+        let code: i64 = targcodes.get(ti);
+        let m: str = mn_mangle_tag(code, rdefs);
+        if m.len() == 0 {
+            ok = false;
+        } else {
+            let qm: i64 = mangles.push(m);
+        }
+        ti = ti + 1;
+    }
+    if ok {
+        let pre: str = recname.concat("__");
+        let withm: str = pre.concat(method);
+        let inst: str = mn_join_mangles(withm, mangles);
+        if mn_seen_has(seen, inst) {
+        } else {
+            let qs: i64 = seen.push(inst);
+            if depth < MN_DEPTH_MAX {
+                let sep: str = "::";
+                let kpre: str = recname.concat(sep);
+                let mkey: str = kpre.concat(method);
+                let fnid: i64 = mn_tbl_find(gm_keys, gm_ids, mkey);
+                let sidx: i64 = tc_sig_find(sigs, mkey);
+                if fnid >= 0 {
+                    if sidx >= 0 {
+                        let sgm: TcSig = sigs.get(sidx);
+                        let bid: i64 = tc_fn_body(nodes, kids, fnid);
+                        if bid >= 0 {
+                            let mut binds2: Vec<TcBind> = Vec::new();
+                            let ss: i64 = mn_seed_subst(nodes, kids, fnid, sgm.parmtp, targcodes, rtag, rtargs, binds2, rdefs, cdefs);
+                            let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            let withsemi: str = inst.concat(";");
+            let qo: i64 = out.push(withsemi);
+        }
+    } else {
+    }
+    return 0;
+}
+
+// Expression walk: register instances at generic P_K_CALL / P_K_METHOD sites, receiver + args
+// FIRST (the oracle's encounter order). An enum-ctor P_K_METHOD (a PATH receiver naming an
+// enum) feeds the LAYOUT lane instead (payload-driven concrete keys). Every other node kind
+// recurses generically — registration happens ONLY at generic sites, so blind traversal cannot
+// false-register.
+fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(eid);
+    if n.kind == P_K_CALL {
+        // args first (nested instances register before the outer call's).
+        let mut ai: i64 = 0;
+        while ai < n.child_count {
+            let aid: i64 = kids.get(n.child_start + ai);
+            let r1: i64 = mn_walk_expr(nodes, kids, aid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            ai = ai + 1;
+        }
+        // a dotted callee is an enum-variant construction / out of core — bare names only.
+        let cc: i64 = tc_last_colons(n.text);
+        if cc >= 0 {
+            return 0;
+        } else {
+        }
+        let sidx: i64 = tc_sig_find(sigs, n.text);
+        if sidx >= 0 {
+            let sg: TcSig = sigs.get(sidx);
+            let gen_isg: bool = sg.tpbounds.len() > 0;
+            if gen_isg {
+                // type the args (throwaway records/diags — mn only wants the tags).
+                let mut argtypes: Vec<i64> = Vec::new();
+                let mut trecs: Vec<str> = Vec::new();
+                let mut tdiags: Vec<str> = Vec::new();
+                let mut ti: i64 = 0;
+                while ti < n.child_count {
+                    let tid: i64 = kids.get(n.child_start + ti);
+                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs, tdiags);
+                    let qa: i64 = argtypes.push(at);
+                    ti = ti + 1;
+                }
+                let rr: i64 = mn_register(nodes, kids, n.text, sg, argtypes, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, cdefs, seen, out, ekeys, depth);
+            } else {
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_METHOD {
+        // receiver + args first (encounter order).
+        let mut mi: i64 = 0;
+        while mi < n.child_count {
+            let mid: i64 = kids.get(n.child_start + mi);
+            let r2: i64 = mn_walk_expr(nodes, kids, mid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            mi = mi + 1;
+        }
+        if n.child_count > 0 {
+            let rid: i64 = kids.get(n.child_start);
+            let rn0: PNode = nodes.get(rid);
+            if rn0.kind == P_K_PATH {
+                // enum-ctor branch (`OptG::SomeV(5)` — PATH receiver naming an enum): the
+                // payload-driven LAYOUT key {Enum}__{mangle(payload tag)} when the variant's
+                // payload slot bare-IS a type-param (vptp).
+                let ecode: i64 = tc_code_of_name(rn0.text, rdefs);
+                if ecode >= TC_REC_BASE {
+                    let erec: TcRec = rdefs.get(ecode - TC_REC_BASE);
+                    if erec.is_enum {
+                        if erec.tpnames.len() > 0 {
+                            let vidx: i64 = tc_variant_index(rdefs, ecode - TC_REC_BASE, n.text);
+                            if vidx >= 0 {
+                                let vstart: i64 = erec.vstarts.get(vidx);
+                                let vcount: i64 = erec.vcounts.get(vidx);
+                                if vcount > 0 {
+                                    if n.child_count >= 2 {
+                                        let vptp0: i64 = erec.vptp.get(vstart);
+                                        if vptp0 >= 0 {
+                                            let pid: i64 = kids.get(n.child_start + 1);
+                                            let mut precs: Vec<str> = Vec::new();
+                                            let mut pdiags: Vec<str> = Vec::new();
+                                            let ptag: i64 = tc_emit_expr(nodes, kids, pid, TC_NO_EXPECT, binds, sigs, traits, rdefs, precs, pdiags);
+                                            let pm: str = mn_mangle_tag(ptag, rdefs);
+                                            if pm.len() > 0 {
+                                                let kpre: str = erec.name.concat("__");
+                                                let key: str = kpre.concat(pm);
+                                                if mn_seen_has(ekeys, key) {
+                                                } else {
+                                                    let qk: i64 = ekeys.push(key);
+                                                }
+                                            } else {
+                                            }
+                                        } else {
+                                        }
+                                    } else {
+                                    }
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                        return 0;
+                    } else {
+                    }
+                } else {
+                }
+                // a bare-local receiver: the generic-impl METHOD instance branch.
+                let rcc: i64 = tc_last_colons(rn0.text);
+                if rcc < 0 {
+                    let mut rrecs: Vec<str> = Vec::new();
+                    let mut rdiags: Vec<str> = Vec::new();
+                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, rrecs, rdiags);
+                    if rtag >= TC_REC_BASE {
+                        let rec: TcRec = rdefs.get(rtag - TC_REC_BASE);
+                        if rec.tpnames.len() > 0 {
+                            let targs: str = tc_bind_targs(binds, rn0.text);
+                            if targs.len() > 0 {
+                                let mut targcodes: Vec<i64> = Vec::new();
+                                let tpn: i64 = rec.tpnames.len();
+                                let mut tk: i64 = 0;
+                                while tk < tpn {
+                                    let seg: str = tc_seg_at(targs, tk);
+                                    let code: i64 = tc_atoi(seg);
+                                    let qt: i64 = targcodes.push(code);
+                                    tk = tk + 1;
+                                }
+                                let mname: str = tc_seg_at(n.text, 0);
+                                let rm: i64 = mn_register_method(nodes, kids, rec.name, mname, targcodes, rtag, targs, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, cdefs, seen, out, ekeys, depth);
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    // default: recurse all children.
+    let mut i: i64 = 0;
+    while i < n.child_count {
+        let cid: i64 = kids.get(n.child_start + i);
+        let r3: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Statement/block walk with flat bind threading (the cap/own precedent; the corpus avoids
+// shadowing). LET recurses its value FIRST (encounter order), then binds name -> tag; a
+// GENERIC-RECORD annotation (`let b: BoxG<i64> = …`) binds the record code WITH its concrete
+// targs (the tc PR-G2a mirror — the method-receiver branch reads them back).
+fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let bn: PNode = nodes.get(blockid);
+    let mut i: i64 = 0;
+    while i < bn.child_count {
+        let sid: i64 = kids.get(bn.child_start + i);
+        let sn: PNode = nodes.get(sid);
+        if sn.kind == P_K_LET {
+            let mut aid: i64 = 0 - 1;
+            let mut lvid: i64 = 0 - 1;
+            if sn.child_count == 2 {
+                aid = kids.get(sn.child_start);
+                lvid = kids.get(sn.child_start + 1);
+            } else {
+                if sn.child_count == 1 {
+                    lvid = kids.get(sn.child_start);
+                } else {
+                }
+            }
+            if lvid >= 0 {
+                let rv: i64 = mn_walk_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                // the bind tag: the annotation when concrete, else the typed value; a
+                // generic-record annotation carries its targs onto the bind.
+                let mut tag: i64 = TC_UNHANDLED;
+                let mut ltargs: str = "";
+                if aid >= 0 {
+                    tag = tc_annot_tag(nodes, aid, rdefs);
+                    if tag == TC_NO_EXPECT {
+                        tag = TC_UNHANDLED;
+                    } else {
+                    }
+                    let an: PNode = nodes.get(aid);
+                    if an.kind == P_K_TYPE {
+                        if an.flags == 0 {
+                            if an.child_count > 0 {
+                                let acode: i64 = tc_code_of_name(an.text, rdefs);
+                                if acode >= TC_REC_BASE {
+                                    tag = acode;
+                                    ltargs = tc_typearg_codes(nodes, kids, aid, rdefs);
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                    let mut trecs2: Vec<str> = Vec::new();
+                    let mut tdiags2: Vec<str> = Vec::new();
+                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs2, tdiags2);
+                }
+                let qb: i64 = binds.push(TcBind { name: sn.text, tag: tag, detail: "", targs: ltargs });
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_ASSIGN {
+            let mut ci: i64 = 0;
+            while ci < sn.child_count {
+                let cid: i64 = kids.get(sn.child_start + ci);
+                let ra: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                ci = ci + 1;
+            }
+        } else {
+        }
+        if sn.kind == P_K_EXPR_STMT {
+            if sn.child_count > 0 {
+                let eid: i64 = kids.get(sn.child_start);
+                let re: i64 = mn_walk_expr(nodes, kids, eid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_RETURN {
+            if sn.child_count > 0 {
+                let rid: i64 = kids.get(sn.child_start);
+                let rr: i64 = mn_walk_expr(nodes, kids, rid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_IF {
+            if sn.child_count > 0 {
+                let condid: i64 = kids.get(sn.child_start);
+                let rc: i64 = mn_walk_expr(nodes, kids, condid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            } else {
+            }
+            let mut bi: i64 = 1;
+            while bi < sn.child_count {
+                let brid: i64 = kids.get(sn.child_start + bi);
+                let brn: PNode = nodes.get(brid);
+                if brn.kind == P_K_BLOCK {
+                    let rb: i64 = mn_walk_block(nodes, kids, brid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                } else {
+                }
+                bi = bi + 1;
+            }
+        } else {
+        }
+        if sn.kind == P_K_WHILE {
+            if sn.child_count > 0 {
+                let wcid: i64 = kids.get(sn.child_start);
+                let rw: i64 = mn_walk_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            } else {
+            }
+            let mut wi: i64 = 1;
+            while wi < sn.child_count {
+                let wbid: i64 = kids.get(sn.child_start + wi);
+                let wbn: PNode = nodes.get(wbid);
+                if wbn.kind == P_K_BLOCK {
+                    let rwb: i64 = mn_walk_block(nodes, kids, wbid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                } else {
+                }
+                wi = wi + 1;
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// The shared run: builds the tc scaffolding + the generic-fn/method tables, walks every
+// monomorphic body (top-level fns in decl order; concrete-impl methods in item order, the
+// tc_emit mirror), filling monos / insts / ekeys.
+fn mn_run(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, monos: Vec<str> @Mut, insts: Vec<str> @Mut, ekeys: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let mut rdefs: Vec<TcRec> = Vec::new();
+    let br: i64 = tc_build_recs(nodes, kids, root, rdefs);
+    let mut cdefs: Vec<TcCap> = Vec::new();
+    let bc: i64 = tc_build_caps(nodes, kids, root, cdefs);
+    let mut sigs: Vec<TcSig> = Vec::new();
+    let bs: i64 = tc_build_sigs(nodes, kids, root, sigs, rdefs, cdefs);
+    let mut traits: Vec<TcTrait> = Vec::new();
+    let btt: i64 = tc_build_traits(nodes, kids, root, traits, rdefs);
+
+    // the generic-fn table (bare name -> fnid) + the generic-impl-method table
+    // ("Type::method" -> method fnid).
+    let mut gfn_names: Vec<str> = Vec::new();
+    let mut gfn_ids: Vec<i64> = Vec::new();
+    let mut gm_keys: Vec<str> = Vec::new();
+    let mut gm_ids: Vec<i64> = Vec::new();
+    let rn: PNode = nodes.get(root);
+    let mut gi: i64 = 0;
+    while gi < rn.child_count {
+        let gcid: i64 = kids.get(rn.child_start + gi);
+        let gcn: PNode = nodes.get(gcid);
+        if gcn.kind == P_K_FN {
+            if tc_fn_has_type_params(nodes, kids, gcid) {
+                let gbare: str = tc_seg_at(gcn.text, 0);
+                let q1: i64 = gfn_names.push(gbare);
+                let q2: i64 = gfn_ids.push(gcid);
+            } else {
+            }
+        } else {
+        }
+        if gcn.kind == P_K_IMPL {
+            if tc_fn_has_type_params(nodes, kids, gcid) {
+                let yname: str = tc_seg_at(gcn.text, 1);
+                let mut mi: i64 = 0;
+                while mi < gcn.child_count {
+                    let mcid: i64 = kids.get(gcn.child_start + mi);
+                    let mcn: PNode = nodes.get(mcid);
+                    if mcn.kind == P_K_FN {
+                        let mbare: str = tc_seg_at(mcn.text, 0);
+                        let sep: str = "::";
+                        let kpre: str = yname.concat(sep);
+                        let mkey: str = kpre.concat(mbare);
+                        let q3: i64 = gm_keys.push(mkey);
+                        let q4: i64 = gm_ids.push(mcid);
+                    } else {
+                    }
+                    mi = mi + 1;
+                }
+            } else {
+            }
+        } else {
+        }
+        gi = gi + 1;
+    }
+
+    let mut seen: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < rn.child_count {
+        let cid: i64 = kids.get(rn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_FN {
+            if tc_fn_has_type_params(nodes, kids, cid) {
+            } else {
+                // the bare name (segment 0 — the effect-suffix strip, the BOOT-1 lesson).
+                let bare: str = tc_seg_at(cn.text, 0);
+                let withsemi: str = bare.concat(";");
+                let qm: i64 = monos.push(withsemi);
+                let bid: i64 = tc_fn_body(nodes, kids, cid);
+                if bid >= 0 {
+                    let mut binds: Vec<TcBind> = Vec::new();
+                    let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, cdefs);
+                    let wb: i64 = mn_walk_block(nodes, kids, bid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
+                } else {
+                }
+            }
+        } else {
+        }
+        if cn.kind == P_K_IMPL {
+            // a CONCRETE impl's non-generic methods are monos ({Type}__{method}, the SH-AIR-3
+            // mangle) and body-walk for instance discovery; a generic impl emits nothing at
+            // decl (its instances come from call sites).
+            if tc_fn_has_type_params(nodes, kids, cid) {
+            } else {
+                let yname: str = tc_seg_at(cn.text, 1);
+                let mut ci: i64 = 0;
+                while ci < cn.child_count {
+                    let mcid: i64 = kids.get(cn.child_start + ci);
+                    let mcn: PNode = nodes.get(mcid);
+                    if mcn.kind == P_K_FN {
+                        if tc_fn_has_type_params(nodes, kids, mcid) {
+                        } else {
+                            let mbare: str = tc_seg_at(mcn.text, 0);
+                            let mpre: str = yname.concat("__");
+                            let mono: str = mpre.concat(mbare);
+                            let msemi: str = mono.concat(";");
+                            let qmm: i64 = monos.push(msemi);
+                            let mbid: i64 = tc_fn_body(nodes, kids, mcid);
+                            if mbid >= 0 {
+                                let mut mbinds: Vec<TcBind> = Vec::new();
+                                let msp: i64 = tc_seed_params(nodes, kids, mcid, mbinds, rdefs, cdefs);
+                                let mwb: i64 = mn_walk_block(nodes, kids, mbid, mbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
+                            } else {
+                            }
+                        }
+                    } else {
+                    }
+                    ci = ci + 1;
+                }
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// The census: monomorphic fn bare names (decl order), then instance mangles (walk order),
+// `;`-joined. Single-module (the Stage-1 target shape).
+pub fn mn_census(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut monos: Vec<str> = Vec::new();
+    let mut insts: Vec<str> = Vec::new();
+    let mut ekeys: Vec<str> = Vec::new();
+    let mr: i64 = mn_run(nodes, kids, root, monos, insts, ekeys);
+    let empty: str = "";
+    let monoj: str = empty.join(monos);
+    let instj: str = empty.join(insts);
+    let full: str = monoj.concat(instj);
+    return full;
+}
+
+// The layout lane: `records|enums` — records = the declared record names (never concrete
+// keys, the pinned asymmetry); enums = the declared enum names + the payload-driven concrete
+// keys collected by the walk (`OptG__i64`).
+pub fn mn_layouts(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut monos: Vec<str> = Vec::new();
+    let mut insts: Vec<str> = Vec::new();
+    let mut ekeys: Vec<str> = Vec::new();
+    let mr: i64 = mn_run(nodes, kids, root, monos, insts, ekeys);
+    let mut rdefs2: Vec<TcRec> = Vec::new();
+    let br2: i64 = tc_build_recs(nodes, kids, root, rdefs2);
+    let mut recparts: Vec<str> = Vec::new();
+    let mut enumparts: Vec<str> = Vec::new();
+    let rc: i64 = rdefs2.len();
+    let mut i: i64 = 0;
+    while i < rc {
+        let r: TcRec = rdefs2.get(i);
+        let withsemi: str = r.name.concat(";");
+        if r.is_enum {
+            let q1: i64 = enumparts.push(withsemi);
+        } else {
+            let q2: i64 = recparts.push(withsemi);
+        }
+        i = i + 1;
+    }
+    let ec: i64 = ekeys.len();
+    let mut k: i64 = 0;
+    while k < ec {
+        let key: str = ekeys.get(k);
+        let ksemi: str = key.concat(";");
+        let q3: i64 = enumparts.push(ksemi);
+        k = k + 1;
+    }
+    let empty: str = "";
+    let recj: str = empty.join(recparts);
+    let enumj: str = empty.join(enumparts);
+    let withbar: str = recj.concat("|");
+    let full: str = withbar.concat(enumj);
+    return full;
+}
+
+// ── SH-MONO MONO-3: mn_expand — arena-level monomorphization ──
+//
+// Clone each generic fn's parse subtree into the arena with type-params substituted, rewrite
+// each generic call site to name its instance, and append the instances AFTER the module's
+// monomorphic fns — so the EXISTING W-lane (ai_encode_wasm) compiles a generic program to
+// running WASM byte-identically (bodies; the bare-instance-export whole-module tail = MONO-3b).
+// v3 surface: non-transitive bare-T free generic fns; scalar/plain-record type-args.
+
+// The index of `name` in a fn's type-param name list, or -1.
+fn mn_tp_index(tpnames: Vec<str>, name: str) -> i64 {
+    let n: i64 = tpnames.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let cand: str = tpnames.get(i);
+        if cand.bytes_eq(name) {
+            return i;
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The P_K_TYPE_PARAM child names of a fn node (segment 0 of each), decl order.
+fn mn_fn_tpnames(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE_PARAM {
+            let q: i64 = out.push(tc_seg_at(cn.text, 0));
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Deep-clone the subtree at srcid into the arena, POST-ORDER with FRESH kids ranges (X-M10) and
+// SPANS PRESERVED VERBATIM (X-M1). A K_TYPE leaf whose text is a type-param name is substituted
+// to the concrete type text (bare-T; the concrete K_TYPE is a leaf). Returns the new node id.
+fn mn_clone_subst(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, srcid: i64, tpnames: Vec<str>, tpmangles: Vec<str>) -> i64 ! { Alloc } {
+    let src: PNode = nodes.get(srcid);
+    if src.kind == P_K_TYPE {
+        let idx: i64 = mn_tp_index(tpnames, src.text);
+        if idx >= 0 {
+            let conc: str = tpmangles.get(idx);
+            let nidt: i64 = nodes.allocate(PNode { kind: P_K_TYPE, start: src.start, end: src.end, value: src.value, flags: src.flags, child_start: 0, child_count: 0, text: conc });
+            return nidt;
+        } else {
+        }
+    } else {
+    }
+    let mut newkids: Vec<i64> = Vec::new();
+    let cc: i64 = src.child_count;
+    let cs: i64 = src.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let cid: i64 = kids.get(cs + i);
+        let ncid: i64 = mn_clone_subst(nodes, kids, cid, tpnames, tpmangles);
+        let q: i64 = newkids.push(ncid);
+        i = i + 1;
+    }
+    let newcs: i64 = kids.len();
+    let mut j: i64 = 0;
+    while j < newkids.len() {
+        let nc: i64 = newkids.get(j);
+        let q2: i64 = kids.push(nc);
+        j = j + 1;
+    }
+    let nid: i64 = nodes.allocate(PNode { kind: src.kind, start: src.start, end: src.end, value: src.value, flags: src.flags, child_start: newcs, child_count: cc, text: src.text });
+    return nid;
+}
+
+// Clone a generic fn into a concrete instance: DROP the P_K_TYPE_PARAM children (so
+// ai_is_generic_fn sees a concrete fn), subst-clone the remaining children, set the fn text to
+// the instance mangle. Returns the new fn node id.
+fn mn_clone_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, gfnid: i64, instmangle: str, tpnames: Vec<str>, tpmangles: Vec<str>) -> i64 ! { Alloc } {
+    let gfn: PNode = nodes.get(gfnid);
+    let mut newkids: Vec<i64> = Vec::new();
+    let cc: i64 = gfn.child_count;
+    let cs: i64 = gfn.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let cid: i64 = kids.get(cs + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE_PARAM {
+        } else {
+            let ncid: i64 = mn_clone_subst(nodes, kids, cid, tpnames, tpmangles);
+            let q: i64 = newkids.push(ncid);
+        }
+        i = i + 1;
+    }
+    let newcs: i64 = kids.len();
+    let nkc: i64 = newkids.len();
+    let mut j: i64 = 0;
+    while j < nkc {
+        let nc: i64 = newkids.get(j);
+        let q2: i64 = kids.push(nc);
+        j = j + 1;
+    }
+    // MONO-3b: flag the instance fn (bit 1048576 = 2^20, above pub/taint; a source fn never has
+    // it, so `+` safely sets it) so the W-lane (air.sigil cv_fn_line) exports it under its BARE
+    // mangled name — matching the oracle's monomorph-instance export_name (whole-module byte
+    // identity). Inert wherever ai_encode_wasm isn't composed (the census tool ignores it).
+    let iflags: i64 = gfn.flags + 1048576;
+    let nid: i64 = nodes.allocate(PNode { kind: P_K_FN, start: gfn.start, end: gfn.end, value: gfn.value, flags: iflags, child_start: newcs, child_count: nkc, text: instmangle });
+    return nid;
+}
+
+// MONO-7: clone a generic impl METHOD into a top-level concrete fn. Like mn_clone_instance but
+// (a) the method fn has NO own P_K_TYPE_PARAM children (they live on the enclosing impl — the
+// subst tpnames are the IMPL's), (b) flagged bit 2^21 = 2097152 (NOT 2^20) so cv_fn_line exports
+// it MODULE-QUALIFIED `{module}::{mangle}` (`tool::Box__get__i64`), matching the oracle's method-
+// instance export_name. `self: Box<T>` -> `self: Box<i64>` (child-bearing; MONO-6 then rewrites
+// it to the 0-child `Box__i64` leaf like any annotation). Byte-safe: only mn_expand sets 2^21.
+fn mn_clone_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfnid: i64, instmangle: str, tpnames: Vec<str>, tpmangles: Vec<str>) -> i64 ! { Alloc } {
+    let mfn: PNode = nodes.get(mfnid);
+    let mut newkids: Vec<i64> = Vec::new();
+    let cc: i64 = mfn.child_count;
+    let cs: i64 = mfn.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let cid: i64 = kids.get(cs + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE_PARAM {
+        } else {
+            let ncid: i64 = mn_clone_subst(nodes, kids, cid, tpnames, tpmangles);
+            let q: i64 = newkids.push(ncid);
+        }
+        i = i + 1;
+    }
+    let newcs: i64 = kids.len();
+    let nkc: i64 = newkids.len();
+    let mut j: i64 = 0;
+    while j < nkc {
+        let nc: i64 = newkids.get(j);
+        let q2: i64 = kids.push(nc);
+        j = j + 1;
+    }
+    let iflags: i64 = mfn.flags + 2097152;
+    let nid: i64 = nodes.allocate(PNode { kind: P_K_FN, start: mfn.start, end: mfn.end, value: mfn.value, flags: iflags, child_start: newcs, child_count: nkc, text: instmangle });
+    return nid;
+}
+
+// Resolve a generic call: first-binding-wins (X-M7). Fills bindtags (one concrete tag per
+// type-param). Returns the instance mangle `name__m1$m2`, or "" if unresolvable.
+fn mn_resolve_call(name: str, sg: TcSig, argtypes: Vec<i64>, rdefs: Vec<TcRec>, bindtags: Vec<i64> @Mut) -> str ! { Alloc } {
+    let tpc: i64 = sg.tpbounds.len();
+    let plen: i64 = sg.parmtp.len();
+    let argc: i64 = argtypes.len();
+    let mut mangles: Vec<str> = Vec::new();
+    let mut ok: bool = true;
+    let mut tj: i64 = 0;
+    while tj < tpc {
+        let mut binding: i64 = 0 - 1;
+        let mut pj: i64 = 0;
+        while pj < plen {
+            let mt: i64 = sg.parmtp.get(pj);
+            if mt == tj {
+                if pj < argc {
+                    if binding < 0 {
+                        binding = argtypes.get(pj);
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            pj = pj + 1;
+        }
+        if binding < 0 {
+            ok = false;
+        } else {
+            let m: str = mn_mangle_tag(binding, rdefs);
+            if m.len() == 0 {
+                ok = false;
+            } else {
+                let qm: i64 = mangles.push(m);
+                let qb: i64 = bindtags.push(binding);
+            }
+        }
+        tj = tj + 1;
+    }
+    if ok {
+        return mn_join_mangles(name, mangles);
+    } else {
+    }
+    return "";
+}
+
+// Apply a deferred call-site patch list: rewrite each recorded call node's text to its instance
+// mangle (spans/children kept). Shared by the top-level mono walk AND each clone's walk (MONO-5).
+fn mn_apply_patches(nodes: Arena<PNode> @Mut, patch_ids: Vec<i64>, patch_names: Vec<str>) -> i64 ! { Alloc } {
+    let np: i64 = patch_ids.len();
+    let mut pi: i64 = 0;
+    while pi < np {
+        let pcid: i64 = patch_ids.get(pi);
+        let pname: str = patch_names.get(pi);
+        let pcn: PNode = nodes.get(pcid);
+        let pset: i64 = nodes.set(pcid, PNode { kind: pcn.kind, start: pcn.start, end: pcn.end, value: pcn.value, flags: pcn.flags, child_start: pcn.child_start, child_count: pcn.child_count, text: pname });
+        pi = pi + 1;
+    }
+    return 0;
+}
+
+// SH-MONO MONO-5 — the CLONE-FIRST recursive instance expansion (X-E1: ONE engine produces
+// order + clones + patches). On a freshly-resolved (unseen) instance: the caller has ALREADY
+// seen-marked it (pre-order — breaks self-recursion), so clone the generic source NOW, walk the
+// CLONE's body (its params are concrete post-substitution, so plain tc_seed_params seeds a
+// concrete env; node ids are clone-local, so this clone's patch list applies directly — X-E2),
+// recursing into any generic calls it contains (inner instances push themselves onto inst_names
+// FIRST — the oracle's post-order falls out of the recursion), apply THIS clone's deferred
+// patches after its walk completes (the c_nested_call lesson, per-clone), and only THEN push the
+// instance (post-order append). depth mirrors the census's MN_DEPTH_MAX cap: past it the clone
+// is skipped fail-LOUD (the already-recorded call patch names a missing fn -> W-lane poison),
+// matching X-E7 (the oracle rejects deeper programs anyway).
+fn mn_expand_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, gfnid: i64, inst: str, bindtags: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
+    if depth >= MN_DEPTH_MAX {
+        return 0;
+    } else {
+    }
+    let mut tpnames: Vec<str> = Vec::new();
+    let tpn: i64 = mn_fn_tpnames(nodes, kids, gfnid, tpnames);
+    let mut tpmangles: Vec<str> = Vec::new();
+    let bcnt: i64 = bindtags.len();
+    let mut bi: i64 = 0;
+    while bi < bcnt {
+        let bt: i64 = bindtags.get(bi);
+        let m: str = mn_mangle_tag(bt, rdefs);
+        let qm: i64 = tpmangles.push(m);
+        bi = bi + 1;
+    }
+    let newfn: i64 = mn_clone_instance(nodes, kids, gfnid, inst, tpnames, tpmangles);
+    let bid: i64 = tc_fn_body(nodes, kids, newfn);
+    if bid >= 0 {
+        let mut cbinds: Vec<TcBind> = Vec::new();
+        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, cdefs);
+        let mut cpatch_ids: Vec<i64> = Vec::new();
+        let mut cpatch_names: Vec<str> = Vec::new();
+        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
+        let ap: i64 = mn_apply_patches(nodes, cpatch_ids, cpatch_names);
+    } else {
+    }
+    let qn: i64 = inst_names.push(inst);
+    let qf: i64 = inst_fnids.push(newfn);
+    return 0;
+}
+
+// B-DISPATCH: the TAG of a bind (last-wins, mirroring tc_bind_targs), or -1.
+fn mn_bind_tag(binds: Vec<TcBind>, name: str) -> i64 {
+    let n: i64 = binds.len();
+    let mut i: i64 = n - 1;
+    while i >= 0 {
+        let b: TcBind = binds.get(i);
+        if b.name.bytes_eq(name) {
+            return b.tag;
+        } else {
+        }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+// B-DISPATCH: the RECEIVER type-args for a ONE-field-hop method receiver (`self::store` on
+// `self: Arena<i64>` -> the field `store: Vec<T>`'s targs with T substituted from the BASE's
+// targs -> "i64code"). Returns the `;`-joined code string (the tc_bind_targs format) or ""
+// (unresolvable -> the caller leaves the call generic -> LOUD downstream). Bounded to ONE hop
+// (a nested `a::b::c` base returns "").
+fn mn_field_targs(nodes: Arena<PNode>, kids: Vec<i64>, binds: Vec<TcBind>, rdefs: Vec<TcRec>, grec_names: Vec<str>, grec_ids: Vec<i64>, text: str) -> str ! { Alloc } {
+    let rcc: i64 = tc_last_colons(text);
+    if rcc < 0 {
+        return "";
+    } else {
+    }
+    let tlen: i64 = text.len();
+    let fbase: str = text.substr(0, rcc);
+    let fseg: str = text.substr(rcc + 2, tlen);
+    let bcc: i64 = tc_last_colons(fbase);
+    if bcc >= 0 {
+        return "";
+    } else {
+    }
+    let btag: i64 = mn_bind_tag(binds, fbase);
+    if btag < TC_REC_BASE {
+        return "";
+    } else {
+    }
+    let brec: TcRec = rdefs.get(btag - TC_REC_BASE);
+    let btargs: str = tc_bind_targs(binds, fbase);
+    // W-FIELDVEC (AG-G19): a GENERIC base needs its concrete targs resolved (to map the
+    // field type's type-param leaves through); a CONCRETE base (no tpnames) carries none by
+    // design — its field-type leaves are already concrete, and the substitution loop below
+    // resolves each via tc_scalar_tag/tc_code_of_name without base targs.
+    if brec.tpnames.len() > 0 {
+        if btargs.len() == 0 {
+            return "";
+        } else {
+        }
+    } else {
+    }
+    let grid: i64 = mn_tbl_find(grec_names, grec_ids, brec.name);
+    if grid < 0 {
+        return "";
+    } else {
+    }
+    // find the field's TYPE node in the GENERIC def (`store: Vec<T>`).
+    let gd: PNode = nodes.get(grid);
+    let mut ftid: i64 = 0 - 1;
+    let mut gi: i64 = 0;
+    while gi < gd.child_count {
+        let gcid: i64 = kids.get(gd.child_start + gi);
+        let gcn: PNode = nodes.get(gcid);
+        if gcn.kind == P_K_FIELD {
+            if gcn.text.bytes_eq(fseg) {
+                if gcn.child_count >= 1 {
+                    ftid = kids.get(gcn.child_start);
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        gi = gi + 1;
+    }
+    if ftid < 0 {
+        return "";
+    } else {
+    }
+    // map each targ leaf: a base tpname -> the base's targ code at that index; else concrete.
+    let ftn: PNode = nodes.get(ftid);
+    let mut parts: Vec<str> = Vec::new();
+    let mut ok: bool = true;
+    let mut ti: i64 = 0;
+    while ti < ftn.child_count {
+        let tcid: i64 = kids.get(ftn.child_start + ti);
+        let tcn: PNode = nodes.get(tcid);
+        if tcn.child_count == 0 {
+            let tpidx: i64 = mn_tp_index(brec.tpnames, tcn.text);
+            if tpidx >= 0 {
+                let seg: str = tc_seg_at(btargs, tpidx);
+                let qp: i64 = parts.push(seg);
+            } else {
+                let mut code: i64 = tc_scalar_tag(tcn.text);
+                if code == TC_UNHANDLED {
+                    code = tc_code_of_name(tcn.text, rdefs);
+                } else {
+                }
+                if code >= 0 {
+                    let cs2: str = code.itoa();
+                    let qp2: i64 = parts.push(cs2);
+                } else {
+                    ok = false;
+                }
+            }
+        } else {
+            ok = false;
+        }
+        ti = ti + 1;
+    }
+    if ok {
+        if parts.len() > 0 {
+            let semi: str = ";";
+            return semi.join(parts);
+        } else {
+        }
+    } else {
+    }
+    return "";
+}
+
+// B-ASSOC: resolve + register an ASSOCIATED-fn call (`Vec::new()` — a P_K_CALL whose text is
+// `{Type}::{method}` with NO receiver). The targ MANGLES come from the CONTEXT (a let annotation
+// or a construct field type — the caller derives them); this fn does the gm lookup, the AG-E4
+// own-tp guard, the deferred call-site patch (the c_nested_call lesson), and the clone via
+// mn_expand_method_instance (post-order — inner instances first). No 2^21 flag: the patched
+// text is a plain top-level fn name, emitted by the ordinary free-fn call path.
+fn mn_assoc_resolve(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, callid: i64, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    // `Type::assoc(args)` parses as P_K_METHOD { text: meth, child0: P_K_PATH(Type), args... }
+    // (the parser's leading-segments-receiver quirk). Any other shape -> not assoc, no-op.
+    let cn: PNode = nodes.get(callid);
+    if cn.kind == P_K_METHOD {
+    } else {
+        return 0;
+    }
+    if cn.child_count >= 1 {
+    } else {
+        return 0;
+    }
+    let rid: i64 = kids.get(cn.child_start);
+    let rn: PNode = nodes.get(rid);
+    if rn.kind == P_K_PATH {
+    } else {
+        return 0;
+    }
+    let base: str = rn.text;
+    let meth: str = cn.text;
+    let ksep: str = "::";
+    let kpre: str = base.concat(ksep);
+    let key: str = kpre.concat(meth);
+    let mfnid: i64 = mn_tbl_find(gm_keys, gm_ids, key);
+    let implid: i64 = mn_tbl_find(gm_keys, gm_impl_ids, key);
+    let mut mok: bool = false;
+    if mfnid >= 0 {
+        // AG-E4: a method-own type param would half-substitute — stays generic (LOUD).
+        if tc_fn_has_type_params(nodes, kids, mfnid) {
+        } else {
+            mok = true;
+        }
+    } else {
+    }
+    if mok {
+        let mpre: str = base.concat("__");
+        let withm: str = mpre.concat(meth);
+        let inst: str = mn_join_mangles(withm, tpmangles);
+        // Rewrite IN PLACE to a plain top-level call: kind P_K_CALL, text = the instance
+        // mangle, the receiver TYPE path dropped (an associated fn has no self arg — the
+        // oracle lowers it as an ordinary Call). Safe immediately: the args were already
+        // expand-walked and nothing downstream re-reads this node's text for resolution.
+        let ilen: i64 = inst.len();
+        let nset: i64 = nodes.set(callid, PNode { kind: P_K_CALL, start: cn.start, end: cn.end, value: ilen, flags: cn.flags, child_start: cn.child_start + 1, child_count: cn.child_count - 1, text: inst });
+        if mn_seen_has(seen, inst) {
+        } else {
+            let qs: i64 = seen.push(inst);
+            // the method-instance walk installs its OWN tpnames/tpmangles as ctx — the
+            // incoming pair is unused, so empties suffice here.
+            let cu1: Vec<str> = Vec::new();
+            let cu2: Vec<str> = Vec::new();
+            let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, cu1, cu2, seen, inst_names, inst_fnids, depth);
+        }
+    } else {
+    }
+    return 0;
+}
+
+// MONO-7: the CLONE-FIRST recursive expansion of a generic impl METHOD instance (the mn_expand_
+// instance analogue). Caller has seen-marked; clone the method fn with the ENCLOSING IMPL's
+// tp-names substituted (`impl Box<U>` -> subst U), walk the CLONE's body transitively, then push
+// post-order. `tpmangles` = the receiver's concrete targ mangles.
+fn mn_expand_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfnid: i64, implid: i64, inst: str, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
+    if depth >= MN_DEPTH_MAX {
+        return 0;
+    } else {
+    }
+    let mut tpnames: Vec<str> = Vec::new();
+    let tpn: i64 = mn_fn_tpnames(nodes, kids, implid, tpnames);
+    let newfn: i64 = mn_clone_method_instance(nodes, kids, mfnid, inst, tpnames, tpmangles);
+    let bid: i64 = tc_fn_body(nodes, kids, newfn);
+    if bid >= 0 {
+        let mut cbinds: Vec<TcBind> = Vec::new();
+        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, cdefs);
+        let mut cpatch_ids: Vec<i64> = Vec::new();
+        let mut cpatch_names: Vec<str> = Vec::new();
+        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
+        let ap: i64 = mn_apply_patches(nodes, cpatch_ids, cpatch_names);
+    } else {
+    }
+    let qn: i64 = inst_names.push(inst);
+    let qf: i64 = inst_fnids.push(newfn);
+    return 0;
+}
+
+// Expand-walk an expression: at a generic P_K_CALL, resolve + PATCH the call node's text to the
+// instance mangle; an UNSEEN instance clones + expands recursively (MONO-5 — transitive,
+// post-order). Args first. MONO-7: a generic P_K_METHOD `b.get()` resolves the receiver record +
+// targs, clones the method instance, sets the pre-resolved flag + defers the text patch.
+fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(eid);
+    if n.kind == P_K_CALL {
+        let cc: i64 = n.child_count;
+        let cs: i64 = n.child_start;
+        let mut ai: i64 = 0;
+        while ai < cc {
+            let aid: i64 = kids.get(cs + ai);
+            let r1: i64 = mn_expand_expr(nodes, kids, aid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            ai = ai + 1;
+        }
+        let dc: i64 = tc_last_colons(n.text);
+        if dc >= 0 {
+            return 0;
+        } else {
+        }
+        let sidx: i64 = tc_sig_find(sigs, n.text);
+        if sidx >= 0 {
+            let sg: TcSig = sigs.get(sidx);
+            let gen_isg: bool = sg.tpbounds.len() > 0;
+            if gen_isg {
+                let mut argtypes: Vec<i64> = Vec::new();
+                let mut trecs: Vec<str> = Vec::new();
+                let mut tdiags: Vec<str> = Vec::new();
+                let mut ti: i64 = 0;
+                while ti < cc {
+                    let tid: i64 = kids.get(cs + ti);
+                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs, tdiags);
+                    let qa: i64 = argtypes.push(at);
+                    ti = ti + 1;
+                }
+                let mut bindtags: Vec<i64> = Vec::new();
+                let inst: str = mn_resolve_call(n.text, sg, argtypes, rdefs, bindtags);
+                if inst.len() > 0 {
+                    // Record the call site to patch AFTER the enclosing walk. Patching INLINE
+                    // would make an ENCLOSING call (`id(id(41))`) type its arg as the
+                    // not-yet-known instance sig (TC_UNHANDLED) and leave the outer call
+                    // unresolved -> poison.
+                    let qpi: i64 = patch_ids.push(eid);
+                    let qpn: i64 = patch_names.push(inst);
+                    if mn_seen_has(seen, inst) {
+                    } else {
+                        let qs: i64 = seen.push(inst);
+                        let gfnid: i64 = mn_tbl_find(gfn_names, gfn_ids, n.text);
+                        if gfnid >= 0 {
+                            let re: i64 = mn_expand_instance(nodes, kids, gfnid, inst, bindtags, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
+                        } else {
+                        }
+                    }
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_METHOD {
+        // receiver + args first (encounter order — the oracle's), then resolve.
+        let mut mi: i64 = 0;
+        while mi < n.child_count {
+            let mid: i64 = kids.get(n.child_start + mi);
+            let rm: i64 = mn_expand_expr(nodes, kids, mid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            mi = mi + 1;
+        }
+        if n.child_count > 0 {
+            let rid: i64 = kids.get(n.child_start);
+            let rn0: PNode = nodes.get(rid);
+            if rn0.kind == P_K_PATH {
+                let rcc: i64 = tc_last_colons(rn0.text);
+                // a bare-local receiver (`b.get()`) resolves its targs from the bind; a ONE-hop
+                // FIELD receiver (`self.store.push(..)` — B-DISPATCH) derives them through the
+                // GENERIC def's field type (`store: Vec<T>` + the base's targs). Either way,
+                // tc_emit_expr types the receiver (bare -> the bind tag; field -> the field's
+                // base record code via ftags).
+                if rcc > 0 - 2 {
+                    let mut rrecs: Vec<str> = Vec::new();
+                    let mut rdiags: Vec<str> = Vec::new();
+                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, rrecs, rdiags);
+                    if rtag >= TC_REC_BASE {
+                        let rec: TcRec = rdefs.get(rtag - TC_REC_BASE);
+                        if rec.tpnames.len() > 0 {
+                            let mut targs: str = "";
+                            if rcc < 0 {
+                                targs = tc_bind_targs(binds, rn0.text);
+                            } else {
+                                targs = mn_field_targs(nodes, kids, binds, rdefs, grec_names, grec_ids, rn0.text);
+                            }
+                            if targs.len() > 0 {
+                                let mut tpmangles: Vec<str> = Vec::new();
+                                let tpn: i64 = rec.tpnames.len();
+                                let mut tk: i64 = 0;
+                                while tk < tpn {
+                                    let seg: str = tc_seg_at(targs, tk);
+                                    let code: i64 = tc_atoi(seg);
+                                    let mm: str = mn_mangle_tag(code, rdefs);
+                                    let qtm: i64 = tpmangles.push(mm);
+                                    tk = tk + 1;
+                                }
+                                let mname: str = tc_seg_at(n.text, 0);
+                                let sep: str = "::";
+                                let kpre: str = rec.name.concat(sep);
+                                let mkey: str = kpre.concat(mname);
+                                let mfnid: i64 = mn_tbl_find(gm_keys, gm_ids, mkey);
+                                let implid: i64 = mn_tbl_find(gm_keys, gm_impl_ids, mkey);
+                                // AG-E4 FENCE: a method with its OWN type-params (`fn map<U>`) can't
+                                // be monomorphized from the receiver's targs alone (U comes from the
+                                // arg) — cloning would half-substitute (T->i64, U stays U) and emit
+                                // SILENT wrong bytes. Only resolve a method KNOWN + own-tp-free; else
+                                // leave the call generic -> ST-2's `Box__i64__method` misses -> LOUD.
+                                let mut mok: bool = false;
+                                if mfnid >= 0 {
+                                    if tc_fn_has_type_params(nodes, kids, mfnid) {
+                                    } else {
+                                        mok = true;
+                                    }
+                                } else {
+                                }
+                                if mok {
+                                    let mpre: str = rec.name.concat("__");
+                                    let withm: str = mpre.concat(mname);
+                                    let inst: str = mn_join_mangles(withm, tpmangles);
+                                    // set the pre-resolved flag (2^21) INLINE (a flag doesn't affect
+                                    // typing) + DEFER the text patch (an enclosing call must still
+                                    // type this method's ret via the `Type::method` sig, not the
+                                    // patched text — the c_nested_call lesson, method form).
+                                    let mfl: PNode = nodes.get(eid);
+                                    let msf: i64 = nodes.set(eid, PNode { kind: mfl.kind, start: mfl.start, end: mfl.end, value: mfl.value, flags: mfl.flags + 2097152, child_start: mfl.child_start, child_count: mfl.child_count, text: mfl.text });
+                                    let qpi: i64 = patch_ids.push(eid);
+                                    let qpn: i64 = patch_names.push(inst);
+                                    if mn_seen_has(seen, inst) {
+                                    } else {
+                                        let qs: i64 = seen.push(inst);
+                                        let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
+                                    }
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    // B-ASSOC: a record CONSTRUCT whose field value is an ASSOCIATED call
+    // (`Arena { store: Vec::new() }` — the Arena::new body shape). The field's targs derive
+    // from the construct's GENERIC def's field type node (`store: Vec<T>`), each leaf mapped
+    // through the ENCLOSING CLONE's substitution (ctx_tpnames/ctx_tpmangles — T -> i64) or
+    // resolved concrete. Unresolvable -> the call stays generic -> LOUD downstream. The
+    // construct node text = `type;field1;field2;…`, children = field values in order.
+    if n.kind == P_K_RECORD_CONSTRUCT {
+        let cbase: str = tc_seg_at(n.text, 0);
+        // W-FIELDVEC: grec now holds ALL record defs; the inline-assoc-field resolve below
+        // applies only to GENERIC constructs — the pre-W-FIELDVEC table-membership gate,
+        // made explicit (a concrete construct's fields are plain locals in the source).
+        let cgrid0: i64 = mn_tbl_find(grec_names, grec_ids, cbase);
+        let mut cgrid: i64 = 0 - 1;
+        if cgrid0 >= 0 {
+            if mn_recdef_is_generic(nodes, kids, cgrid0) {
+                cgrid = cgrid0;
+            } else {
+            }
+        } else {
+        }
+        let ccf: i64 = n.child_count;
+        let ccs: i64 = n.child_start;
+        let mut fi: i64 = 0;
+        while fi < ccf {
+            let fvid: i64 = kids.get(ccs + fi);
+            // walk the field value FIRST (args resolve; the assoc shape itself falls through
+            // the generic METHOD arm — no bind names a TYPE), then attempt the assoc resolve.
+            let rfv: i64 = mn_expand_expr(nodes, kids, fvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            let fvn: PNode = nodes.get(fvid);
+            if fvn.kind == P_K_METHOD {
+                // assoc shape: receiver child0 is a TYPE path (`Vec::new()` -> P_K_METHOD
+                // "new" over P_K_PATH "Vec").
+                let mut fvb: str = "";
+                if fvn.child_count >= 1 {
+                    let frid: i64 = kids.get(fvn.child_start);
+                    let frn: PNode = nodes.get(frid);
+                    if frn.kind == P_K_PATH {
+                        fvb = frn.text;
+                    } else {
+                    }
+                } else {
+                }
+                if fvb.len() > 0 {
+                    if cgrid >= 0 {
+                        // the field's TYPE node in the generic def.
+                        let fname2: str = tc_seg_at(n.text, fi + 1);
+                        let gdn: PNode = nodes.get(cgrid);
+                        let mut ftid2: i64 = 0 - 1;
+                        let mut gj: i64 = 0;
+                        while gj < gdn.child_count {
+                            let gjc: i64 = kids.get(gdn.child_start + gj);
+                            let gjn: PNode = nodes.get(gjc);
+                            if gjn.kind == P_K_FIELD {
+                                if gjn.text.bytes_eq(fname2) {
+                                    if gjn.child_count >= 1 {
+                                        ftid2 = kids.get(gjn.child_start);
+                                    } else {
+                                    }
+                                } else {
+                                }
+                            } else {
+                            }
+                            gj = gj + 1;
+                        }
+                        if ftid2 >= 0 {
+                            let ftn2: PNode = nodes.get(ftid2);
+                            // the receiver TYPE path must name the field type's base record.
+                            if fvb.bytes_eq(ftn2.text) {
+                                let mut fmangles: Vec<str> = Vec::new();
+                                let mut fok: bool = true;
+                                let mut tk2: i64 = 0;
+                                while tk2 < ftn2.child_count {
+                                    let tk2id: i64 = kids.get(ftn2.child_start + tk2);
+                                    let tk2n: PNode = nodes.get(tk2id);
+                                    if tk2n.child_count == 0 {
+                                        let cxi: i64 = mn_tp_index(ctx_tpnames, tk2n.text);
+                                        if cxi >= 0 {
+                                            let cxm: str = ctx_tpmangles.get(cxi);
+                                            let qcx: i64 = fmangles.push(cxm);
+                                        } else {
+                                            let mut fcode: i64 = tc_scalar_tag(tk2n.text);
+                                            if fcode == TC_UNHANDLED {
+                                                fcode = tc_code_of_name(tk2n.text, rdefs);
+                                            } else {
+                                            }
+                                            if fcode >= 0 {
+                                                let fcm: str = mn_mangle_tag(fcode, rdefs);
+                                                if fcm.len() > 0 {
+                                                    let qfc: i64 = fmangles.push(fcm);
+                                                } else {
+                                                    fok = false;
+                                                }
+                                            } else {
+                                                fok = false;
+                                            }
+                                        }
+                                    } else {
+                                        fok = false;
+                                    }
+                                    tk2 = tk2 + 1;
+                                }
+                                if fok {
+                                    if fmangles.len() > 0 {
+                                        let rfa: i64 = mn_assoc_resolve(nodes, kids, fvid, fmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                                    } else {
+                                    }
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            fi = fi + 1;
+        }
+        return 0;
+    } else {
+    }
+    let mut i: i64 = 0;
+    let cc2: i64 = n.child_count;
+    let cs2: i64 = n.child_start;
+    while i < cc2 {
+        let cid: i64 = kids.get(cs2 + i);
+        let r3: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Expand-walk a block: flat bind threading (v3 corpus avoids shadowing). LET recurses value
+// FIRST then binds; the other statement kinds recurse their expression children.
+fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+    let bn: PNode = nodes.get(blockid);
+    let cc: i64 = bn.child_count;
+    let cs: i64 = bn.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let sid: i64 = kids.get(cs + i);
+        let sn: PNode = nodes.get(sid);
+        if sn.kind == P_K_LET {
+            let mut aid: i64 = 0 - 1;
+            let mut lvid: i64 = 0 - 1;
+            if sn.child_count == 2 {
+                aid = kids.get(sn.child_start);
+                lvid = kids.get(sn.child_start + 1);
+            } else {
+                if sn.child_count == 1 {
+                    lvid = kids.get(sn.child_start);
+                } else {
+                }
+            }
+            if lvid >= 0 {
+                let rv: i64 = mn_expand_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                // the bind tag: the annotation when concrete, else the typed value; a
+                // generic-record annotation carries its targs onto the bind (MONO-7 — the
+                // receiver-targs a method call reads via tc_bind_targs; mirrors mn_walk_block).
+                let mut tag: i64 = TC_UNHANDLED;
+                let mut ltargs: str = "";
+                if aid >= 0 {
+                    tag = tc_annot_tag(nodes, aid, rdefs);
+                    if tag == TC_NO_EXPECT {
+                        tag = TC_UNHANDLED;
+                    } else {
+                    }
+                    let an: PNode = nodes.get(aid);
+                    if an.kind == P_K_TYPE {
+                        if an.flags == 0 {
+                            if an.child_count > 0 {
+                                let acode: i64 = tc_code_of_name(an.text, rdefs);
+                                if acode >= TC_REC_BASE {
+                                    tag = acode;
+                                    ltargs = tc_typearg_codes(nodes, kids, aid, rdefs);
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                    let mut trecs2: Vec<str> = Vec::new();
+                    let mut tdiags2: Vec<str> = Vec::new();
+                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs2, tdiags2);
+                }
+                let qb: i64 = binds.push(TcBind { name: sn.text, tag: tag, detail: "", targs: ltargs });
+                // B-ASSOC: `let v: Vec<i64> = Vec::new();` — an ASSOCIATED call value whose
+                // targs come from the ANNOTATION. Resolve when the callee base names the
+                // annotation's record (else stays generic -> LOUD downstream).
+                if ltargs.len() > 0 {
+                    if tag >= TC_REC_BASE {
+                        let lvn2: PNode = nodes.get(lvid);
+                        if lvn2.kind == P_K_METHOD {
+                            let mut abase: str = "";
+                            if lvn2.child_count >= 1 {
+                                let arid: i64 = kids.get(lvn2.child_start);
+                                let arn: PNode = nodes.get(arid);
+                                if arn.kind == P_K_PATH {
+                                    abase = arn.text;
+                                } else {
+                                }
+                            } else {
+                            }
+                            let arec: TcRec = rdefs.get(tag - TC_REC_BASE);
+                            if abase.bytes_eq(arec.name) {
+                                let mut amangles: Vec<str> = Vec::new();
+                                let atn: i64 = arec.tpnames.len();
+                                let mut ak: i64 = 0;
+                                while ak < atn {
+                                    let aseg: str = tc_seg_at(ltargs, ak);
+                                    let acode2: i64 = tc_atoi(aseg);
+                                    let am: str = mn_mangle_tag(acode2, rdefs);
+                                    let qam: i64 = amangles.push(am);
+                                    ak = ak + 1;
+                                }
+                                let ra2: i64 = mn_assoc_resolve(nodes, kids, lvid, amangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_ASSIGN {
+            let mut ci: i64 = 0;
+            while ci < sn.child_count {
+                let cid: i64 = kids.get(sn.child_start + ci);
+                let ra: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                ci = ci + 1;
+            }
+        } else {
+        }
+        if sn.kind == P_K_EXPR_STMT {
+            if sn.child_count > 0 {
+                let eid: i64 = kids.get(sn.child_start);
+                let re: i64 = mn_expand_expr(nodes, kids, eid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_RETURN {
+            if sn.child_count > 0 {
+                let rid: i64 = kids.get(sn.child_start);
+                let rr: i64 = mn_expand_expr(nodes, kids, rid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            } else {
+            }
+        } else {
+        }
+        if sn.kind == P_K_IF {
+            if sn.child_count > 0 {
+                let condid: i64 = kids.get(sn.child_start);
+                let rc: i64 = mn_expand_expr(nodes, kids, condid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            } else {
+            }
+            let mut bi: i64 = 1;
+            while bi < sn.child_count {
+                let brid: i64 = kids.get(sn.child_start + bi);
+                let brn: PNode = nodes.get(brid);
+                if brn.kind == P_K_BLOCK {
+                    let rb: i64 = mn_expand_block(nodes, kids, brid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                } else {
+                }
+                bi = bi + 1;
+            }
+        } else {
+        }
+        if sn.kind == P_K_WHILE {
+            if sn.child_count > 0 {
+                let wcid: i64 = kids.get(sn.child_start);
+                let rw: i64 = mn_expand_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            } else {
+            }
+            let mut wi: i64 = 1;
+            while wi < sn.child_count {
+                let wbid: i64 = kids.get(sn.child_start + wi);
+                let wbn: PNode = nodes.get(wbid);
+                if wbn.kind == P_K_BLOCK {
+                    let rwb: i64 = mn_expand_block(nodes, kids, wbid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                } else {
+                }
+                wi = wi + 1;
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ── SH-MONO MONO-6: generic-record expansion ──
+//
+// The oracle keeps records BARE-keyed and derives each instantiation's field layout from the
+// generic def + apply_subst at AIR time (record NAMES never reach wasm bytes). The W-lane instead
+// computes layouts from TcRec over parse-tree defs, and tc_type_topcode resolves a record ONLY
+// for a 0-CHILD P_K_TYPE node — so a `Box<i64>` annotation (child-bearing) leaves its binding
+// out-of-core and a `b.v` field read poisons. MONO-6 makes the TREE concrete: clone the generic
+// record def per concrete instantiation (fields substituted), rewrite each generic annotation to a
+// 0-child leaf naming the clone. The instance mangle is SHADOW-INTERNAL (records don't reach
+// bytes) — it only has to be consistent across the annotation rewrite and the clone. Constructs
+// need NO rewrite: every SIGIL scalar is width 8, so the generic def's construct layout (field
+// `v: T` -> width 8) already matches the oracle's concrete `Box<i64>` (field `v: i64` -> width 8).
+
+// True iff a def node has a P_K_TYPE_PARAM child (i.e. it is generic).
+fn mn_recdef_is_generic(nodes: Arena<PNode>, kids: Vec<i64>, defid: i64) -> bool {
+    let dn: PNode = nodes.get(defid);
+    let mut i: i64 = 0;
+    while i < dn.child_count {
+        let cid: i64 = kids.get(dn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE_PARAM {
+            return true;
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// True iff every direct child of an annotation P_K_TYPE node is a CONCRETE 0-child P_K_TYPE leaf.
+// A generic targ (`Box<Box<i64>>` — child-bearing) is NOT concrete -> the outer annotation is
+// skipped (fenced). A type-param targ (`Box<T>` inside a generic def) is a 0-child leaf, so this
+// alone would accept it; mn_rewrite_rec_annots does NOT recurse into generic defs, closing that.
+fn mn_targs_concrete(nodes: Arena<PNode>, kids: Vec<i64>, tid: i64) -> bool {
+    let tn: PNode = nodes.get(tid);
+    let mut i: i64 = 0;
+    while i < tn.child_count {
+        let cid: i64 = kids.get(tn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE {
+            if cn.child_count == 0 {
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The instance mangle for a generic annotation `Box<i64>` = `Box__i64` (multi-arg `Pair__i64$str`);
+// also fills `tpmangles` with the targ leaf texts (the concrete substitution for the def clone).
+fn mn_rec_mangle(nodes: Arena<PNode>, kids: Vec<i64>, tid: i64, tpmangles: Vec<str> @Mut) -> str ! { Alloc } {
+    let tn: PNode = nodes.get(tid);
+    let mut targs: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < tn.child_count {
+        let cid: i64 = kids.get(tn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        let q1: i64 = targs.push(cn.text);
+        let q2: i64 = tpmangles.push(cn.text);
+        i = i + 1;
+    }
+    return mn_join_mangles(tn.text, targs);
+}
+
+// Clone a generic record def into a concrete instance: DROP the P_K_TYPE_PARAM children,
+// subst-clone the P_K_FIELD children (each field's type leaf `T` -> the concrete text), set the
+// def text to the instance mangle, kind stays P_K_RECORD_DEF (no export flag — records emit no
+// wasm fn/export; an unreferenced clone is byte-inert, a referenced one drives field offsets).
+fn mn_clone_record_def(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, grid: i64, mangle: str, tpnames: Vec<str>, tpmangles: Vec<str>) -> i64 ! { Alloc } {
+    let gr: PNode = nodes.get(grid);
+    let mut newkids: Vec<i64> = Vec::new();
+    let cc: i64 = gr.child_count;
+    let cs: i64 = gr.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let cid: i64 = kids.get(cs + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_TYPE_PARAM {
+        } else {
+            let ncid: i64 = mn_clone_subst(nodes, kids, cid, tpnames, tpmangles);
+            let q: i64 = newkids.push(ncid);
+        }
+        i = i + 1;
+    }
+    let newcs: i64 = kids.len();
+    let nkc: i64 = newkids.len();
+    let mut j: i64 = 0;
+    while j < nkc {
+        let nc: i64 = newkids.get(j);
+        let q2: i64 = kids.push(nc);
+        j = j + 1;
+    }
+    let nid: i64 = nodes.allocate(PNode { kind: P_K_RECORD_DEF, start: gr.start, end: gr.end, value: gr.value, flags: gr.flags, child_start: newcs, child_count: nkc, text: mangle });
+    return nid;
+}
+
+// Walk the tree: at a child-bearing P_K_TYPE annotation naming a generic record with all-concrete
+// targs, clone the concrete def once (dedup by mangle) and rewrite the annotation to a 0-child
+// leaf naming the clone (so tc_type_topcode resolves it -> the binding + its field reads type).
+// SKIPS generic record defs + generic fn SOURCES (their inner `Box<T>` annotations reference
+// type-params — cloning them would mint bogus `Box__T` defs; the oracle drops generic sources and
+// the concrete fn INSTANCES [no type-params] are still walked, so their `Box<i64>` gets rewritten).
+fn mn_rewrite_rec_annots(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, gr_names: Vec<str>, gr_ids: Vec<i64>, seen: Vec<str> @Mut, newdef_ids: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(eid);
+    // W-FIELDVEC: skip EVERY record def (generic AND concrete). A generic def's `Box<T>`
+    // types a param (mis-clone risk, MONO-6). A CONCRETE source def's field annotation
+    // (`fnames: Vec<str>`) must NOT rewrite to the instance name: tc_build_recs resolves
+    // field types backward-declared-only (oracle parity) and the clone defs append AFTER
+    // the source records, so a rewritten `Vec__str` ftag lands TC_UNHANDLED and every
+    // field-receiver method poisons at cv_recv_rec — while the unrewritten `Vec<str>`
+    // resolves to the backward-declared generic Vec (what mn's own typing uses). Discovery
+    // is not lost: the same instantiations are discovered from fn-side annotations (lets,
+    // params — incl. cloned instance fns' params, walked as module children).
+    if n.kind == P_K_RECORD_DEF {
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_FN {
+        if tc_fn_has_type_params(nodes, kids, eid) {
+            return 0;
+        } else {
+        }
+    } else {
+    }
+    // MONO-7: a GENERIC impl's methods reference the impl's type-param (`get(self: Box<T>)`) — its
+    // `Box<T>` would mis-clone a bogus `Box__T`. Skip the whole generic impl (dead source; the
+    // oracle drops it). The cloned concrete method INSTANCE is a top-level fn, walked normally.
+    if n.kind == P_K_IMPL {
+        if tc_fn_has_type_params(nodes, kids, eid) {
+            return 0;
+        } else {
+        }
+    } else {
+    }
+    if n.kind == P_K_TYPE {
+        if n.child_count > 0 {
+            let gid: i64 = mn_tbl_find(gr_names, gr_ids, n.text);
+            if gid >= 0 {
+                if mn_targs_concrete(nodes, kids, eid) {
+                    let mut tpmangles: Vec<str> = Vec::new();
+                    let mangle: str = mn_rec_mangle(nodes, kids, eid, tpmangles);
+                    if mn_seen_has(seen, mangle) {
+                    } else {
+                        let qs: i64 = seen.push(mangle);
+                        let mut tpnames: Vec<str> = Vec::new();
+                        let tpn: i64 = mn_fn_tpnames(nodes, kids, gid, tpnames);
+                        let did: i64 = mn_clone_record_def(nodes, kids, gid, mangle, tpnames, tpmangles);
+                        let qd: i64 = newdef_ids.push(did);
+                    }
+                    let nn: PNode = nodes.get(eid);
+                    let st: i64 = nodes.set(eid, PNode { kind: P_K_TYPE, start: nn.start, end: nn.end, value: nn.value, flags: nn.flags, child_start: nn.child_start, child_count: 0, text: mangle });
+                    return 0;
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    let cc: i64 = n.child_count;
+    let cs: i64 = n.child_start;
+    let mut i: i64 = 0;
+    while i < cc {
+        let cid: i64 = kids.get(cs + i);
+        let rr: i64 = mn_rewrite_rec_annots(nodes, kids, cid, gr_names, gr_ids, seen, newdef_ids);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// W-MOD: the module list — a multi-module input parses to a P_K_PROGRAM root whose direct
+// children are MODULE nodes (parser_parse; a single module stays the bare P_K_MODULE root).
+// Every item scan in this file must walk the modules' children, not the root's — pre-W-MOD
+// mn_expand silently NO-OPPED on any composed input (empty tables, no walk, no instances:
+// the composed-context poison root cause). Mirror of ai_collect_modules.
+fn mn_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// MONO-6 entry: clone concrete defs for every generic-record instantiation + rewrite annotations,
+// then append the cloned defs to the module child slice (a slice can't grow in place — X-M9).
+// Runs AFTER fn expansion (X-E2b): a concrete fn instance's substituted body carries `Box<i64>`
+// annotations too, so the whole (already-expanded) tree is walked.
+fn mn_expand_records(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, root: i64) -> i64 ! { Alloc } {
+    // W-MOD: scan every module's children for generic defs (the rewrite WALK below recurses
+    // generically from root, so it already penetrates a P_K_PROGRAM); cloned defs append to
+    // the FIRST module, the oracle's drain target.
+    let mut rmods: Vec<i64> = Vec::new();
+    let crm: i64 = mn_collect_modules(nodes, kids, root, rmods);
+    let nrmods: i64 = rmods.len();
+    let mut gr_names: Vec<str> = Vec::new();
+    let mut gr_ids: Vec<i64> = Vec::new();
+    let mut rmi: i64 = 0;
+    while rmi < nrmods {
+        let rmid: i64 = rmods.get(rmi);
+        let rn0: PNode = nodes.get(rmid);
+        let mut i: i64 = 0;
+        while i < rn0.child_count {
+            let cid: i64 = kids.get(rn0.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_RECORD_DEF {
+                if mn_recdef_is_generic(nodes, kids, cid) {
+                    let q1: i64 = gr_names.push(cn.text);
+                    let q2: i64 = gr_ids.push(cid);
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        rmi = rmi + 1;
+    }
+    if gr_names.len() == 0 {
+        return 0;
+    } else {
+    }
+    let mut seen: Vec<str> = Vec::new();
+    let mut newdef_ids: Vec<i64> = Vec::new();
+    let rr: i64 = mn_rewrite_rec_annots(nodes, kids, root, gr_names, gr_ids, seen, newdef_ids);
+    let nd: i64 = newdef_ids.len();
+    if nd > 0 {
+        let m0: i64 = rmods.get(0);
+        let rn: PNode = nodes.get(m0);
+        let newcs: i64 = kids.len();
+        let oldcc: i64 = rn.child_count;
+        let oldcs: i64 = rn.child_start;
+        let mut c: i64 = 0;
+        while c < oldcc {
+            let ec: i64 = kids.get(oldcs + c);
+            let qc: i64 = kids.push(ec);
+            c = c + 1;
+        }
+        let mut f: i64 = 0;
+        while f < nd {
+            let fc: i64 = newdef_ids.get(f);
+            let qfk: i64 = kids.push(fc);
+            f = f + 1;
+        }
+        let newcount: i64 = oldcc + nd;
+        let rset: i64 = nodes.set(m0, PNode { kind: rn.kind, start: rn.start, end: rn.end, value: rn.value, flags: rn.flags, child_start: newcs, child_count: newcount, text: rn.text });
+    } else {
+    }
+    return 0;
+}
+
+// The monomorphizer: patch generic call sites to their instances, clone the instances (spans
+// preserved, type-params substituted), append them after the module's monomorphic fns (X-M9);
+// then MONO-6 expand generic records (concrete def clones + annotation rewrites).
+// Mutates nodes/kids in place; the caller then feeds the expanded tree to ai_encode_wasm.
+pub fn mn_expand(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, root: i64) -> i64 ! { Alloc } {
+    // W-MOD: drive every builder/table/walk PER MODULE — a multi-module input's root is a
+    // P_K_PROGRAM whose direct children are module nodes, so the pre-W-MOD direct-children
+    // scans found no items and this fn silently no-opped (zero instances, zero pre-resolved
+    // flags: the composed-context poison root cause). Instances append to the FIRST module,
+    // matching the oracle (all instances drain into the first module — the MONO-0 pin).
+    let mut mods: Vec<i64> = Vec::new();
+    let cmods: i64 = mn_collect_modules(nodes, kids, root, mods);
+    let nmods: i64 = mods.len();
+
+    let mut rdefs: Vec<TcRec> = Vec::new();
+    let mut bmi: i64 = 0;
+    while bmi < nmods {
+        let bmid: i64 = mods.get(bmi);
+        let br: i64 = tc_build_recs(nodes, kids, bmid, rdefs);
+        bmi = bmi + 1;
+    }
+    let mut cdefs: Vec<TcCap> = Vec::new();
+    let mut cci: i64 = 0;
+    while cci < nmods {
+        let ccid2: i64 = mods.get(cci);
+        let bc: i64 = tc_build_caps(nodes, kids, ccid2, cdefs);
+        cci = cci + 1;
+    }
+    let mut sigs: Vec<TcSig> = Vec::new();
+    let mut ssi: i64 = 0;
+    while ssi < nmods {
+        let ssid: i64 = mods.get(ssi);
+        let bs: i64 = tc_build_sigs(nodes, kids, ssid, sigs, rdefs, cdefs);
+        ssi = ssi + 1;
+    }
+    let mut traits: Vec<TcTrait> = Vec::new();
+    let mut tti: i64 = 0;
+    while tti < nmods {
+        let ttid: i64 = mods.get(tti);
+        let btt: i64 = tc_build_traits(nodes, kids, ttid, traits, rdefs);
+        tti = tti + 1;
+    }
+
+    // the generic-fn table (bare name -> fnid), across all modules.
+    let mut gfn_names: Vec<str> = Vec::new();
+    let mut gfn_ids: Vec<i64> = Vec::new();
+    let mut gmod: i64 = 0;
+    while gmod < nmods {
+        let gmid: i64 = mods.get(gmod);
+        let rn0: PNode = nodes.get(gmid);
+        let mut gi: i64 = 0;
+        while gi < rn0.child_count {
+            let gcid: i64 = kids.get(rn0.child_start + gi);
+            let gcn: PNode = nodes.get(gcid);
+            if gcn.kind == P_K_FN {
+                if tc_fn_has_type_params(nodes, kids, gcid) {
+                    let q1: i64 = gfn_names.push(tc_seg_at(gcn.text, 0));
+                    let q2: i64 = gfn_ids.push(gcid);
+                } else {
+                }
+            } else {
+            }
+            gi = gi + 1;
+        }
+        gmod = gmod + 1;
+    }
+
+    // MONO-7: the generic-impl-method table (`Type::method` -> method fnid + the enclosing IMPL
+    // id, whose P_K_TYPE_PARAM names drive the method clone — `impl Box<U>` writes its methods in
+    // terms of `U`). Mirrors mn_run's census table (X-M-method).
+    let mut gm_keys: Vec<str> = Vec::new();
+    let mut gm_ids: Vec<i64> = Vec::new();
+    let mut gm_impl_ids: Vec<i64> = Vec::new();
+    let mut mmod: i64 = 0;
+    while mmod < nmods {
+        let mmodid: i64 = mods.get(mmod);
+        let rn1: PNode = nodes.get(mmodid);
+    let mut mgi: i64 = 0;
+    while mgi < rn1.child_count {
+        let mgcid: i64 = kids.get(rn1.child_start + mgi);
+        let mgcn: PNode = nodes.get(mgcid);
+        if mgcn.kind == P_K_IMPL {
+            if tc_fn_has_type_params(nodes, kids, mgcid) {
+                let yname: str = tc_seg_at(mgcn.text, 1);
+                let mut mmi: i64 = 0;
+                while mmi < mgcn.child_count {
+                    let mmcid: i64 = kids.get(mgcn.child_start + mmi);
+                    let mmcn: PNode = nodes.get(mmcid);
+                    if mmcn.kind == P_K_FN {
+                        let mbare: str = tc_seg_at(mmcn.text, 0);
+                        let ksep: str = "::";
+                        let kpre: str = yname.concat(ksep);
+                        let mkey: str = kpre.concat(mbare);
+                        let qk1: i64 = gm_keys.push(mkey);
+                        let qk2: i64 = gm_ids.push(mmcid);
+                        let qk3: i64 = gm_impl_ids.push(mgcid);
+                    } else {
+                    }
+                    mmi = mmi + 1;
+                }
+            } else {
+            }
+        } else {
+        }
+        mgi = mgi + 1;
+    }
+        mmod = mmod + 1;
+    }
+
+    // B-DISPATCH + W-FIELDVEC: the record def table (name -> def node id). ALL records:
+    // the field-receiver targ derivation reads the def's field TYPE node — `store: Vec<T>`
+    // for a GENERIC base (leaves map through the base's targs) or `fnames: Vec<str>` for a
+    // CONCRETE base (leaves already concrete, AG-G19). The B-ASSOC construct consumer keeps
+    // its generic-only semantics via an explicit mn_recdef_is_generic guard at its site.
+    let mut grec_names: Vec<str> = Vec::new();
+    let mut grec_ids: Vec<i64> = Vec::new();
+    let mut rmod: i64 = 0;
+    while rmod < nmods {
+        let rmodid: i64 = mods.get(rmod);
+        let rn2: PNode = nodes.get(rmodid);
+        let mut rgi: i64 = 0;
+        while rgi < rn2.child_count {
+            let rgcid: i64 = kids.get(rn2.child_start + rgi);
+            let rgcn: PNode = nodes.get(rgcid);
+            if rgcn.kind == P_K_RECORD_DEF {
+                let qg1: i64 = grec_names.push(rgcn.text);
+                let qg2: i64 = grec_ids.push(rgcid);
+            } else {
+            }
+            rgi = rgi + 1;
+        }
+        rmod = rmod + 1;
+    }
+
+    // MONO-5: walk the monomorphic fn bodies with the CLONE-FIRST recursive engine — a freshly
+    // resolved instance clones + expands (transitively) DURING the walk, appending itself
+    // post-order into inst_names/inst_fnids (inner instances first — the oracle's order). The
+    // TOP-LEVEL patch list still applies after the full mono walk (per-body deferral); each
+    // clone's own patches were applied inside mn_expand_instance.
+    let mut seen: Vec<str> = Vec::new();
+    let mut inst_names: Vec<str> = Vec::new();
+    let mut inst_fnids: Vec<i64> = Vec::new();
+    let mut patch_ids: Vec<i64> = Vec::new();
+    let mut patch_names: Vec<str> = Vec::new();
+    // B-ASSOC: the mono walk has NO enclosing clone substitution — empty ctx.
+    let mut ctx_tpnames: Vec<str> = Vec::new();
+    let mut ctx_tpmangles: Vec<str> = Vec::new();
+    let mut wmod: i64 = 0;
+    while wmod < nmods {
+        let wmodid: i64 = mods.get(wmod);
+        let rn3: PNode = nodes.get(wmodid);
+        let mut i: i64 = 0;
+        while i < rn3.child_count {
+            let cid: i64 = kids.get(rn3.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                if tc_fn_has_type_params(nodes, kids, cid) {
+                } else {
+                    let bid: i64 = tc_fn_body(nodes, kids, cid);
+                    if bid >= 0 {
+                        let mut binds: Vec<TcBind> = Vec::new();
+                        let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, cdefs);
+                        let wb: i64 = mn_expand_block(nodes, kids, bid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, 0);
+                    } else {
+                    }
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        wmod = wmod + 1;
+    }
+
+    // apply the mono bodies' deferred call-site patches (spans/children kept; done AFTER the
+    // walk so no enclosing call ever typed an arg against a not-yet-known instance sig).
+    let apm: i64 = mn_apply_patches(nodes, patch_ids, patch_names);
+    let ninst: i64 = inst_names.len();
+
+    // rebuild the module's child slice: [existing children..., instance fn ids...] at kids' end,
+    // then repoint the module node (a slice can't grow in place — X-M9 placement).
+    if ninst > 0 {
+        let m0: i64 = mods.get(0);
+        let rn: PNode = nodes.get(m0);
+        let newcs: i64 = kids.len();
+        let oldcc: i64 = rn.child_count;
+        let oldcs: i64 = rn.child_start;
+        let mut c: i64 = 0;
+        while c < oldcc {
+            let ec: i64 = kids.get(oldcs + c);
+            let qc: i64 = kids.push(ec);
+            c = c + 1;
+        }
+        let nf: i64 = inst_fnids.len();
+        let mut f: i64 = 0;
+        while f < nf {
+            let fc: i64 = inst_fnids.get(f);
+            let qfk: i64 = kids.push(fc);
+            f = f + 1;
+        }
+        let newcount: i64 = oldcc + nf;
+        let rset: i64 = nodes.set(m0, PNode { kind: rn.kind, start: rn.start, end: rn.end, value: rn.value, flags: rn.flags, child_start: newcs, child_count: newcount, text: rn.text });
+    } else {
+    }
+
+    // MONO-6: expand generic RECORDS over the now-fn-expanded tree (X-E2b phase order).
+    let er: i64 = mn_expand_records(nodes, kids, root);
+    return 0;
+}

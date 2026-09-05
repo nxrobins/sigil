@@ -1,0 +1,17 @@
+// expect-runtime: ok
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(worker: ActorRef<Worker>) -> i64 {
+        let result = worker.ask(GetValue(), timeout: 5);
+        return result;
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on GetValue() -> i64 { return 42; }
+}

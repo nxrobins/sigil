@@ -1,0 +1,151 @@
+// PR S1 follow-up / stdlib::string_helpers — substring search +
+// byte-equality runtime helpers for `Type::Str`.
+//
+// These helpers exist because the inline AIR intrinsic-lowering
+// signature (`stmts: &mut Vec<AirStmt>`) doesn't admit block-level
+// control flow (Jump / JumpIf / new blocks). PR S1's three landed
+// commits (#1 lexer fix, #2 fat-pointer migration, #3
+// .len/.is_empty/.byte_at) all fit the inline shape; substring
+// search inherently needs loops.
+//
+// Rather than refactor intrinsic-lowering, the substring helpers
+// live here as regular SIGIL functions that compose the foundation
+// intrinsics. Each user-level `.contains(needle)` / `.starts_with`
+// / `.ends_with` call type-check-dispatches to a corresponding
+// `__sigil_str_*` function call; AIR sees a normal `Call` stmt and
+// the helper's body has its own AIR block structure for the loop.
+//
+// The same pattern handles byte-equality (`__sigil_str_eq`) which
+// N12-S1 demanded but PR S1 commit #2 deferred. Str-Str `==` now
+// byte-compares in AIR itself (PR #699's `emit_str_bytes_eq`
+// retired the data-ptr fast path); `__sigil_str_eq` predates that
+// and computes the same predicate as a SIGIL-level function.
+//
+// Auto-included by the ambient-include scanner when any source
+// file references `.contains(`, `.starts_with(`, or `.ends_with(`
+// (extended PR B N1-PRB lexical pattern). Users can also `use
+// sigil::string_helpers;` explicitly.
+//
+// Per N13-S1: `.contains` iterates `i in 0..=(haystack.len() -
+// needle.len())` and at each position compares ALL needle.len()
+// bytes against haystack[i..i+needle.len()]. Per N26-S1: each
+// byte-iteration loop emits FuelDecrement implicitly via the
+// existing per-loop-iteration fuel cost.
+
+module string_helpers;
+
+/// PR S1 / N12-S1: byte-by-byte string equality. Compares lengths
+/// first (length-eq fast path), then iterates `min(a.len, b.len)`
+/// bytes comparing each byte pair. Returns true iff both have the
+/// same length AND every byte matches.
+///
+/// Same predicate as the `==` operator since PR #699 (which made
+/// `==` byte-compare in AIR, retiring the data-ptr fast path this
+/// helper used to be the fallback for).
+pub fn __sigil_str_eq(a: str, b: str) -> bool {
+    let a_len: i64 = a.len();
+    let b_len: i64 = b.len();
+    if a_len != b_len {
+        return false;
+    } else {
+    }
+    let mut i: i64 = 0;
+    while i < a_len {
+        if a.byte_at(i) != b.byte_at(i) {
+            return false;
+        } else {
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// PR S1 / N13-S1: `.starts_with(prefix)`. Returns true iff the
+/// haystack's first `prefix.len()` bytes match prefix exactly.
+/// Short-circuits on length-too-short (prefix longer than haystack
+/// returns false immediately without entering the loop).
+pub fn __sigil_str_starts_with(haystack: str, prefix: str) -> bool {
+    let h_len: i64 = haystack.len();
+    let p_len: i64 = prefix.len();
+    if p_len > h_len {
+        return false;
+    } else {
+    }
+    let mut i: i64 = 0;
+    while i < p_len {
+        if haystack.byte_at(i) != prefix.byte_at(i) {
+            return false;
+        } else {
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// PR S1 / N13-S1: `.ends_with(suffix)`. Returns true iff the
+/// haystack's last `suffix.len()` bytes match suffix exactly.
+/// Computes the offset `h_len - s_len` and iterates from there.
+pub fn __sigil_str_ends_with(haystack: str, suffix: str) -> bool {
+    let h_len: i64 = haystack.len();
+    let s_len: i64 = suffix.len();
+    if s_len > h_len {
+        return false;
+    } else {
+    }
+    let offset: i64 = h_len - s_len;
+    let mut i: i64 = 0;
+    while i < s_len {
+        if haystack.byte_at(offset + i) != suffix.byte_at(i) {
+            return false;
+        } else {
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// PR S1 / N13-S1: `.contains(needle)`. Naive O(n*m) substring
+/// search. For each position `i in 0..=(h_len - n_len)`, compares
+/// `n_len` bytes of haystack starting at `i` against needle.
+/// Returns true on first match; false if no position matches.
+///
+/// Empty-needle edge case: returns true (vacuously contained).
+/// Needle-longer-than-haystack: returns false immediately.
+pub fn __sigil_str_contains(haystack: str, needle: str) -> bool {
+    let h_len: i64 = haystack.len();
+    let n_len: i64 = needle.len();
+    if n_len > h_len {
+        return false;
+    } else {
+    }
+    if n_len == 0 {
+        return true;
+    } else {
+    }
+    // i ranges over valid starting positions [0, h_len - n_len].
+    // Inclusive upper bound: `i <= h_len - n_len`.
+    let limit: i64 = h_len - n_len;
+    let mut i: i64 = 0;
+    while i <= limit {
+        let mut j: i64 = 0;
+        let mut matched: bool = true;
+        while j < n_len {
+            if haystack.byte_at(i + j) != needle.byte_at(j) {
+                matched = false;
+                // Sentinel exit: bump j past n_len so the inner
+                // while condition fails on next iteration. SIGIL
+                // has no `break` keyword today; this is the
+                // standard idiom (per tools/probe_suffix_parse).
+                j = n_len;
+            } else {
+                j = j + 1;
+            }
+        }
+        if matched {
+            return true;
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}

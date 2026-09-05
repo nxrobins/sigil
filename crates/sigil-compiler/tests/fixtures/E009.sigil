@@ -1,0 +1,12 @@
+// E009 — the bare `handle E { .. }` form names an effect that declares
+// operations; the clause form is required. `Reader` declares `get`.
+module sigil;
+
+effect Reader {
+    fn get() -> i64;
+}
+
+fn f() -> i64 {
+    handle Reader { let x = 1; };
+    return 2;
+}

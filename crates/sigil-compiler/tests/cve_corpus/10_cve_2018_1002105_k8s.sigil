@@ -1,0 +1,47 @@
+// expect-error: T096
+// CVE Retrofit #10: CVE-2018-1002105 — Kubernetes API server privilege escalation
+// Scope: STRUCTURAL
+//
+// ORIGINAL VULNERABILITY
+//   Kubernetes' API aggregation layer accepted a half-open WebSocket
+//   connection from any user, then forwarded their subsequent (now-
+//   authenticated) requests to backend extension API servers with the
+//   cluster's high-privilege credentials. Any user with `exec` rights
+//   on any pod could escalate to full cluster-admin. CVSS 9.8.
+//
+// SIGIL RETROFIT
+//   The structural analog: the bug fundamentally treated a low-privilege
+//   user identifier (an `i64`) as if it carried admin authority. In
+//   SIGIL, every spawn-init argument that the receiver actor types as
+//   a capability MUST come from a capability-typed source. Passing a
+//   plain `i64` (a user identifier) where the `Worker` actor expects
+//   an `AdminAuth` capability fires T096 ("spawn init arguments must
+//   be capability-typed") at compile time.
+//
+// Why this resembles the original: the K8s bug worked because the
+// proxy layer treated a non-credential value (a connection's user
+// identity) as if it carried full credentials. SIGIL refuses this
+// substitution: caps and primitives are distinct types, and the
+// spawn-init type-check rejects the smuggle.
+//
+// MUTATION CONTRACT
+//   MUTATION_SITE: line N — the `spawn::<Worker>(user_id)` that passes
+//   an `i64` where an `AdminAuth` is required. Removing it leaves a
+//   handler that just returns; the program compiles cleanly.
+module cve;
+
+cap type AdminAuth {}
+
+actor Worker {
+    init(auth: AdminAuth) {}
+    on Ping() -> i64 { return 1; }
+}
+
+entry actor Main {
+    state { admin: AdminAuth }
+
+    on Start(user_id: i64) -> i64 {
+        let _child = spawn::<Worker>(user_id);   // MUTATION_SITE
+        return 1;
+    }
+}

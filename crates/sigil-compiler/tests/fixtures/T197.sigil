@@ -1,0 +1,11 @@
+// expect-error: T197
+//
+// T197 — non-parametric capability referenced with a deadline literal.
+// `Approval` is declared non-parametric (no parameter list in its
+// `cap type` declaration). Usages must not supply a `(D)` argument.
+module main;
+cap type Approval {}
+
+fn use_with_lit(c: Approval(2030)) -> i64 {
+    return 1;
+}

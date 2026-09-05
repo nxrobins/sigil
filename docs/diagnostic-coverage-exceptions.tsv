@@ -1,0 +1,2 @@
+O006	T254	Compatibility alias; region escape is enforced and tested by T254 before AIR ownership.
+R005	T109	Compatibility alias; cross-ring Result error sanitization is enforced and tested by T109.

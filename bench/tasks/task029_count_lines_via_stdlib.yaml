@@ -1,0 +1,40 @@
+id: task029_count_lines_via_stdlib
+source_path: tools/task029_count_lines_via_stdlib.sigil
+difficulty: ffi_fs
+description: |
+  Same task as task028 (count lines in a file), but the agent must use
+  the `sigil::fs` stdlib module instead of declaring a raw
+  `extern "C" fn fs_read`. The verifier asserts `use sigil::fs;` is in
+  the source — comments, string literals, or skipping the import in
+  favor of raw FFI all fail with `reason="stdlib_not_used"`.
+
+  This is an FFI-backed stdlib call, so the tool MUST declare
+  `#[ring(outer)] #[trusted]` on its module (per R004; FFI-backed
+  stdlib is outer-ring).
+
+  Required imports:
+      use sigil::fs;
+
+  Then call:
+      let raw = fs::read(input_ptr, input_len);
+
+  fs::read returns a packed (ptr * 4294967296 + len) on success or a
+  negative error code. Propagate the error code if `raw < 0`.
+
+  Lines are delimited by `\n` (byte 10). A trailing newline does NOT
+  count as an extra line; a file ending without a trailing newline
+  still counts its final line. Render the line count as an ASCII
+  decimal string (the bench's output_text comparison is byte-exact).
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["FsIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  fs: ["bench/fixtures"]
+fuel_budget: 200000
+inputs:
+  - name: trailing_newline_3_lines
+    value: bench/fixtures/lines3.txt
+  - name: no_trailing_newline_5_lines
+    value: bench/fixtures/lines5_no_trailing_newline.txt
+expected_output_strategy: capture_from_reference
+stdlib_imports: ["fs"]

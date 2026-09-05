@@ -1,0 +1,1387 @@
+// SH-TAINT self-hosted taint checker; see docs/specs/sh-security-checkers.md.
+// (This leading comment lets the differential's `\nmodule taint_check;\n` strip match,
+// exactly like lexer.sigil/parser.sigil/typecheck.sigil/ring_check.sigil — keeping all
+// fns in the merged `module tool;`.)
+module taint_check;
+
+// SH-TAINT — self-hosted taint checker (prefix tt_/TT_). Composed (module header
+// stripped) into taint_check_differential alongside lexer + parser + typecheck;
+// reuses PNode + P_K_* (parser.sigil) and tc_seg_at (typecheck.sigil). A faithful
+// PR-T1 (scalar-surface) port of the Rust oracle taint_check::check_taints for
+// MIN_COVERED = the 13 codes {T001, T020-T027, T029-T032} (T028 send/ask DEMOTED —
+// actor-only, AG-T13; records/closures/stdlib are PR-T2). Output is a `;`-joined
+// T-code stream (one `Txxx;` per detected site); the harness dedups to a set.
+//
+// Lattice (ast.rs:9-43): Public(0) < Internal(1) < Secret(2) < SecretCT(3);
+// lub = max; can_flow_to(target) = self <= target; is_ct = (== SecretCT). Default
+// Public. Parser taint flag codes (parser_taint, 0=absent/1=Public/2=Internal/
+// 3=Secret/4=SecretCT) map to a label via max(0, code-1) (absent & Public both ->
+// Public). Decode per node (the CORRECTED formulas — `%4` would collapse SecretCT):
+//   PARAM (flags = mcode + taint*4 + hasregion*32): code = (flags/4) % 8
+//   LET   (flags = mflag + taint*2, mflag in {0,1}): code = flags/2
+//   FN    (flags = pub + rtaint*2, pub in {0,1}):    code = flags/2
+//   EXTERN(flags = rtaint):                          code = flags
+// SIGIL has no `%`, so the PARAM modulo is `q - (q/8)*8`.
+
+const TT_PUBLIC: i64 = 0;
+const TT_INTERNAL: i64 = 1;
+const TT_SECRET: i64 = 2;
+const TT_SECRETCT: i64 = 3;
+
+// A per-variable taint binding (the oracle's TaintEnv entry, scalar surface). The env
+// is a flat Vec walked most-recent-first; a re-let/assign PUSHES a new bind (last-write
+// -wins on lookup) — append/overwrite only, NEVER scope-popped (ET-T12: the oracle's
+// TaintEnv is a name-keyed HashMap that never pops value binds; do NOT scope-unwind).
+// `fields` (PR-T2): per-field record taint, encoded "f0=d0;f1=d1;" (d = the 1-char
+// taint label 0-3) when this bind names a record local built from a literal
+// RecordConstruct; "" for a scalar/whole binding. `taint` is the scalar value OR the
+// record's lub-of-fields (the oracle's TaintBinding::label()), so a bare reference to
+// the record local yields the lub. A field-write RAISES the whole binding to a scalar
+// (fields="", taint=raised) — matching the oracle's bind() overwrite (ET-T13).
+record TtBind { name: str, fields: str, taint: i64 }
+
+// A function's declared parameter and return taints, decoded from P_K_PARAM/P_K_FN
+// flags. TcSig carries NO taint, so this is a parallel table
+// (DS-3). Keyed by the fn's BARE name (tc_seg_at(text, 0), stripping any effect
+// suffix) so a bare same-module call resolves (TS-4; qualified calls are AG-T5/T7).
+record TtSig { name: str, param_taints: str, ret_taint: i64 }
+
+// lub = max over the 4-level lattice.
+fn tt_lub(a: i64, b: i64) -> i64 {
+    if a > b {
+        return a;
+    } else {
+    }
+    return b;
+}
+
+// is_ct = (== SecretCT) = (>= SecretCT, the top).
+fn tt_is_ct(t: i64) -> bool {
+    if t >= TT_SECRETCT {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// A self-host-only verdict, deliberately outside the production T-code namespace. The composed
+// pipeline treats it as rejection; differential code-set comparisons filter it and remain scoped
+// to the supported projection. Known unsupported syntax must never look like a clean verdict.
+fn tt_mark_unsupported(diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let p: i64 = diags.push("SH_TAINT_UNSUPPORTED;");
+    return 0;
+}
+
+// Conservative support boundary for control flow: if any visible binding is non-Public, the
+// shadow's append-only sequential environment is not an adequate branch/loop join model.
+fn tt_binds_have_nonpublic(binds: Vec<TtBind>) -> bool {
+    let n: i64 = binds.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let b: TtBind = binds.get(i);
+        if b.taint > TT_PUBLIC {
+            return true;
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// can_flow_to(target) = self <= target.
+fn tt_can_flow(a: i64, b: i64) -> bool {
+    if a > b {
+        return false;
+    } else {
+    }
+    return true;
+}
+
+// parser_taint code (0..4) -> TaintLabel discriminant (0..3): absent(0)&Public(1)->0,
+// Internal(2)->1, Secret(3)->2, SecretCT(4)->3.
+fn tt_label_of_code(code: i64) -> i64 {
+    if code <= 1 {
+        return TT_PUBLIC;
+    } else {
+    }
+    return code - 1;
+}
+
+// Look up a name's taint, scanning most-recent-first; TT_PUBLIC (the oracle's
+// unwrap_or(Public)) if unbound.
+fn tt_lookup(binds: Vec<TtBind>, name: str) -> i64 {
+    let n: i64 = binds.len();
+    let mut i: i64 = n - 1;
+    while i >= 0 {
+        let b: TtBind = binds.get(i);
+        if b.name.bytes_eq(name) {
+            return b.taint;
+        } else {
+        }
+        i = i - 1;
+    }
+    return TT_PUBLIC;
+}
+
+// PR-T2: the 1-char taint-label digit ("0".."3") for encoding a record's per-field taints.
+fn tt_digit(t: i64) -> str {
+    if t == 1 {
+        return "1";
+    } else {
+    }
+    if t == 2 {
+        return "2";
+    } else {
+    }
+    if t == 3 {
+        return "3";
+    } else {
+    }
+    return "0";
+}
+
+// Decode a record field's taint from the "name0=d0;name1=d1;" encoding; TT_PUBLIC if the
+// field is absent (the oracle's fields.get(field).unwrap_or(Public)). ';'=59, '='=61.
+fn tt_field_taint(enc: str, field: str) -> i64 {
+    let n: i64 = enc.len();
+    let mut segstart: i64 = 0;
+    let mut i: i64 = 0;
+    while i < n {
+        let bc: i64 = enc.byte_at(i);
+        if bc == 59 {
+            let mut eq: i64 = segstart;
+            let mut found: bool = false;
+            let mut j: i64 = segstart;
+            while j < i {
+                let cc: i64 = enc.byte_at(j);
+                if cc == 61 {
+                    eq = j;
+                    found = true;
+                    j = i;
+                } else {
+                    j = j + 1;
+                }
+            }
+            if found {
+                let nm: str = enc.substr(segstart, eq);
+                if nm.bytes_eq(field) {
+                    let ds: str = enc.substr(eq + 1, i);
+                    return tc_atoi(ds);
+                } else {
+                }
+            } else {
+            }
+            segstart = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return TT_PUBLIC;
+}
+
+// The oracle's lookup_field: most-recent-first; the first binding of `base` — if it has
+// encoded fields, decode `field` (Public if absent); if scalar (fields==""), return the
+// scalar (a Scalar binding's field-access yields the scalar); Public if base is unbound.
+fn tt_lookup_field(binds: Vec<TtBind>, base: str, field: str) -> i64 {
+    let n: i64 = binds.len();
+    let mut i: i64 = n - 1;
+    while i >= 0 {
+        let b: TtBind = binds.get(i);
+        if b.name.bytes_eq(base) {
+            if b.fields.len() > 0 {
+                return tt_field_taint(b.fields, field);
+            } else {
+                return b.taint;
+            }
+        } else {
+        }
+        i = i - 1;
+    }
+    return TT_PUBLIC;
+}
+
+// Does a path text contain a "::" separator? `r.a` parses to a P_K_PATH text "r::a"
+// (the parser normalizes `.` -> `::`, parser.sigil ~:578). ':'=58.
+fn tt_path_has_sep(text: str) -> bool {
+    let n: i64 = text.len();
+    let mut i: i64 = 0;
+    while i < n - 1 {
+        let a: i64 = text.byte_at(i);
+        if a == 58 {
+            let b: i64 = text.byte_at(i + 1);
+            if b == 58 {
+                return true;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The `want`-th "::"-segment of a path. For "r::a": seg0="r" (base local), seg1="a" (the
+// INNERMOST field — matching the oracle's FieldAccess-on-Local resolution; for a deeper
+// `r::a::b`, seg1 is still "a", so the result == the oracle's lookup_field(r,"a")). "" if
+// there are fewer than `want`+1 segments.
+fn tt_path_seg(text: str, want: i64) -> str {
+    let n: i64 = text.len();
+    let mut seg: i64 = 0;
+    let mut segstart: i64 = 0;
+    let mut i: i64 = 0;
+    while i < n {
+        if i < n - 1 {
+            let a: i64 = text.byte_at(i);
+            let b: i64 = text.byte_at(i + 1);
+            if a == 58 {
+                if b == 58 {
+                    if seg == want {
+                        return text.substr(segstart, i);
+                    } else {
+                    }
+                    seg = seg + 1;
+                    segstart = i + 2;
+                    i = i + 2;
+                } else {
+                    i = i + 1;
+                }
+            } else {
+                i = i + 1;
+            }
+        } else {
+            i = i + 1;
+        }
+    }
+    if seg == want {
+        return text.substr(segstart, n);
+    } else {
+    }
+    return "";
+}
+
+// The innermost local a place expression writes through (the oracle's place_root_local):
+// a P_K_PATH's base segment ("r" for `r` or `r.a`), or recursively the array of a
+// P_K_INDEX (`a` for `a[i]` / `a.b[i]`). "" for a non-place node.
+fn tt_place_root(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64) -> str {
+    let n: PNode = nodes.get(nid);
+    if n.kind == P_K_PATH {
+        return tt_path_seg(n.text, 0);
+    } else {
+    }
+    if n.kind == P_K_INDEX {
+        if n.child_count >= 1 {
+            let cid: i64 = kids.get(n.child_start);
+            return tt_place_root(nodes, kids, cid);
+        } else {
+        }
+    } else {
+    }
+    return "";
+}
+
+// Linear membership over a Vec<str>.
+fn tt_name_in(names: Vec<str>, name: str) -> bool {
+    let n: i64 = names.len();
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let cand: str = names.get(i);
+            if cand.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Module ids under `root`: a P_K_PROGRAM (83) wrapper's children, or the bare
+// P_K_MODULE root (single-module). Mirrors rc_collect_modules / nr_collect_modules.
+fn tt_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// Collect every declared extern-fn NAME across all modules (the oracle's
+// universe.extern_fns). A P_K_EXTERN_FN's text is "abi;name;effect…" so the name is
+// segment 1 (tc_seg_at(text, 1)). Used to classify a P_K_CALL as an ExternCall (ET-T14).
+fn tt_collect_externs(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_EXTERN_FN {
+                let enm: str = tc_seg_at(cn.text, 1);
+                let p: i64 = out.push(enm);
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// A generic fn (a P_K_FN with a P_K_TYPE_PARAM child) is SKIPPED (AG-R8 analog): the
+// oracle taint-checks only MONOMORPHIZED instances, never the generic source — an
+// uncalled generic produces zero typed functions, so checking its source self-host-side
+// would false-fire. Skipping it is subset-safe (taint is instance-independent, so a
+// CALLED generic's instance codes equal the source's — but the uncalled case must skip).
+fn tt_is_generic_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= fnn.child_count {
+            scanning = false;
+        } else {
+            let cid: i64 = kids.get(fnn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_TYPE_PARAM {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Build the parallel function-taint table: declared parameter labels in positional
+// order plus the return label, keyed by the bare name.
+fn tt_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, out: Vec<TtSig> @Mut) -> i64 ! { Alloc } {
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                // The return-taint occupies the low flag bits (pub bit0 + rtaint*2). SH-MONO
+                // MONO-3b rides a monomorph-instance marker on bit 2^20 (mn_clone_instance) for
+                // the W-lane bare export; mask it off (keep bits 0-19) before decoding taint, so
+                // a monomorphized instance's declared taint reads correctly in the composed
+                // sh_compile pipeline (MONO-4). A source fn never has the bit, so `& 1048575` is
+                // a no-op everywhere else — the taint differential is unchanged.
+                let code: i64 = (cn.flags & 1048575) / 2;
+                let lab: i64 = tt_label_of_code(code);
+                let bare: str = tc_seg_at(cn.text, 0);
+                let mut param_taints: str = "";
+                let mut pi: i64 = 0;
+                while pi < cn.child_count {
+                    let pid: i64 = kids.get(cn.child_start + pi);
+                    let pn: PNode = nodes.get(pid);
+                    if pn.kind == P_K_PARAM {
+                        let q: i64 = pn.flags / 4;
+                        let pcode: i64 = q - (q / 8) * 8;
+                        param_taints = param_taints.concat(tt_digit(tt_label_of_code(pcode)));
+                    } else {
+                    }
+                    pi = pi + 1;
+                }
+                let p: i64 = out.push(TtSig { name: bare, param_taints: param_taints, ret_taint: lab });
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Declared positional parameter label, or -1 when `name` is not a function
+// signature in the table (intrinsics and closure-typed locals take other paths).
+fn tt_sig_param(sigs: Vec<TtSig>, name: str, index: i64) -> i64 {
+    let n: i64 = sigs.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let s: TtSig = sigs.get(i);
+        if s.name.bytes_eq(name) {
+            if index < s.param_taints.len() {
+                return s.param_taints.byte_at(index) - 48;
+            } else {
+                return 0 - 1;
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The declared return-taint of a (bare-named) callee. The shadow uses Public for
+// out-of-table intrinsics; production direct-call resolution fails closed.
+fn tt_sig_ret(sigs: Vec<TtSig>, name: str) -> i64 {
+    let n: i64 = sigs.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let s: TtSig = sigs.get(i);
+        if s.name.bytes_eq(name) {
+            return s.ret_taint;
+        } else {
+        }
+        i = i + 1;
+    }
+    return TT_PUBLIC;
+}
+
+// Seed a function's env with its parameters' declared taints (PARAM decode
+// (flags/4)%8 -> label). `%8` is `q - (q/8)*8` (no `%` in SIGIL).
+fn tt_seed_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, binds: Vec<TtBind> @Mut) -> i64 ! { Alloc } {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            let q: i64 = cn.flags / 4;
+            let code: i64 = q - (q / 8) * 8;
+            let lab: i64 = tt_label_of_code(code);
+            let p: i64 = binds.push(TtBind { name: cn.text, fields: "", taint: lab });
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// PR-T2 (closure E4): build the closure's capture env from the enclosing binds. SIGIL
+// closures capture FREE vars BY VALUE; because the env is append-only / never-popped
+// (ET-T12), the enclosing binds already carry every captured var at its SOURCE taint, so a
+// referenced free var resolves to its enclosing taint (AG-T9: a referenced free var IS a
+// capture). The copy also ISOLATES closure-body binds from the enclosing scope (the body's
+// lets/assigns mutate the copy, never the caller's env). CRUCIALLY each capture is COLLAPSED
+// to a SCALAR (fields="", taint = the bind's lub label): the oracle captures via
+// `env.lookup(cap.name)` — which returns a scalar TaintLabel — and `closure_env.bind`s a
+// SCALAR, so a captured RECORD reads as its lub inside the closure body (`r.a`/`r.b` both =
+// the record's lub), NOT per-field. Preserving the per-field encoding here would make the
+// self-host MORE precise than the oracle → it would MISS the oracle's lub-driven codes on a
+// captured-record-field read (adversarial fixtures C1/C2). Records DECLARED inside the body
+// are still tracked per-field (tt_stmt rebuilds their encoding) — only CAPTURES collapse.
+fn tt_copy_binds(src: Vec<TtBind>, dst: Vec<TtBind> @Mut) -> i64 ! { Alloc } {
+    let n: i64 = src.len();
+    let mut i: i64 = 0;
+    while i < n {
+        let b: TtBind = src.get(i);
+        let p: i64 = dst.push(TtBind { name: b.name, fields: "", taint: b.taint });
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// The expression-taint walk (the oracle's compute_expr_taint). Returns
+// base(kind) lub pc, emitting CT codes (T024/T025/T026/T027/T029/T031/T032 +
+// the filtered T028) at the point of detection. `pc` is threaded BY VALUE (never
+// holds SecretCT — control flow rejects it before descent, ET-T10).
+// ────────────────────────────────────────────────────────────────────────────
+fn tt_expr(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, binds: Vec<TtBind>, sigs: Vec<TtSig>, externs: Vec<str>, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    let mut base: i64 = TT_PUBLIC;
+
+    if n.kind == P_K_LIT_INT {
+        base = TT_PUBLIC;
+    } else {
+        if n.kind == P_K_LIT_BOOL {
+            base = TT_PUBLIC;
+        } else {
+            if n.kind == P_K_LIT_FLOAT {
+                base = TT_PUBLIC;
+            } else {
+                if n.kind == P_K_LIT_STR {
+                    base = TT_PUBLIC;
+                } else {
+                    if n.kind == P_K_PATH {
+                        // A dotted path "r::a" (parser normalizes `r.a`) is a field
+                        // access on a local (PR-T2): base = seg0, innermost field = seg1
+                        // -> per-field lookup. A bare local -> scalar lookup. A qualified
+                        // global path (`Mod::CONST`) has no bound base -> Public (matching
+                        // the oracle, whose const/variant path taint is Public).
+                        if tt_path_has_sep(n.text) {
+                            let pbase: str = tt_path_seg(n.text, 0);
+                            let pfield: str = tt_path_seg(n.text, 1);
+                            base = tt_lookup_field(binds, pbase, pfield);
+                        } else {
+                            base = tt_lookup(binds, n.text);
+                        }
+                    } else {
+                        if n.kind == P_K_BINARY {
+                            let lid: i64 = kids.get(n.child_start);
+                            let rid: i64 = kids.get(n.child_start + 1);
+                            let l: i64 = tt_expr(nodes, kids, lid, binds, sigs, externs, pc, diags);
+                            let r: i64 = tt_expr(nodes, kids, rid, binds, sigs, externs, pc, diags);
+                            // T026 — variable-time division: a `/` (T_SLASH=22) with a
+                            // @SecretCT operand.
+                            if n.value == 22 {
+                                if tt_is_ct(l) {
+                                    let d: i64 = diags.push("T026;");
+                                } else {
+                                    if tt_is_ct(r) {
+                                        let d2: i64 = diags.push("T026;");
+                                    } else {
+                                    }
+                                }
+                            } else {
+                            }
+                            base = tt_lub(l, r);
+                        } else {
+                            if n.kind == P_K_INDEX {
+                                let aid: i64 = kids.get(n.child_start);
+                                let iid: i64 = kids.get(n.child_start + 1);
+                                let arr: i64 = tt_expr(nodes, kids, aid, binds, sigs, externs, pc, diags);
+                                let idx: i64 = tt_expr(nodes, kids, iid, binds, sigs, externs, pc, diags);
+                                // T024 — secret-dependent index.
+                                if tt_is_ct(idx) {
+                                    let d: i64 = diags.push("T024;");
+                                } else {
+                                }
+                                base = tt_lub(arr, idx);
+                            } else {
+                                if n.kind == P_K_CALL {
+                                    base = tt_call(nodes, kids, nid, binds, sigs, externs, pc, diags);
+                                } else {
+                                    if n.kind == P_K_DECLASSIFY {
+                                        // T031 — declassify rejects a @SecretCT input.
+                                        let vid: i64 = kids.get(n.child_start);
+                                        let v: i64 = tt_expr(nodes, kids, vid, binds, sigs, externs, pc, diags);
+                                        // descend the cap child too (side-effect taint, ET-T6).
+                                        if n.child_count >= 2 {
+                                            let cid2: i64 = kids.get(n.child_start + 1);
+                                            let cc: i64 = tt_expr(nodes, kids, cid2, binds, sigs, externs, pc, diags);
+                                        } else {
+                                        }
+                                        if tt_is_ct(v) {
+                                            let d: i64 = diags.push("T031;");
+                                        } else {
+                                        }
+                                        base = TT_PUBLIC;
+                                    } else {
+                                        if n.kind == P_K_DECLASSIFY_CT {
+                                            // T032 — declassify_ct REQUIRES a @SecretCT input.
+                                            let vid: i64 = kids.get(n.child_start);
+                                            let v: i64 = tt_expr(nodes, kids, vid, binds, sigs, externs, pc, diags);
+                                            if n.child_count >= 2 {
+                                                let cid3: i64 = kids.get(n.child_start + 1);
+                                                let cc3: i64 = tt_expr(nodes, kids, cid3, binds, sigs, externs, pc, diags);
+                                            } else {
+                                            }
+                                            if tt_is_ct(v) {
+                                            } else {
+                                                let d: i64 = diags.push("T032;");
+                                            }
+                                            base = TT_SECRET;
+                                        } else {
+                                            if n.kind == P_K_REGION {
+                                                // T029 — secret-dependent region size (child0 = limit).
+                                                let lid2: i64 = kids.get(n.child_start);
+                                                let lim: i64 = tt_expr(nodes, kids, lid2, binds, sigs, externs, pc, diags);
+                                                if tt_is_ct(lim) {
+                                                    let d: i64 = diags.push("T029;");
+                                                } else {
+                                                }
+                                                // Region bodies are not part of the curated shadow.
+                                                // Keep the supported limit diagnostic, but make the
+                                                // incomplete body verdict fail closed in composed use.
+                                                let ur: i64 = tt_mark_unsupported(diags);
+                                                base = TT_PUBLIC;
+                                            } else {
+                                                base = tt_expr_rest(nodes, kids, nid, binds, sigs, externs, pc, diags);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return tt_lub(base, pc);
+}
+
+// The remaining (lub-of-children / propagation) expr kinds, split out to keep the
+// if/else nesting under control. Every arm returns a BASE (pc is folded by the caller
+// tt_expr's final lub). A genuinely-unmapped kind returns TT_PUBLIC (subset-safe: never
+// a false code; any consequential miss surfaces as a differential mismatch — ET-T1).
+fn tt_expr_rest(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, binds: Vec<TtBind>, sigs: Vec<TtSig>, externs: Vec<str>, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    if n.kind == P_K_METHOD {
+        // A method-call intrinsic (.len()/.byte_at()/.as_i32()/.contains()/…) inherits
+        // lub(receiver, args) — none of the oracle's intrinsic-method arms emit a CT code.
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_BORROW {
+        return tt_child0(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_TRY {
+        return tt_child0(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_RESULT_CTOR {
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_ARRAY {
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_TUPLE {
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_SLICE {
+        // lub(array, start?, end?) — no CT-rejection (a slice is not an index sink).
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_RECORD_CONSTRUCT {
+        // PR-T1: a record value collapses to the lub of its fields (per-field tracking
+        // is PR-T2).
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_FSTRING {
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_GRANT {
+        return tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    if n.kind == P_K_SEND {
+        // T028 is DEMOTED (AG-T13, actor-only) — the arm exists for walk-totality and
+        // is filtered out of CORE_T_CODES, so emitting it is harmless. base = lub(args).
+        let any: i64 = tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+        if tt_is_ct(any) {
+            let d: i64 = diags.push("T028;");
+        } else {
+        }
+        return any;
+    } else {
+    }
+    if n.kind == P_K_ASK {
+        let any2: i64 = tt_lub_children(nodes, kids, nid, binds, sigs, externs, pc, diags);
+        if tt_is_ct(any2) {
+            let d: i64 = diags.push("T028;");
+        } else {
+        }
+        return any2;
+    } else {
+    }
+    if n.kind == P_K_CLOSURE {
+        // E4 (PR-T2) — DESCEND the closure body with captures seeded (the inverse of
+        // SH-RING's P_K_CLOSURE skip). Children = [param…, return-type?, body]; the body
+        // is the LAST child (a P_K_BLOCK). The enclosing `binds` already carry every
+        // captured free var at its source taint (ET-T12 append-only env), so copy them
+        // into a fresh mutable env (the capture env, AG-T9), then seed the closure's OWN
+        // params at their DECLARED taints (production lambda-lifting preserves them),
+        // after captures so a same-named parameter shadows its capture. Walk as a FRESH function
+        // context: pc resets to TT_PUBLIC and fnret = TT_PUBLIC. The closure surface
+        // carries no return-taint annotation (the parser parses no taint after a closure
+        // `-> type`), so the oracle's lifted closure fn is likewise Public — the
+        // closure-return T001/T030 checks are FAITHFUL, not over-firing. Any in-body CT
+        // code (T020-T029) on a captured @SecretCT value fires here — the E4 deliverable.
+        // The closure EXPRESSION's own value-taint is under-approximated to PUBLIC (AG-T14,
+        // the AG-G19 value-flow pattern): the oracle's closure value-taint = lub of
+        // captures, so a SecretCT-capturing closure bound to an un-annotated `let` emits a
+        // value-flow T001 — that downgrade-at-binding is OUT-of-core, subset-safe (a miss,
+        // never a false code). In-core reject fixtures bind the closure to a taint-
+        // absorbing let (`let g @SecretCT = …`) so the oracle emits ONLY the in-body code.
+        // Capture-value taint is not represented precisely in this parse-tree shadow. Continue
+        // producing the curated differential codes, but make standalone/pipeline use reject.
+        let u: i64 = tt_mark_unsupported(diags);
+        if n.child_count >= 1 {
+            let bodyid: i64 = kids.get(n.child_start + n.child_count - 1);
+            let bn: PNode = nodes.get(bodyid);
+            if bn.kind == P_K_BLOCK {
+                let mut cbinds: Vec<TtBind> = Vec::new();
+                let cp: i64 = tt_copy_binds(binds, cbinds);
+                let sp: i64 = tt_seed_params(nodes, kids, nid, cbinds);
+                let rb: i64 = tt_block(nodes, kids, bodyid, cbinds, sigs, externs, TT_PUBLIC, TT_PUBLIC, diags);
+            } else {
+            }
+        } else {
+        }
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_CAP_RESTRICT {
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_CAP_RESTRICT_DEADLINE {
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_CAP_SPLIT {
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_CAP_DRAW {
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_MINT {
+        return TT_PUBLIC;
+    } else {
+    }
+    if n.kind == P_K_SPAWN {
+        // Actor init signatures are not present in this shadow's taint table.
+        let u2: i64 = tt_mark_unsupported(diags);
+        return TT_PUBLIC;
+    } else {
+    }
+    // Any other expression kind is outside the declared shadow subset. Mark it explicitly rather
+    // than silently manufacturing a Public label.
+    let u3: i64 = tt_mark_unsupported(diags);
+    return TT_PUBLIC;
+}
+
+// tt_expr of a node's child[0].
+fn tt_child0(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, binds: Vec<TtBind>, sigs: Vec<TtSig>, externs: Vec<str>, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    if n.child_count >= 1 {
+        let cid: i64 = kids.get(n.child_start);
+        return tt_expr(nodes, kids, cid, binds, sigs, externs, pc, diags);
+    } else {
+    }
+    return TT_PUBLIC;
+}
+
+// The lub of tt_expr over ALL children (also evaluates each for its CT side-effects).
+fn tt_lub_children(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, binds: Vec<TtBind>, sigs: Vec<TtSig>, externs: Vec<str>, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    let mut acc: i64 = TT_PUBLIC;
+    let mut i: i64 = 0;
+    while i < n.child_count {
+        let cid: i64 = kids.get(n.child_start + i);
+        let t: i64 = tt_expr(nodes, kids, cid, binds, sigs, externs, pc, diags);
+        acc = tt_lub(acc, t);
+        i = i + 1;
+    }
+    return acc;
+}
+
+// A P_K_CALL — classified BY NAME (ET-T14: the parse tree has no Intrinsic/Extern/
+// Indirect node kinds). All args are evaluated first (side-effect taint), then:
+//   alloc            -> T029 iff arg0 CT; base = lub(args)
+//   load8 / store8   -> T025 iff arg0 CT; base = lub(args)
+//   vec_load/vec_store -> T025 iff arg0 OR arg1 CT (NOT the value/bound); base = lub(args)
+//   <extern name>    -> base = Internal; T027 iff ANY arg CT
+//   <other>          -> base = lub(sig ret-taint, args)  (a plain Call; other intrinsic
+//                       names — ct_*/slot_*/u256_*/str_from_raw — have no declared fn so
+//                       default Public, giving lub(args), matching their oracle arms)
+fn tt_call(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, binds: Vec<TtBind>, sigs: Vec<TtSig>, externs: Vec<str>, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    let name: str = tc_seg_at(n.text, 0);
+    let mut argslub: i64 = TT_PUBLIC;
+    let mut arg0: i64 = TT_PUBLIC;
+    let mut arg1: i64 = TT_PUBLIC;
+    let mut anyct: bool = false;
+    let mut argtaints: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < n.child_count {
+        let cid: i64 = kids.get(n.child_start + i);
+        let t: i64 = tt_expr(nodes, kids, cid, binds, sigs, externs, pc, diags);
+        if i == 0 {
+            arg0 = t;
+        } else {
+        }
+        if i == 1 {
+            arg1 = t;
+        } else {
+        }
+        if tt_is_ct(t) {
+            anyct = true;
+        } else {
+        }
+        let ap: i64 = argtaints.push(t);
+        argslub = tt_lub(argslub, t);
+        i = i + 1;
+    }
+
+    if name.bytes_eq("alloc") {
+        if tt_is_ct(arg0) {
+            let d: i64 = diags.push("T029;");
+        } else {
+        }
+        return argslub;
+    } else {
+    }
+    if name.bytes_eq("load8") {
+        if tt_is_ct(arg0) {
+            let d: i64 = diags.push("T025;");
+        } else {
+        }
+        return argslub;
+    } else {
+    }
+    if name.bytes_eq("store8") {
+        if tt_is_ct(arg0) {
+            let d: i64 = diags.push("T025;");
+        } else {
+        }
+        return argslub;
+    } else {
+    }
+    // NOTE: the oracle ALSO fires T025 on the indexed-memory vec intrinsics (base/index
+    // = args 0-1). Those names are stdlib-PRIVATE — a T257-gated grep-quarantine forbids
+    // calling (or even naming) them outside stdlib/sigil/vec.sigil, so they can NEVER
+    // appear in a type-clean fixture (PR-T1) nor in a @SecretCT position inside the
+    // taint-clean stdlib (PR-T2). They therefore fall through to the plain-Call path
+    // (lub(args), no T025) — a subset-safe boundary that is never exercised, and naming
+    // them here would itself trip the vec-quarantine test. (PR-T1 scope; load8/store8
+    // above cover the user-callable @SecretCT address surface for T025.)
+    if tt_name_in(externs, name) {
+        // FFI is an @Internal value boundary. @SecretCT keeps its dedicated T027;
+        // ordinary @Secret payloads emit T001.
+        if anyct {
+            let d: i64 = diags.push("T027;");
+        } else {
+        }
+        let mut fi: i64 = 0;
+        while fi < argtaints.len() {
+            let ft: i64 = argtaints.get(fi);
+            if !tt_is_ct(ft) {
+                if !tt_can_flow(ft, TT_INTERNAL) {
+                    let d2: i64 = diags.push("T001;");
+                } else {
+                }
+            } else {
+            }
+            fi = fi + 1;
+        }
+        return TT_INTERNAL;
+    } else {
+    }
+    // Plain direct call: each argument must satisfy the callee's declared label.
+    // A missing signature denotes an intrinsic or closure-typed local in this
+    // parse-tree shadow; those are handled conservatively elsewhere.
+    let mut ci: i64 = 0;
+    while ci < argtaints.len() {
+        let declared: i64 = tt_sig_param(sigs, name, ci);
+        if declared >= 0 {
+            let source: i64 = argtaints.get(ci);
+            if tt_is_ct(declared) {
+                if source == TT_INTERNAL {
+                    let d3: i64 = diags.push("T030;");
+                } else {
+                    if source == TT_SECRET {
+                        let d3b: i64 = diags.push("T030;");
+                    } else {
+                    }
+                }
+            } else {
+            }
+            if !tt_can_flow(source, declared) {
+                let d4: i64 = diags.push("T001;");
+            } else {
+            }
+        } else {
+        }
+        ci = ci + 1;
+    }
+    // Result remains the conservative lub of callee return and arguments.
+    let ret: i64 = tt_sig_ret(sigs, name);
+    return tt_lub(ret, argslub);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// The statement walk (the oracle's check_stmt / check_block). `binds` is @Mut
+// (append/overwrite, NO scope-pop — ET-T12). `pc` is threaded BY VALUE. `fnret`
+// is the fn's declared return-taint (already lub'd with Internal for tool_main).
+// ────────────────────────────────────────────────────────────────────────────
+fn tt_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TtBind> @Mut, sigs: Vec<TtSig>, externs: Vec<str>, fnret: i64, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let bn: PNode = nodes.get(blockid);
+    let mut i: i64 = 0;
+    while i < bn.child_count {
+        let sid: i64 = kids.get(bn.child_start + i);
+        let r: i64 = tt_stmt(nodes, kids, sid, binds, sigs, externs, fnret, pc, diags);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn tt_stmt(nodes: Arena<PNode>, kids: Vec<i64>, sid: i64, binds: Vec<TtBind> @Mut, sigs: Vec<TtSig>, externs: Vec<str>, fnret: i64, pc: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let s: PNode = nodes.get(sid);
+
+    if s.kind == P_K_LET {
+        // value = the LAST child (children = [type?, value]); taint annotation = flags/2.
+        let vid: i64 = kids.get(s.child_start + s.child_count - 1);
+        let expr_taint: i64 = tt_expr(nodes, kids, vid, binds, sigs, externs, pc, diags);
+        let code: i64 = s.flags / 2;
+        let declared: i64 = tt_label_of_code(code);
+        // T030 — upcast @Internal/@Secret INTO a @SecretCT binding.
+        if tt_is_ct(declared) {
+            if expr_taint == TT_INTERNAL {
+                let d: i64 = diags.push("T030;");
+            } else {
+                if expr_taint == TT_SECRET {
+                    let d2: i64 = diags.push("T030;");
+                } else {
+                }
+            }
+        } else {
+        }
+        // T001 — downgrade without declassify.
+        if tt_can_flow(expr_taint, declared) {
+        } else {
+            let d3: i64 = diags.push("T001;");
+        }
+        let effective: i64 = tt_lub(tt_lub(expr_taint, declared), pc);
+        // PR-T2: a `let r = R { a: e0, b: e1 };` binds r PER FIELD (the oracle's
+        // bind_record) so a later `r.a` read returns field a's taint, not the lub. The
+        // record-construct text is "Name;f0;f1;…" (field i name = tc_seg_at(text, i+1));
+        // child i is field i's value. (The whole-record value taint — for the T030/T001
+        // checks above + a bare `r` reference — is `effective`/the lub, already computed
+        // via tt_expr(vid). The per-field re-eval mirrors the oracle's double-eval; any
+        // CT code fires on both sides and dedups to the set.)
+        let vn: PNode = nodes.get(vid);
+        if vn.kind == P_K_RECORD_CONSTRUCT {
+            let mut enc: str = "";
+            let mut lub: i64 = TT_PUBLIC;
+            let mut fi: i64 = 0;
+            while fi < vn.child_count {
+                let fcid: i64 = kids.get(vn.child_start + fi);
+                let ft: i64 = tt_expr(nodes, kids, fcid, binds, sigs, externs, pc, diags);
+                let fname: str = tc_seg_at(vn.text, fi + 1);
+                let e1: str = enc.concat(fname);
+                let e2: str = e1.concat("=");
+                let e3: str = e2.concat(tt_digit(ft));
+                enc = e3.concat(";");
+                lub = tt_lub(lub, ft);
+                fi = fi + 1;
+            }
+            let pr: i64 = binds.push(TtBind { name: s.text, fields: enc, taint: lub });
+        } else {
+            let p: i64 = binds.push(TtBind { name: s.text, fields: "", taint: effective });
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_LET_TUPLE {
+        // `let (a, b) = e;` — the oracle DESUGARS tuple lets into scalar lets before its
+        // taint pass, so per-element taints ride the desugared bindings. This shadow keeps
+        // its all-public projection: a public RHS in a public context binds every name
+        // public (text = the names joined with `;`; the grammar carries NO taint
+        // annotation on tuple bindings, so there is no declared-label check to mirror).
+        // Anything nonpublic is outside the projection and fails closed, same as the
+        // if/while guards.
+        let tvid: i64 = kids.get(s.child_start + s.child_count - 1);
+        let trhs: i64 = tt_expr(nodes, kids, tvid, binds, sigs, externs, pc, diags);
+        if trhs > TT_PUBLIC {
+            let ult: i64 = tt_mark_unsupported(diags);
+        } else {
+            if tt_binds_have_nonpublic(binds) {
+                let ult2: i64 = tt_mark_unsupported(diags);
+            } else {
+                let mut tni: i64 = 0;
+                let mut tscan: bool = true;
+                while tscan {
+                    let tnm: str = tc_seg_at(s.text, tni);
+                    if tnm.len() > 0 {
+                        let tpb: i64 = binds.push(TtBind { name: tnm, fields: "", taint: TT_PUBLIC });
+                        tni = tni + 1;
+                    } else {
+                        tscan = false;
+                    }
+                }
+            }
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_ASSIGN {
+        // children = [place, value]; value field = cop (0 = simple, !=0 = compound).
+        let pid: i64 = kids.get(s.child_start);
+        let vid: i64 = kids.get(s.child_start + 1);
+        let expr_taint: i64 = tt_expr(nodes, kids, vid, binds, sigs, externs, pc, diags);
+        let pn: PNode = nodes.get(pid);
+        let mut eff: i64 = tt_lub(expr_taint, pc);
+        if pn.kind == P_K_PATH {
+            if tt_path_has_sep(pn.text) {
+                // field write `r.a = e` -> RAISE the root container's WHOLE taint to a
+                // scalar (the oracle's place_root_local + bind(lub) — a sound
+                // over-approximation; ET-T13).
+                let root: str = tt_path_seg(pn.text, 0);
+                let rr: i64 = tt_lub(eff, tt_lookup(binds, root));
+                let pr: i64 = binds.push(TtBind { name: root, fields: "", taint: rr });
+            } else {
+                // bare local: a compound assign (`x += y`) folds in x's current taint;
+                // a simple assign overwrites.
+                if s.value == 0 {
+                } else {
+                    eff = tt_lub(eff, tt_lookup(binds, pn.text));
+                }
+                let p: i64 = binds.push(TtBind { name: pn.text, fields: "", taint: eff });
+            }
+        } else {
+            // index write `arr[i] = e` (P_K_INDEX) -> raise the array's root local.
+            let root2: str = tt_place_root(nodes, kids, pid);
+            if root2.len() > 0 {
+                let r2: i64 = tt_lub(eff, tt_lookup(binds, root2));
+                let pr2: i64 = binds.push(TtBind { name: root2, fields: "", taint: r2 });
+            } else {
+            }
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_EXPR_STMT {
+        if s.child_count >= 1 {
+            let eid: i64 = kids.get(s.child_start);
+            let t: i64 = tt_expr(nodes, kids, eid, binds, sigs, externs, pc, diags);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_RETURN {
+        if s.child_count >= 1 {
+            let vid: i64 = kids.get(s.child_start);
+            let return_taint: i64 = tt_expr(nodes, kids, vid, binds, sigs, externs, pc, diags);
+            // T030 — upcast into a @SecretCT return.
+            if tt_is_ct(fnret) {
+                if return_taint == TT_INTERNAL {
+                    let d: i64 = diags.push("T030;");
+                } else {
+                    if return_taint == TT_SECRET {
+                        let d2: i64 = diags.push("T030;");
+                    } else {
+                    }
+                }
+            } else {
+            }
+            // T001 — downgrade at return.
+            if tt_can_flow(return_taint, fnret) {
+            } else {
+                let d3: i64 = diags.push("T001;");
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_IF {
+        // children = [cond, then, else].
+        let cid: i64 = kids.get(s.child_start);
+        let cond: i64 = tt_expr(nodes, kids, cid, binds, sigs, externs, pc, diags);
+        if cond > TT_PUBLIC {
+            let uc: i64 = tt_mark_unsupported(diags);
+        } else {
+            if tt_binds_have_nonpublic(binds) {
+                let ub: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+        }
+        if tt_is_ct(cond) {
+            let d: i64 = diags.push("T020;");
+            return 0;
+        } else {
+        }
+        let pc2: i64 = tt_lub(pc, cond);
+        let tid: i64 = kids.get(s.child_start + 1);
+        let rt: i64 = tt_block(nodes, kids, tid, binds, sigs, externs, fnret, pc2, diags);
+        if tt_binds_have_nonpublic(binds) {
+            let ut: i64 = tt_mark_unsupported(diags);
+        } else {
+        }
+        if s.child_count >= 3 {
+            let eid: i64 = kids.get(s.child_start + 2);
+            let re: i64 = tt_block(nodes, kids, eid, binds, sigs, externs, fnret, pc2, diags);
+            if tt_binds_have_nonpublic(binds) {
+                let ue: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+        } else {
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_WHILE {
+        let cid: i64 = kids.get(s.child_start);
+        let cond: i64 = tt_expr(nodes, kids, cid, binds, sigs, externs, pc, diags);
+        if cond > TT_PUBLIC {
+            let uwc: i64 = tt_mark_unsupported(diags);
+        } else {
+            if tt_binds_have_nonpublic(binds) {
+                let uwb: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+        }
+        if tt_is_ct(cond) {
+            let d: i64 = diags.push("T021;");
+            return 0;
+        } else {
+        }
+        let pc2: i64 = tt_lub(pc, cond);
+        let bid: i64 = kids.get(s.child_start + 1);
+        let rb: i64 = tt_block(nodes, kids, bid, binds, sigs, externs, fnret, pc2, diags);
+        if tt_binds_have_nonpublic(binds) {
+            let uwa: i64 = tt_mark_unsupported(diags);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_FOR_IN {
+        // children = [iterable, body]; text = loop var.
+        let iid: i64 = kids.get(s.child_start);
+        let it: i64 = tt_expr(nodes, kids, iid, binds, sigs, externs, pc, diags);
+        if it > TT_PUBLIC {
+            let ufi: i64 = tt_mark_unsupported(diags);
+        } else {
+            if tt_binds_have_nonpublic(binds) {
+                let ufb: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+        }
+        if tt_is_ct(it) {
+            let d: i64 = diags.push("T022;");
+            return 0;
+        } else {
+        }
+        let pc2: i64 = tt_lub(pc, it);
+        let bindv: i64 = binds.push(TtBind { name: s.text, fields: "", taint: tt_lub(it, pc2) });
+        let bid: i64 = kids.get(s.child_start + 1);
+        let rb: i64 = tt_block(nodes, kids, bid, binds, sigs, externs, fnret, pc2, diags);
+        if tt_binds_have_nonpublic(binds) {
+            let ufa: i64 = tt_mark_unsupported(diags);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_MATCH {
+        // children = [scrutinee, arm, arm, …].
+        let scid: i64 = kids.get(s.child_start);
+        let scrut: i64 = tt_expr(nodes, kids, scid, binds, sigs, externs, pc, diags);
+        if scrut > TT_PUBLIC {
+            let umc: i64 = tt_mark_unsupported(diags);
+        } else {
+            if tt_binds_have_nonpublic(binds) {
+                let umb: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+        }
+        if tt_is_ct(scrut) {
+            let d: i64 = diags.push("T023;");
+            return 0;
+        } else {
+        }
+        let pc2: i64 = tt_lub(pc, scrut);
+        let bindt: i64 = tt_lub(scrut, pc2);
+        let mut ai: i64 = 1;
+        while ai < s.child_count {
+            let armid: i64 = kids.get(s.child_start + ai);
+            let arm: PNode = nodes.get(armid);
+            // arm children: [pattern, body] or [pattern, guard, body].
+            if arm.child_count >= 3 {
+                let ug: i64 = tt_mark_unsupported(diags);
+            } else {
+            }
+            if arm.child_count >= 1 {
+                let patid: i64 = kids.get(arm.child_start);
+                let pat: PNode = nodes.get(patid);
+                // scalar pattern bind (ET-T3): a P_K_PAT_BINDING binds its name at the
+                // scrutinee taint; literal/wildcard bind nothing. Enum/array → PR-T2.
+                if pat.kind == P_K_PAT_BINDING {
+                    let bp: i64 = binds.push(TtBind { name: pat.text, fields: "", taint: bindt });
+                } else {
+                }
+            } else {
+            }
+            // the body is the LAST child of the arm.
+            if arm.child_count >= 1 {
+                let bodyid: i64 = kids.get(arm.child_start + arm.child_count - 1);
+                let bn2: PNode = nodes.get(bodyid);
+                if bn2.kind == P_K_BLOCK {
+                    let rb: i64 = tt_block(nodes, kids, bodyid, binds, sigs, externs, fnret, pc2, diags);
+                    if tt_binds_have_nonpublic(binds) {
+                        let uma: i64 = tt_mark_unsupported(diags);
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            ai = ai + 1;
+        }
+        return 0;
+    } else {
+    }
+
+    if s.kind == P_K_BREAK {
+        // `break` in the all-public projection: the oracle's break arm emits NO codes — it
+        // only snapshots the env for the loop-exit join (break_envs, task #252). With every
+        // binding and the pc public there is nothing to join, so a public break is clean.
+        // Any nonpublic binding means the join this shadow does not model could matter:
+        // fail closed. (A tainted pc implies a nonpublic guard upstream, which already
+        // marked unsupported at its if/while arm.)
+        if tt_binds_have_nonpublic(binds) {
+            let ubr: i64 = tt_mark_unsupported(diags);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    if s.kind == P_K_CONTINUE {
+        // `continue` is break's twin (continue_envs) — same all-public projection, same
+        // fail-closed bound, kept symmetric so the pair cannot drift apart.
+        if tt_binds_have_nonpublic(binds) {
+            let uco: i64 = tt_mark_unsupported(diags);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    // For-range and any future statement kind are outside this checker projection.
+    let us: i64 = tt_mark_unsupported(diags);
+    return 0;
+}
+
+// Does this fn carry `@Flow` (parser code 5) on its return or any parameter?
+// Taint POLYMORPHISM is outside this checker's projection: the oracle verifies
+// such a body once per admissible label, which this projection does not do, and
+// code 5 is not a lattice point — `tt_label_of_code` would decode it to 4, one
+// above SecretCT, and every comparison downstream would be meaningless. Detect
+// it so the caller can refuse rather than compute a fictional verdict.
+fn tt_fn_uses_flow(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let rcode: i64 = (fnn.flags & 1048575) / 2;
+    if rcode == 5 {
+        return true;
+    } else {
+    }
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            let q: i64 = cn.flags / 4;
+            let pcode: i64 = q - (q / 8) * 8;
+            if pcode == 5 {
+                return true;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Check one non-generic top-level fn: seed params, compute the declared return-taint
+// (with the tool_main exception), walk the body.
+fn tt_check_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, sigs: Vec<TtSig>, externs: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    // A `@Flow` signature is an explicit non-verdict here (SH_TAINT_UNSUPPORTED),
+    // which the composed pipeline treats as a taint-stage rejection. Returning a
+    // clean verdict on a body this projection cannot check would be a fail-OPEN.
+    if tt_fn_uses_flow(nodes, kids, fnid) {
+        let uf: i64 = tt_mark_unsupported(diags);
+        return 0;
+    } else {
+    }
+    let fnn: PNode = nodes.get(fnid);
+    let mut binds: Vec<TtBind> = Vec::new();
+    let sp: i64 = tt_seed_params(nodes, kids, fnid, binds);
+    let code: i64 = fnn.flags / 2;
+    let mut fnret: i64 = tt_label_of_code(code);
+    // tool_main exception: a fn whose BARE name is exactly "tool_main" may return
+    // @Internal (the FFI bridge) — declared = ret_taint lub Internal. Byte-exact match
+    // (NOT ends_with — that would false-match `my_tool_main`).
+    let bare: str = tc_seg_at(fnn.text, 0);
+    if bare.bytes_eq("tool_main") {
+        fnret = tt_lub(fnret, TT_INTERNAL);
+    } else {
+    }
+    let body: i64 = tc_fn_body(nodes, kids, fnid);
+    if body >= 0 {
+        let rb: i64 = tt_block(nodes, kids, body, binds, sigs, externs, fnret, TT_PUBLIC, diags);
+    } else {
+    }
+    return 0;
+}
+
+// Emit the `;`-joined T-code stream for the parsed program. Build the sig + extern
+// tables once across all modules, then taint-check each non-generic top-level P_K_FN
+// (actor handlers — P_K_ACTOR subtrees — are NOT walked; AG-T11).
+pub fn tt_encode(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut diags: Vec<str> = Vec::new();
+
+    let mut mods: Vec<i64> = Vec::new();
+    let cm: i64 = tt_collect_modules(nodes, kids, root, mods);
+    let nmod: i64 = mods.len();
+
+    let mut sigs: Vec<TtSig> = Vec::new();
+    let bs: i64 = tt_build_sigs(nodes, kids, mods, sigs);
+    let mut externs: Vec<str> = Vec::new();
+    let ce: i64 = tt_collect_externs(nodes, kids, mods, externs);
+
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                let gen: bool = tt_is_generic_fn(nodes, kids, cid);
+                if gen {
+                } else {
+                    let r: i64 = tt_check_fn(nodes, kids, cid, sigs, externs, diags);
+                }
+            } else {
+                if cn.kind == P_K_ACTOR {
+                    // Actor init/handler signatures and state are not modeled by this shadow.
+                    let ua: i64 = tt_mark_unsupported(diags);
+                } else {
+                }
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+
+    let empty: str = "";
+    let diagj: str = empty.join(diags);
+    return diagj;
+}

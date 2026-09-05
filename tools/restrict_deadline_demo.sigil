@@ -1,0 +1,24 @@
+// DEMONSTRATES: parametric capability types + `.restrict_deadline()` intrinsic.
+// SIGIL's Wall 2 added `cap type Approval(deadline_ms: i64) {}` — a parametric
+// cap whose deadline parameter is part of its type identity. The
+// `c.restrict_deadline(D')` method narrows a cap's declared deadline at the
+// call site, consuming the source and producing a fresh cap of the narrower
+// type. Narrowing is sound (shorter window); extension fires T200.
+// INPUT: input_ptr (i64), input_len (i64). Echoed back as a packed result.
+// OUTPUT: i64 packed (len << 32) | ptr.
+// EFFECTS: ! { Alloc } on tool_main; the helper fn has no effects.
+// SEE ALSO: tests/z3_corpus/14_deadline_typed_cap_wall.sigil (expect-ok),
+// tests/z3_corpus/21_restrict_deadline.sigil (expect-error T200 on extension).
+
+module tool;
+
+cap type Approval(deadline_ms: i64) {}
+
+fn narrow_to_earlier_deadline(c: Approval(2030)) -> i64 {
+    let _narrower = c.restrict_deadline(2025);
+    return 1;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    return (input_len * 4294967296) + input_ptr;
+}

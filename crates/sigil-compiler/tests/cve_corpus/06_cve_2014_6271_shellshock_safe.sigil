@@ -1,0 +1,32 @@
+// expect-ok
+// CVE Retrofit #06 (safe form): CVE-2014-6271 — Shellshock (bash env-var as code)
+// Scope: BY-CONSTRUCTION
+//
+// LEGITIMATE INTENT
+//   Configure a program's behavior via host-provided values. The
+//   Shellshock bug existed because bash interpreted env-var function
+//   definitions as code at shell startup.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   SIGIL has no shell and no environment-variable evaluation step.
+//   Privileged configuration arrives as a capability (a typed value
+//   from a runtime-provided source). The legitimate shape uses a
+//   capability spawn arg; no bytes from the environment are ever
+//   interpreted as code.
+module cve;
+
+cap type ConfigAuth {}
+
+actor Worker {
+    init(cfg: ConfigAuth) {}
+    on Ping() -> i64 { return 1; }
+}
+
+entry actor Main {
+    state { cfg: ConfigAuth }
+
+    on Start() -> i64 {
+        let _w = spawn::<Worker>(cfg);
+        return 1;
+    }
+}

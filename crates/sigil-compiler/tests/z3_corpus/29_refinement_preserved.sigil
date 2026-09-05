@@ -1,0 +1,51 @@
+// expect-ok
+// Z3 corpus #29: axis-1 — Wall 4 Step 2 refinement preservation through field reads (positive evidence).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 2 lets refinements travel through `TypedExprKind::FieldAccess`.
+// When `idx.value` is read from a refined source record, the resulting
+// `TypedExpr` carries the source record's matching refinement clauses
+// as a Vec<RefinementClause>. The construction-site dispatcher then
+// accepts the symbolic value when at least one supplied clause
+// structurally matches each destination clause (V11 + V14 syntactic
+// equality, ∃-quantified match per destination clause).
+//
+// V23 invariant: source and destination records have DISTINCT names
+// (Index vs Mirror) to prove the match path works across records, not
+// just same-named-self-copy. Field names also differ (value vs copy)
+// to prove `refinements_match` ignores field names per V2.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 1's where-clause grammar + Z3 satisfiability dispatch.
+//   * Step 2's `refinement: Option<Vec<RefinementClause>>` field on
+//     TypedExpr (V16 storage shape).
+//   * `infer_field_access_expr` attaches refinement when field_ty is
+//     i64 (V18 gate) and the source record has clauses matching the
+//     accessed field name (V16 collect-all-matching).
+//   * `check_record_refinements_at_construction` dispatcher's
+//     symbolic-with-match path (V3 step 2; V11 Z3-SKIP).
+//   * `refinements_match` helper (V2 + V14 + V17) comparing ONLY
+//     (op, literal); field names dropped.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (this is the positive-evidence fixture). Changing
+// Mirror's `where copy >= 0` to `where copy > 0` would flip the
+// dispatcher into the T215 branch (fixture #31). Removing both
+// `where` clauses drops both records' refinement obligations and
+// the program still compiles.
+module sigil;
+
+record Index { value: i64 } where value >= 0
+
+record Mirror { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx: Index = Index { value: 42 };
+        let m: Mirror = Mirror { copy: idx.value };
+        return 1;
+    }
+}

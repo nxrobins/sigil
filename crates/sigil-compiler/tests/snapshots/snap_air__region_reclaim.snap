@@ -1,0 +1,189 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::run",
+            export_name: "m__run",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [],
+            ret: I64,
+            locals: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    Unit,
+                ),
+                (
+                    VarId(
+                        1,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        2,
+                    ),
+                    U32,
+                ),
+                (
+                    VarId(
+                        3,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        4,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        5,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        6,
+                    ),
+                    I64,
+                ),
+            ],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+                VarId(
+                    1,
+                ): Copy,
+                VarId(
+                    2,
+                ): Copy,
+                VarId(
+                    3,
+                ): Copy,
+                VarId(
+                    4,
+                ): Copy,
+                VarId(
+                    5,
+                ): Copy,
+                VarId(
+                    6,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "v0",
+                VarId(
+                    1,
+                ): "v1",
+                VarId(
+                    2,
+                ): "region_save_scratch",
+                VarId(
+                    3,
+                ): "inner",
+                VarId(
+                    4,
+                ): "_used",
+                VarId(
+                    5,
+                ): "v5",
+                VarId(
+                    6,
+                ): "v6",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                1,
+                            ),
+                            val: IntLit(
+                                64,
+                            ),
+                        },
+                        RegionBegin {
+                            name: "scratch",
+                            limit_var: VarId(
+                                1,
+                            ),
+                            save_var: VarId(
+                                2,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                3,
+                            ),
+                            val: IntLit(
+                                42,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                5,
+                            ),
+                            val: IntLit(
+                                1,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                4,
+                            ),
+                            val: Binary {
+                                lhs: VarId(
+                                    3,
+                                ),
+                                op: Add,
+                                rhs: VarId(
+                                    5,
+                                ),
+                            },
+                        },
+                        RegionEnd {
+                            name: "scratch",
+                            limit_var: VarId(
+                                1,
+                            ),
+                            save_var: VarId(
+                                2,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                6,
+                            ),
+                            val: IntLit(
+                                1,
+                            ),
+                        },
+                    ],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                6,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

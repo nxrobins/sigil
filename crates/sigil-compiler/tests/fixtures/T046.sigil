@@ -1,0 +1,22 @@
+// expect-error: T046
+//
+// T046 — let binding with a non-primitive type annotation. Sigil's Phase 1
+// only supports primitive annotations on `let` (i32, u32, i64, u64, f64,
+// bool). Annotating with a record type triggers T046. The annotation must
+// not match the inferred type by display name (otherwise the resolver
+// returns early without emitting any diagnostic — see
+// `resolve_annotated_let_type` in type_check.rs).
+//
+// Step 20 of the supremum loop (axis 4, "better errors") improved the
+// T046 message to name BOTH the offending binding AND the rejected
+// annotation, plus the registry hint to list the supported primitives
+// and a copyable fix-path. The `diagnostic_messages.rs` test asserts
+// that the emitted message and hint contain those entities and the fix.
+module main;
+
+record Pair { a: i64, b: i64 }
+
+fn boot() -> i64 {
+    let p: Pair = 7;
+    return 0;
+}

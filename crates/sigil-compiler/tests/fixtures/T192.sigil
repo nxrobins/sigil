@@ -1,0 +1,16 @@
+// expect-error: T192
+//
+// T192 — `slot_new` requires an explicit type argument. The empty
+// argument list cannot tell the type checker which cap-type the
+// slot should hold.
+//
+// MUTATION_SITE: line 14. Add `::<Fuel>` (where Fuel is a cap type
+// declared in scope) and the fixture compiles cleanly.
+module main;
+
+cap type Fuel { burn }
+
+fn boot() -> i64 {
+    let s = slot_new();  // MUTATION_SITE — missing ::<CapType>
+    return 0;
+}

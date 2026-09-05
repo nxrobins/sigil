@@ -1,0 +1,46 @@
+# Versioned rollout record for the CSIR v8 integration release.
+#
+# This file is deliberately an evidence *state*, not a claim that a release has
+# happened. CI pins the mandatory gates below. A tagged release must replace
+# every `pending` value with measured evidence tied to one immutable commit;
+# retirement requires a later schema-v10 record and a separate reviewed change.
+
+model_version = 8
+certificate_schema = 9
+phase = "dual-gate-integration"
+retirement_eligible = false
+tag = "pending"
+commit = "pending"
+lean_toolchain = "leanprover/lean4:v4.32.0-rc1"
+rust_toolchain = "pending"
+
+[mandatory_gates]
+semantic_v8 = true
+obligations_v6 = true
+rust_taint = true
+rust_ownership = true
+z3_air_capability = true
+
+[release_results]
+corpus_total = "pending"
+component_disagreements = "pending"
+accepted_corpus_regressions = "pending"
+linux = "pending"
+macos_arm64 = "pending"
+macos_x86_64 = "pending"
+windows_msvc = "pending"
+solver_on = "pending"
+solver_off = "pending"
+median_verifier_ms = "pending"
+p95_verifier_ms = "pending"
+initialization_ms = "pending"
+peak_memory_bytes = "pending"
+million_record_result = "pending"
+
+[retirement_requirements]
+zero_unexplained_disagreements = false
+all_required_lanes_green = false
+accepted_corpus_unchanged = false
+median_below_one_ms = false
+memory_bounded = false
+constructor_manifest_complete = false

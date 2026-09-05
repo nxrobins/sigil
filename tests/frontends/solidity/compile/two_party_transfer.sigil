@@ -1,0 +1,13 @@
+module two_party_transfer;
+
+record C { bal: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { bal: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn move(self: C @Mut, from: u256, to: u256, a: u256) {
+        self.bal.transfer(from, to, a);
+    }
+}

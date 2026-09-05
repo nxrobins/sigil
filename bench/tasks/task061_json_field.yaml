@@ -1,0 +1,39 @@
+id: task061_json_field
+source_path: tools/task061_json_field.sigil
+difficulty: intermediate
+description: |
+  Extract the value of the top-level field named `"name"` from a JSON
+  object passed as input. The output is the raw value bytes — for a
+  string value, this is the string body without quotes; for a number /
+  bool / null, the literal characters.
+
+  Required imports:
+      use sigil::json;
+
+  This task uses ONLY the pure-Sigil `json` module — no FFI. The tool
+  can be inner-ring (no `#[ring(outer)] #[trusted]` needed).
+
+  json::parse_field (v2) notes:
+    - Strict RFC 8259 grammar; malformed input returns -400.
+    - String values come back with escapes decoded; nested
+      object/array values come back as raw balanced JSON slices.
+    - Field not found returns -404; more than 10,000 fields returns
+      -429; nesting deeper than 63 levels returns -430.
+
+  The agent should propagate negative error codes via the standard
+  i64 packed-pointer ABI (negative = error).
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }"
+required_attrs: []
+required_effects: ["Alloc"]
+required_grants: {}
+fuel_budget: 200000
+inputs:
+  - name: simple_string
+    value: '{"name": "alice", "age": 30}'
+  - name: number_value_for_other_field
+    value: '{"id": 42, "name": "bob"}'
+expected_output_strategy: literal
+expected_outputs:
+  simple_string: "alice"
+  number_value_for_other_field: "bob"
+stdlib_imports: ["json"]

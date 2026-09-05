@@ -1,0 +1,314 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::sum3",
+            export_name: "m__sum3",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    Ptr,
+                ),
+            ],
+            ret: I64,
+            locals: [
+                (
+                    VarId(
+                        1,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        2,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        3,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        4,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        5,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        6,
+                    ),
+                    Bool,
+                ),
+                (
+                    VarId(
+                        7,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        8,
+                    ),
+                    I64,
+                ),
+            ],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+                VarId(
+                    1,
+                ): Copy,
+                VarId(
+                    2,
+                ): Copy,
+                VarId(
+                    3,
+                ): Copy,
+                VarId(
+                    4,
+                ): Copy,
+                VarId(
+                    5,
+                ): Copy,
+                VarId(
+                    6,
+                ): Copy,
+                VarId(
+                    7,
+                ): Copy,
+                VarId(
+                    8,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "a",
+                VarId(
+                    1,
+                ): "acc",
+                VarId(
+                    2,
+                ): "v2",
+                VarId(
+                    3,
+                ): "v3",
+                VarId(
+                    4,
+                ): "i",
+                VarId(
+                    5,
+                ): "__r_end",
+                VarId(
+                    6,
+                ): "__for_cond",
+                VarId(
+                    7,
+                ): "__one",
+                VarId(
+                    8,
+                ): "v8",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                1,
+                            ),
+                            val: IntLit(
+                                0,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                2,
+                            ),
+                            val: IntLit(
+                                0,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                3,
+                            ),
+                            val: IntLit(
+                                3,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                4,
+                            ),
+                            val: Var(
+                                VarId(
+                                    2,
+                                ),
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                5,
+                            ),
+                            val: Var(
+                                VarId(
+                                    3,
+                                ),
+                            ),
+                        },
+                    ],
+                    terminator: Jump(
+                        BlockId(
+                            1,
+                        ),
+                    ),
+                },
+                AirBlock {
+                    id: BlockId(
+                        1,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                6,
+                            ),
+                            val: Binary {
+                                lhs: VarId(
+                                    4,
+                                ),
+                                op: Lt,
+                                rhs: VarId(
+                                    5,
+                                ),
+                            },
+                        },
+                        FuelDecrement {
+                            amount: 1,
+                        },
+                    ],
+                    terminator: Loop {
+                        cond: VarId(
+                            6,
+                        ),
+                        body_block: BlockId(
+                            2,
+                        ),
+                        exit_block: BlockId(
+                            3,
+                        ),
+                    },
+                },
+                AirBlock {
+                    id: BlockId(
+                        4,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                7,
+                            ),
+                            val: IntLit(
+                                1,
+                            ),
+                        },
+                        Assign {
+                            dst: VarId(
+                                4,
+                            ),
+                            val: Binary {
+                                lhs: VarId(
+                                    4,
+                                ),
+                                op: Add,
+                                rhs: VarId(
+                                    7,
+                                ),
+                            },
+                        },
+                    ],
+                    terminator: Jump(
+                        BlockId(
+                            1,
+                        ),
+                    ),
+                },
+                AirBlock {
+                    id: BlockId(
+                        2,
+                    ),
+                    stmts: [
+                        LoadDynamic {
+                            dst: VarId(
+                                8,
+                            ),
+                            base_ptr: VarId(
+                                0,
+                            ),
+                            index: VarId(
+                                4,
+                            ),
+                            elem_size: 8,
+                            ty: I64,
+                            offset: 4,
+                        },
+                        Assign {
+                            dst: VarId(
+                                1,
+                            ),
+                            val: Binary {
+                                lhs: VarId(
+                                    1,
+                                ),
+                                op: Add,
+                                rhs: VarId(
+                                    8,
+                                ),
+                            },
+                        },
+                    ],
+                    terminator: Jump(
+                        BlockId(
+                            4,
+                        ),
+                    ),
+                },
+                AirBlock {
+                    id: BlockId(
+                        3,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                1,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

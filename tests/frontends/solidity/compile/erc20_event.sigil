@@ -1,0 +1,9 @@
+module erc20_event;
+
+record C { balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { balances: BoundedMap_u256_u256_64::new() };
+    }
+}

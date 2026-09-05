@@ -1,0 +1,20 @@
+// expect-error: T193
+//
+// T193 — `Slot` is a reserved type name for the built-in linear
+// container. A user-defined record / enum / cap type named `Slot`
+// would shadow the built-in and re-introduce the aggregate-
+// smuggling vector T184 closed for user enums: the built-in
+// `Slot<Cap>` is sound only because its operations route through
+// dedicated AIR ops (SlotPut / SlotTake) that the Z3 tracker
+// special-cases, never through `EnumExtract`. Rejecting the
+// user-defined `Slot` at the source closes that shadowing channel.
+//
+// MUTATION_SITE: line 17. Rename `Slot` to anything else and the
+// fixture compiles cleanly.
+module main;
+
+enum Slot<T> { Empty, Full(T) }  // MUTATION_SITE — Slot is reserved
+
+fn boot() -> i64 {
+    return 0;
+}

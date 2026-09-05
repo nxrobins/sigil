@@ -1,0 +1,547 @@
+// SH-EFFECT self-hosted effect-row checker; see docs/specs/sh-security-checkers.md.
+// (This leading comment lets the differential's `\nmodule effect_check;\n` strip match,
+// exactly like lexer.sigil/parser.sigil/ring_check.sigil — keeping all fns in the merged
+// `module tool;`.)
+module effect_check;
+
+// SH-EFFECT — self-hosted effect checker (prefix ec_/EC_). Composed (module header
+// stripped) into effect_check_differential alongside lexer + parser + typecheck; reuses
+// PNode + P_K_* (parser.sigil) and tc_seg_at / tc_fn_body (typecheck.sigil). Mirrors the
+// Rust oracle effect_check::check_effects (blob 87f7d82c, @10ee9ad) for MIN_COVERED =
+// {E001, E002}:
+//   E001 — effect leakage: an outer-ring fn whose CALL to a regular fn requires an effect
+//          not in the caller's current row, OR the `alloc` intrinsic when `Alloc` is not in
+//          the caller's row. (Externs are NEVER subset-checked — ET-EFF-1.)
+//   E002 — a `handle Unsafe { … }` in an outer NON-trusted fn.
+// `handle E1, E2 { … }` lexically expands the available effect set for the body descent.
+// Inner-ring modules are SKIPPED wholesale (ET-EFF-5). Output is a `;`-joined E-code stream
+// (one `E001;`/`E002;` per detected site, module/fn order); the harness dedups to a set
+// (AG-EFF-7: count/span parity is a follow-on).
+//
+// THE REGISTRATION FILTER (the load-bearing parity fact, oracle mod.rs:866 resolve_effect_row
+// + universe.rs:174 built-ins). An effect NAME is "registered" iff it is a built-in
+// (FFI/Unsafe) OR declared via a program-level `effect Name;` (P_K_EFFECT_DECL). When the
+// oracle builds a fn's EffectSet it DROPS any name not in the registry. So a `! { Bogus }`
+// row with Bogus unregistered is the EMPTY set, and `alloc` E001 fires ONLY when `Alloc` is
+// registered (effect_check.rs:163 short-circuits on a missing lookup). The self-host MUST
+// replicate this filter on every effect-name read (sig rows, handle expansion, the alloc
+// gate) — else it false-fires E001 on unregistered names (a soundness violation).
+
+// One declared fn's effect signature: bare name + its declared+REGISTERED effect-name
+// `;`-list (segments 2+ of "name;!;E1;E2", filtered to the registered set; "" for a no-row /
+// empty / all-unregistered fn — absent ≡ empty, ET-EFF-2). Built once across ALL modules'
+// P_K_FNs (ET-EFF-10, program-global first-match).
+record EcSig { name: str, effects: str }
+
+// True iff the module ring is OUTER = flags low bit set. flags = ring-outer(+1) +
+// trusted(+2) + pub(+4); ring is bit 0 ONLY (ET-EFF-5: trusted/pub never affect ring),
+// computed as flags - (flags/2)*2 == 1 (a 1-bit read, no bitwise `&`); a truthiness test
+// (`flags != 0`) is FORBIDDEN.
+fn ec_is_outer(flags: i64) -> bool {
+    let half: i64 = flags / 2;
+    let lowbit: i64 = flags - half * 2;
+    if lowbit == 1 {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// True iff the module is #[trusted] = flags bit 1 set. trusted = (flags/2) - (flags/4)*2
+// == 1 (a 1-bit read, no bitwise `&`; ET-EFF-5). Drives E002 (a handle Unsafe is legal
+// ONLY in a trusted module).
+fn ec_is_trusted(flags: i64) -> bool {
+    let q2: i64 = flags / 2;
+    let q4: i64 = flags / 4;
+    let bit1: i64 = q2 - q4 * 2;
+    if bit1 == 1 {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// Module ids under `root`: a P_K_PROGRAM (83) wrapper's children, or the bare P_K_MODULE
+// root (single-module). Mirrors rc_collect_modules / nr_collect_modules.
+fn ec_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// Linear membership: is `name` byte-equal to some entry of `names`?
+fn ec_name_in(names: Vec<str>, name: str) -> bool {
+    let n: i64 = names.len();
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let cand: str = names.get(i);
+            if cand.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Build the REGISTERED effect-name set: the built-ins {FFI, Unsafe} (universe.rs:174-175)
+// plus every program-level `effect Name;` (P_K_EFFECT_DECL.text) across all modules. Any
+// effect name NOT in this set is dropped from every fn row / handle expansion / the alloc
+// gate (the oracle's resolve_effect_row drop-unregistered behavior).
+fn ec_collect_registered(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let ffi: i64 = out.push("FFI");
+    let uns: i64 = out.push("Unsafe");
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_EFFECT_DECL {
+                let p: i64 = out.push(cn.text);
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Keep only the `;`-segments of `raw` that are in the registered set; return them
+// `;`-joined (no leading `;`), or "" if none. Mirrors resolve_effect_row's drop-unregistered.
+fn ec_filter_registered(raw: str, registered: Vec<str>) -> str ! { Alloc } {
+    let len: i64 = raw.len();
+    if len == 0 {
+        return "";
+    } else {
+    }
+    let mut acc: str = "";
+    let mut seg: i64 = 0;
+    let mut first: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        let s: str = tc_seg_at(raw, seg);
+        if s.len() == 0 {
+            scanning = false;
+        } else {
+            let reg: bool = ec_name_in(registered, s);
+            if reg {
+                if first {
+                    acc = s;
+                    first = false;
+                } else {
+                    let j: str = acc.concat(";");
+                    acc = j.concat(s);
+                }
+            } else {
+            }
+            seg = seg + 1;
+        }
+    }
+    return acc;
+}
+
+// The declared+registered effect-name list of a P_K_FN whose text is "name;!;E1;E2;…".
+// Segment 0 is the name, segment 1 is the "!" marker, segments 2+ are effect names. Both
+// {no-row "name", empty-row "name;!"} yield "" (absent ≡ empty, ET-EFF-2). Returns a
+// `;`-joined REGISTERED effect-name list (unregistered names dropped), or "".
+fn ec_fn_effects(text: str, registered: Vec<str>) -> str ! { Alloc } {
+    let marker: str = tc_seg_at(text, 1);
+    let bang: str = "!";
+    if marker.bytes_eq(bang) {
+    } else {
+        return "";
+    }
+    // Gather the raw effect names (segments 2+) into a `;`-joined string, then filter.
+    let mut raw: str = "";
+    let mut seg: i64 = 2;
+    let mut first: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        let e: str = tc_seg_at(text, seg);
+        if e.len() == 0 {
+            scanning = false;
+        } else {
+            if first {
+                raw = e;
+                first = false;
+            } else {
+                let j: str = raw.concat(";");
+                raw = j.concat(e);
+            }
+            seg = seg + 1;
+        }
+    }
+    return ec_filter_registered(raw, registered);
+}
+
+// Is this P_K_FN a generic SOURCE fn (has a P_K_TYPE_PARAM child)? Such fns are SKIPPED
+// (AG-EFF-8): the oracle effect-checks only MONOMORPHIZED instances, never the generic
+// source — an uncalled generic produces zero typed fns. Skipping is subset-safe.
+fn ec_is_generic_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= fnn.child_count {
+            scanning = false;
+        } else {
+            let cid: i64 = kids.get(fnn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_TYPE_PARAM {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Build the program-wide signature table: every non-generic P_K_FN's bare name + its
+// declared+registered effect-name list. ET-EFF-1: EXTERNS are NOT added here (a
+// P_K_EXTERN_FN is a different node kind, never matched). ET-EFF-10: program-global,
+// first-match by name.
+fn ec_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, registered: Vec<str>, out: Vec<EcSig> @Mut) -> i64 ! { Alloc } {
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                let gen: bool = ec_is_generic_fn(nodes, kids, cid);
+                if gen {
+                } else {
+                    let nm2: str = tc_seg_at(cn.text, 0);
+                    let eff: str = ec_fn_effects(cn.text, registered);
+                    let p: i64 = out.push(EcSig { name: nm2, effects: eff });
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Collect every declared extern-fn NAME (segment 1 of a P_K_EXTERN_FN's "abi;name;eff…"
+// text) across all modules — a SEPARATE set (ET-EFF-1: externs are never subset-checked).
+fn ec_collect_externs(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_EXTERN_FN {
+                let enm: str = tc_seg_at(cn.text, 1);
+                let p: i64 = out.push(enm);
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Is `name` byte-equal to some `;`-segment of the joined effect list `effs`? Exact-token
+// membership (ET-EFF-4): full-length bytes_eq per segment, NOT substring.
+fn ec_eff_contains(effs: str, name: str) -> bool {
+    let len: i64 = effs.len();
+    if len == 0 {
+        return false;
+    } else {
+    }
+    let mut seg: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        let s: str = tc_seg_at(effs, seg);
+        if s.len() == 0 {
+            scanning = false;
+        } else {
+            if s.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                seg = seg + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Subset check (ET-EFF-4): is every `;`-token of `callee` present (exact-token) in
+// `current`? Order/multiplicity-independent. An empty callee set is a subset of anything.
+fn ec_set_subset(callee: str, current: str) -> bool {
+    let len: i64 = callee.len();
+    if len == 0 {
+        return true;
+    } else {
+    }
+    let mut seg: i64 = 0;
+    let mut ok: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        let c: str = tc_seg_at(callee, seg);
+        if c.len() == 0 {
+            scanning = false;
+        } else {
+            let inc: bool = ec_eff_contains(current, c);
+            if inc {
+                seg = seg + 1;
+            } else {
+                ok = false;
+                scanning = false;
+            }
+        }
+    }
+    return ok;
+}
+
+// Look up a fn's declared+registered effect list by bare name in the sig table (first-match,
+// ET-EFF-10). Returns the `;`-joined effect list, or "" if not found (an unknown callee
+// fail-softs to the empty set — subset-safe, no E001; AG-EFF-4).
+fn ec_sig_effects(sigs: Vec<EcSig>, name: str) -> str {
+    let n: i64 = sigs.len();
+    let mut i: i64 = 0;
+    let mut result: str = "";
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let s: EcSig = sigs.get(i);
+            if s.name.bytes_eq(name) {
+                result = s.effects;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return result;
+}
+
+// Does the `;`-joined handle-effects list `htext` contain the exact token "Unsafe"?
+// (ET-EFF-6: exact-token, not substring; `Unsafe2` does NOT match.) Reads the RAW handle
+// names (the oracle's E002 check tests the literal names, not the registered set — and
+// "Unsafe" is a built-in anyway).
+fn ec_handle_has_unsafe(htext: str) -> bool {
+    let uns: str = "Unsafe";
+    return ec_eff_contains(htext, uns);
+}
+
+// A node the oracle's walk_expr_effects treats as a LEAF (no child descent): a closure
+// construction (effects inherited at the construction site — ET-EFF-8) and the cap-expression
+// forms restrict / restrict-deadline / split / draw (effect_check.rs:312-315 list CapRestrict /
+// CapSplit / CapDraw as leaves). A cap form carries a cap + amount subtree the oracle does NOT
+// descend, so the self-host MUST stop here too — else a leaking call inside a `c.draw(amt())`
+// amount false-fires E001 (a soundness bug the adversarial sweep caught). Literals/locals are
+// childless so they need no explicit entry. `grant` and `region` are NOT leaves (the oracle
+// descends them) and are handled by the default child-descent.
+fn ec_is_leaf(kind: i64) -> bool {
+    if kind == P_K_CLOSURE {
+        return true;
+    } else {
+    }
+    if kind == P_K_CAP_RESTRICT {
+        return true;
+    } else {
+    }
+    if kind == P_K_CAP_RESTRICT_DEADLINE {
+        return true;
+    } else {
+    }
+    if kind == P_K_CAP_SPLIT {
+        return true;
+    } else {
+    }
+    if kind == P_K_CAP_DRAW {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// Recursive subtree walk of a function body, threading the CURRENT effect set `cur`
+// (a `;`-joined REGISTERED name list) BY VALUE — the pc-analog (ET-EFF-7: handle expansion
+// is cumulative within the body, reverting on return because the caller keeps its own `cur`).
+//   P_K_HANDLE  → emit E002 if its text names Unsafe AND !trusted; descend the body block
+//                 with cur ∪ (handled names filtered to registered).
+//   P_K_CALL    → classify the callee name: `alloc` → E001 if `Alloc` is registered AND
+//                 Alloc ∉ cur; an extern → no E001 (ET-EFF-1); a known fn → E001 if its
+//                 (registered) row ⊄ cur; unknown → no E001. Then descend args.
+//   leaf (closure / cap restrict|split|draw) → no descent (ET-EFF-8 + the cap-expr leaves).
+//   else        → descend every child (the exhaustive walk, ET-EFF-3). NO catch-all.
+fn ec_scan(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, cur: str, trusted: bool, sigs: Vec<EcSig>, externs: Vec<str>, registered: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    let leaf: bool = ec_is_leaf(n.kind);
+    if leaf {
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_HANDLE {
+        // E002: handle Unsafe outside a #[trusted] module.
+        let hasuns: bool = ec_handle_has_unsafe(n.text);
+        if hasuns {
+            if trusted {
+            } else {
+                let pe: i64 = diags.push("E002;");
+            }
+        } else {
+        }
+        // Expand the available set for the body descent: cur ∪ (handled ∩ registered).
+        let handled: str = ec_filter_registered(n.text, registered);
+        let mut expanded: str = cur;
+        if handled.len() > 0 {
+            if cur.len() == 0 {
+                expanded = handled;
+            } else {
+                let j: str = cur.concat(";");
+                expanded = j.concat(handled);
+            }
+        } else {
+        }
+        // The single child is the body block; descend it with the expanded set.
+        let mut bi: i64 = 0;
+        while bi < n.child_count {
+            let bid: i64 = kids.get(n.child_start + bi);
+            let r: i64 = ec_scan(nodes, kids, bid, expanded, trusted, sigs, externs, registered, diags);
+            bi = bi + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_CALL {
+        let callee: str = n.text;
+        let alloc: str = "alloc";
+        if callee.bytes_eq(alloc) {
+            let allocname: str = "Alloc";
+            let reg: bool = ec_name_in(registered, allocname);
+            if reg {
+                let has: bool = ec_eff_contains(cur, allocname);
+                if has {
+                } else {
+                    let pa: i64 = diags.push("E001;");
+                }
+            } else {
+            }
+        } else {
+            let isext: bool = ec_name_in(externs, callee);
+            if isext {
+                // extern call — args only, NO E001 (ET-EFF-1).
+            } else {
+                let row: str = ec_sig_effects(sigs, callee);
+                let sub: bool = ec_set_subset(row, cur);
+                if sub {
+                } else {
+                    let pc: i64 = diags.push("E001;");
+                }
+            }
+        }
+        // descend the argument expressions.
+        let mut ai: i64 = 0;
+        while ai < n.child_count {
+            let aid: i64 = kids.get(n.child_start + ai);
+            let r: i64 = ec_scan(nodes, kids, aid, cur, trusted, sigs, externs, registered, diags);
+            ai = ai + 1;
+        }
+        return 0;
+    } else {
+    }
+    // every other node: descend all children (exhaustive — ET-EFF-3).
+    let mut i: i64 = 0;
+    while i < n.child_count {
+        let cid: i64 = kids.get(n.child_start + i);
+        let r: i64 = ec_scan(nodes, kids, cid, cur, trusted, sigs, externs, registered, diags);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Emit the `;`-joined E-code stream (E001/E002) for the parsed program. Per module: read
+// the ring from the P_K_MODULE flags low bit; an INNER module is SKIPPED wholesale
+// (ET-EFF-5). An OUTER module's non-generic fns are scanned with the fn's own declared
+// (registered) effect row as the seed and the module's trusted bit. The registered-effect
+// set + sig + extern tables are built once across ALL modules (ET-EFF-10).
+pub fn ec_encode(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut diags: Vec<str> = Vec::new();
+
+    let mut mods: Vec<i64> = Vec::new();
+    let cm: i64 = ec_collect_modules(nodes, kids, root, mods);
+    let nmod: i64 = mods.len();
+
+    let mut registered: Vec<str> = Vec::new();
+    let cr: i64 = ec_collect_registered(nodes, kids, mods, registered);
+    let mut sigs: Vec<EcSig> = Vec::new();
+    let bs: i64 = ec_build_sigs(nodes, kids, mods, registered, sigs);
+    let mut externs: Vec<str> = Vec::new();
+    let ce: i64 = ec_collect_externs(nodes, kids, mods, externs);
+
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let outer: bool = ec_is_outer(mn.flags);
+        if outer {
+            let trusted: bool = ec_is_trusted(mn.flags);
+            let mut i: i64 = 0;
+            while i < mn.child_count {
+                let cid: i64 = kids.get(mn.child_start + i);
+                let cn: PNode = nodes.get(cid);
+                if cn.kind == P_K_FN {
+                    let gen: bool = ec_is_generic_fn(nodes, kids, cid);
+                    if gen {
+                    } else {
+                        let seed: str = ec_fn_effects(cn.text, registered);
+                        let body: i64 = tc_fn_body(nodes, kids, cid);
+                        if body >= 0 {
+                            let rs: i64 = ec_scan(nodes, kids, body, seed, trusted, sigs, externs, registered, diags);
+                        } else {
+                        }
+                    }
+                } else {
+                }
+                i = i + 1;
+            }
+        } else {
+        }
+        mi = mi + 1;
+    }
+
+    let empty: str = "";
+    let diagj: str = empty.join(diags);
+    return diagj;
+}

@@ -1,0 +1,27 @@
+// Stdlib `abi` module — packed pointer/length helpers.
+//
+// Every FFI host function in Sigil returns a packed `(ptr << 32 | len)`
+// i64. Callers used to inline the magic constant `4294967296` (== 2^32)
+// with explicit division and subtraction; with bit-shift and bit-mask
+// operators in the language, the helpers now read as data flow.
+//
+// Pure compute — no effects, no FFI. Inner-ring so both inner-ring
+// programs and outer-ring tools can `use sigil::abi;`.
+module abi;
+
+// Extract the pointer half (upper 32 bits) of a packed (ptr, len) i64.
+pub fn unpack_ptr(packed: i64) -> i64 {
+    return packed >> 32;
+}
+
+// Extract the length half (lower 32 bits) of a packed (ptr, len) i64.
+pub fn unpack_len(packed: i64) -> i64 {
+    return packed & 0xFFFFFFFF;
+}
+
+// Pack a (ptr, len) pair into the FFI ABI's i64 return shape.
+// Companion to `unpack_ptr` / `unpack_len`. `<<` binds tighter than
+// `|`, so the precedence carries the expected meaning without parens.
+pub fn pack(ptr: i64, len: i64) -> i64 {
+    return ptr << 32 | len;
+}

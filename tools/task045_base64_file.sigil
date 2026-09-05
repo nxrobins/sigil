@@ -1,0 +1,114 @@
+// TASK: base64 file — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn base64_char(v: i64 @Internal) -> i64 @Internal ! {} {
+    if v < 26 {
+        return 65 + v;
+    } else {
+        if v < 52 {
+            return 97 + v - 26;
+        } else {
+            if v < 62 {
+                return 48 + v - 52;
+            } else {
+                if v == 62 {
+                    return 43;
+                } else {
+                    return 47;
+                }
+            }
+        }
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let file_ptr: i64 @Internal = raw / 4294967296;
+        let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+        if file_len == 0 {
+            return 0;
+        } else {
+            let triples: i64 @Internal = file_len / 3;
+            let rem: i64 @Internal = file_len - triples * 3;
+            let mut out_len: i64 @Internal = triples * 4;
+
+            if rem == 0 {
+            } else {
+                out_len = out_len + 4;
+            }
+
+            let out_ptr: i64 @Internal = alloc(out_len);
+            let mut in_i: i64 @Internal = 0;
+            let mut out_i: i64 @Internal = 0;
+            let full_end: i64 @Internal = triples * 3;
+
+            while in_i < full_end {
+                let b0: i64 @Internal = load8(file_ptr + in_i);
+                let b1: i64 @Internal = load8(file_ptr + in_i + 1);
+                let b2: i64 @Internal = load8(file_ptr + in_i + 2);
+                let q0: i64 @Internal = b0 / 4;
+                let r0: i64 @Internal = b0 - q0 * 4;
+                let q1: i64 @Internal = b1 / 16;
+                let r1: i64 @Internal = b1 - q1 * 16;
+                let q2: i64 @Internal = b2 / 64;
+                let r2: i64 @Internal = b2 - q2 * 64;
+                let v0: i64 @Internal = q0;
+                let v1: i64 @Internal = r0 * 16 + q1;
+                let v2: i64 @Internal = r1 * 4 + q2;
+                let v3: i64 @Internal = r2;
+
+                store8(out_ptr + out_i, base64_char(v0));
+                store8(out_ptr + out_i + 1, base64_char(v1));
+                store8(out_ptr + out_i + 2, base64_char(v2));
+                store8(out_ptr + out_i + 3, base64_char(v3));
+
+                in_i = in_i + 3;
+                out_i = out_i + 4;
+            }
+
+            if rem == 1 {
+                let b0: i64 @Internal = load8(file_ptr + in_i);
+                let q0: i64 @Internal = b0 / 4;
+                let r0: i64 @Internal = b0 - q0 * 4;
+                let v0: i64 @Internal = q0;
+                let v1: i64 @Internal = r0 * 16;
+
+                store8(out_ptr + out_i, base64_char(v0));
+                store8(out_ptr + out_i + 1, base64_char(v1));
+                store8(out_ptr + out_i + 2, 61);
+                store8(out_ptr + out_i + 3, 61);
+            } else {
+                if rem == 2 {
+                    let b0: i64 @Internal = load8(file_ptr + in_i);
+                    let b1: i64 @Internal = load8(file_ptr + in_i + 1);
+                    let q0: i64 @Internal = b0 / 4;
+                    let r0: i64 @Internal = b0 - q0 * 4;
+                    let q1: i64 @Internal = b1 / 16;
+                    let r1: i64 @Internal = b1 - q1 * 16;
+                    let v0: i64 @Internal = q0;
+                    let v1: i64 @Internal = r0 * 16 + q1;
+                    let v2: i64 @Internal = r1 * 4;
+
+                    store8(out_ptr + out_i, base64_char(v0));
+                    store8(out_ptr + out_i + 1, base64_char(v1));
+                    store8(out_ptr + out_i + 2, base64_char(v2));
+                    store8(out_ptr + out_i + 3, 61);
+                } else {
+                }
+            }
+
+            return out_ptr * 4294967296 + out_len;
+        }
+    }
+}

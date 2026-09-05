@@ -1,0 +1,52 @@
+* text=auto
+
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.scopes text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.scope text eol=lf
+Cargo.lock text eol=lf
+*.sigil text eol=lf
+*.snap text eol=lf
+# The parity manifest (tests/parity/manifest.tsv) is compared byte-wise by
+# crates/sigil-compiler/tests/parity_manifest.rs, which also runs in the
+# Windows portability lane — a CRLF checkout there would fail every row.
+*.tsv text eol=lf
+# Shell scripts MUST be LF: they run on the Linux CI runners (e.g.
+# proofs/lean/scripts/check-no-sorry.sh, invoked by .github/workflows/lean.yml),
+# and a CRLF blob breaks the shebang/parsing outright. Pin *.sh like the other
+# text types so a contributor with core.autocrlf=false can't commit CRLF.
+*.sh text eol=lf
+# Lean sources and the two manifests `check-no-sorry.sh` parses MUST be LF for the
+# same reason. That script validates each manifest line as a Lean identifier; on a
+# CRLF checkout every line carries a trailing \r, and the gate dies with "manifest
+# contains a blank, comment, or invalid identifier" before it checks a single
+# theorem. Without these rules the whole proofs/lean/ tree fell through to
+# `* text=auto` and arrived CRLF on Windows, so the no-sorry / axiom-clean gate was
+# unrunnable there — invisible to CI, whose runners are Linux.
+#
+# `*.txt` is pinned globally rather than scoped to proofs/lean/. The byte-exact
+# fixtures under the `-text` paths below are unaffected because those rules come
+# later and win; verified in BOTH directions, since `git check-attr` reports
+# `eol: lf` for them and that reads alarming. Index side: `git add --renormalize .`
+# leaves every fixture blob bit-identical (compare `git rev-parse HEAD:<f>` against
+# `git rev-parse :<f>`). Checkout side: deleting a genuinely-CRLF fixture and
+# re-checking it out reproduces its exact bytes, CRLF intact.
+*.lean text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+lean-toolchain text eol=lf
+# The committed compiler seed (seed/sigil-seed.wasm) and any future WASM artifact are BINARY:
+# no EOL normalization, ever — one rewritten byte breaks the digest pin and the
+# self-regeneration lane (crates/sigil-runtime/tests/pipeline_differential.rs, seed_* tests).
+*.wasm -text
+# Test fixtures and reference sources are byte-exact inputs to forge verification.
+# Disable all EOL normalization so a checkout reproduces the exact bytes that were forged.
+bench/fixtures/** -text
+tools/** -text

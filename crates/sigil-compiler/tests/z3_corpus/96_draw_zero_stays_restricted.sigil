@@ -1,0 +1,36 @@
+// expect-error: C003
+// Z3 corpus #96: axis-2 — draw(0) from restricted cap stays restricted.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A zero-amount draw from a restricted cap produces a cap with the
+// same restriction. The draw amount does NOT affect authority — it
+// affects fuel budget, not the permission mask.
+//
+// Flow:
+//   fuel (full) → restrict(burn) → restricted ({burn})
+//   → restricted.draw(0) → tiny ({burn}, zero budget but same auth)
+//   → needs_full(tiny) → C003
+//
+// This is an edge case that could bypass the authority model if draw
+// treated amount=0 specially (e.g., "no fuel was consumed, so maybe
+// no restriction applies"). The Z3 source rule `auth(dst) == auth(src)`
+// for CapDraw is unconditional on the amount.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the sink
+// call. The zero-budget restricted cap persists unused.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let tiny: Fuel = restricted.draw(0);
+        needs_full(tiny);  // MUTATION_SITE
+        return 1;
+    }
+}

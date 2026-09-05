@@ -1,0 +1,33 @@
+// DEMONSTRATES: actor spawn flow with capability handoff. This file uses
+// the ACTOR ENTRY shape (not the tool_main shape) because SIGIL's spawn
+// machinery requires an entry actor. The entry actor's `on Start` handler
+// spawns a Worker, passing a capability via init. Spawning consumes the
+// cap from caller state (linear handoff) and confers it to the new actor.
+// INPUT: implicit; entry actor Main has no tool_main entry — this file
+// demonstrates a different entry shape than tools/task*.
+// OUTPUT: i64 from the Start handler (1 here, indicating spawn success).
+// EFFECTS: actor-internal; no global effect declaration on Start.
+// SEE ALSO: tests/cve_corpus/06_cve_2014_6271_shellshock_safe.sigil for
+// the canonical safe-spawn pattern this demo adapts; tests/z3_corpus/
+// 02_attenuation_at_spawn.sigil for the attenuation-at-spawn wall.
+
+module tool;
+
+cap type WorkerAuth {}
+
+actor Worker {
+    init(auth: WorkerAuth) {}
+
+    on Ping(payload: i64) -> i64 {
+        return payload;
+    }
+}
+
+entry actor Main {
+    state { auth: WorkerAuth }
+
+    on Start() -> i64 {
+        let _w = spawn::<Worker>(auth);
+        return 1;
+    }
+}

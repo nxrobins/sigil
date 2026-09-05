@@ -1,0 +1,77 @@
+// TASK: fetch two urls concat — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut i = zero;
+
+    while i < input_len {
+        let b: i64 @Internal = load8(input_ptr + i);
+        if split == input_len {
+            if b == 10 {
+                split = i;
+            } else {
+            }
+        } else {
+        }
+        i = i + one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let url2_ptr: i32 @Internal = input_ptr + split + one;
+        let url2_len: i32 @Internal = input_len - split - one;
+
+        if url2_len == zero {
+            return 0 - 400;
+        } else {
+            let raw1: i64 @Internal = http_get(input_ptr, split);
+
+            if raw1 < 0 {
+                return raw1;
+            } else {
+                let raw2: i64 @Internal = http_get(url2_ptr, url2_len);
+
+                if raw2 < 0 {
+                    return raw2;
+                } else {
+                    let ptr1: i64 @Internal = raw1 / 4294967296;
+                    let len1: i64 @Internal = raw1 - ptr1 * 4294967296;
+                    let ptr2: i64 @Internal = raw2 / 4294967296;
+                    let len2: i64 @Internal = raw2 - ptr2 * 4294967296;
+                    let out_len: i64 @Internal = len1 + len2;
+                    let out_ptr: i64 @Internal = alloc(out_len);
+                    let mut out_i: i64 @Internal = 0;
+                    let mut a: i64 @Internal = 0;
+
+                    while a < len1 {
+                        let b: i64 @Internal = load8(ptr1 + a);
+                        store8(out_ptr + out_i, b);
+                        out_i = out_i + 1;
+                        a = a + 1;
+                    }
+
+                    let mut b_i: i64 @Internal = 0;
+
+                    while b_i < len2 {
+                        let b: i64 @Internal = load8(ptr2 + b_i);
+                        store8(out_ptr + out_i, b);
+                        out_i = out_i + 1;
+                        b_i = b_i + 1;
+                    }
+
+                    return out_ptr * 4294967296 + out_len;
+                }
+            }
+        }
+    }
+}

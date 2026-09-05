@@ -1,0 +1,95 @@
+// TASK: omni validate — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "limit_path:url". Read line-count limit from file, fetch URL,
+// return "ok" if response line count < limit, else "exceeded".
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw_l: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw_l < 0 {
+        return raw_l;
+    } else {
+    }
+    let l_ptr: i64 @Internal = raw_l / 4294967296;
+    let l_len: i64 @Internal = raw_l - l_ptr * 4294967296;
+
+    let mut limit: i64 @Internal = 0;
+    let mut li: i64 @Internal = 0;
+    while li < l_len {
+        let lb: i64 @Internal = load8(l_ptr + li);
+        if lb > 47 {
+            if lb < 58 {
+                limit = limit * 10 + lb - 48;
+            } else {
+            }
+        } else {
+        }
+        li = li + 1;
+    }
+
+    let url_off: i32 @Internal = sep32 + one_i32;
+    let url_len: i32 @Internal = input_len - url_off;
+    let raw_body: i64 @Internal = http_get(input_ptr + url_off, url_len);
+    if raw_body < 0 {
+        return raw_body;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw_body / 4294967296;
+    let body_len: i64 @Internal = raw_body - body_ptr * 4294967296;
+
+    let mut lines: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let bb: i64 @Internal = load8(body_ptr + i);
+        if bb == 10 {
+            lines = lines + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+
+    if lines < limit {
+        let out: i64 @Internal = alloc(2);
+        store8(out, 111);
+        store8(out + 1, 107);
+        return out * 4294967296 + 2;
+    } else {
+        let out: i64 @Internal = alloc(8);
+        store8(out, 101); // e
+        store8(out + 1, 120); // x
+        store8(out + 2, 99); // c
+        store8(out + 3, 101); // e
+        store8(out + 4, 101); // e
+        store8(out + 5, 100); // d
+        store8(out + 6, 101); // e
+        store8(out + 7, 100); // d
+        return out * 4294967296 + 8;
+    }
+}

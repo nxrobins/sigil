@@ -1,0 +1,70 @@
+// TASK: lines 5 10 — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split2 = input_len;
+    let mut split1 = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if b == 58 {
+            if split2 == input_len {
+                split2 = scan - one;
+            } else {
+                if split1 == input_len {
+                    split1 = scan - one;
+                } else {
+                }
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split1 == input_len {
+        return 0 - 400;
+    } else {
+        let start_line = 5;
+        let end_line = 10;
+        let raw: i64 @Internal = fs_read(input_ptr, split1);
+
+        if raw < 0 {
+            return raw;
+        } else {
+            let file_ptr: i64 @Internal = raw / 4294967296;
+            let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+            let mut current_line: i64 @Internal = 1;
+            let out_ptr: i64 @Internal = alloc(file_len);
+            let mut out_len: i64 @Internal = 0;
+            let mut i: i64 @Internal = 0;
+
+            while i < file_len {
+                let b: i64 @Internal = load8(file_ptr + i);
+                if current_line >= start_line {
+                    if current_line <= end_line {
+                        store8(out_ptr + out_len, b);
+                        out_len = out_len + 1;
+                    } else {
+                    }
+                } else {
+                }
+                if b == 10 {
+                    current_line = current_line + 1;
+                } else {
+                }
+                i = i + 1;
+            }
+
+            return out_ptr * 4294967296 + out_len;
+        }
+    }
+}

@@ -1,0 +1,17 @@
+module import_and_specifiers;
+
+record Foo { x: u256 }
+
+impl Foo {
+    pub fn new() -> Foo {
+        return Foo { x: 0 };
+    }
+
+    pub fn setX(self: Foo @Mut, a: u256) {
+        self.x = a;
+    }
+
+    pub fn getX(self: Foo) -> u256 {
+        return self.x;
+    }
+}

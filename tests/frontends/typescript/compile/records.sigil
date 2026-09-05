@@ -1,0 +1,8 @@
+module records;
+record Point { x: i64, y: i64 }
+pub fn make(a: i64, b: i64) -> Point {
+  return Point { x: a, y: b };
+}
+pub fn sum(p: Point) -> i64 {
+  return (p.x + p.y);
+}

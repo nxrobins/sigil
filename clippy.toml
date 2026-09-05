@@ -1,0 +1,75 @@
+# Workspace-level clippy configuration.
+#
+# `disallowed-methods` enforces the solver chokepoints and the
+# quantifier-free invariant documented in docs/z3-theory-inventory.md.
+#
+# Why clippy instead of a source grep:
+#   - clippy resolves through `use z3::ast::Ast as A` aliases (it
+#     operates on types, not literal symbol names), so the
+#     fence cannot be bypassed by renaming an import.
+#   - clippy runs on every `cargo clippy --workspace -- -D warnings`
+#     invocation, including the existing CI gate; it cannot be
+#     `#[ignore]`-ed because clippy does not support that.
+#
+# Update protocol: bumping the `z3` crate version in
+# crates/sigil-compiler/Cargo.toml requires re-auditing this list.
+# If the crate's namespace changes (e.g. z3::ast::forall_const moves
+# to z3::quantifier::forall), clippy fails on the unrecognized path
+# and the dependency update must amend the entries below.
+
+disallowed-methods = [
+    # Z3 quantifier-introducing APIs in z3 v0.12. Calling any of
+    # these would break the QF (quantifier-free) fragment claim
+    # documented in docs/z3-theory-inventory.md §4. If a future
+    # change genuinely needs quantifiers, both this list and the
+    # decidability proof must be re-done.
+    #
+    # In z3 v0.12, the quantifier constructors live as free functions
+    # at z3::ast — there are no Bool::forall_const, BV::forall_const,
+    # etc. method forms. If the crate adds those (or any new
+    # quantifier-introducing API) in a future version, the bumper
+    # must extend this list.
+    { path = "z3::ast::forall_const", reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+    { path = "z3::ast::exists_const", reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+
+    # Z3 cache invariant: cached values contain a Verdict and optional
+    # integer counterexample, not a live solver model, core, or proof.
+    # Callers that fetch model / unsat-core / proof AFTER a check
+    # would receive stale data on cache hits because the cache
+    # doesn't persist those auxiliary outputs. Locking these methods
+    # at the workspace level forces a soundness audit if someone
+    # ever needs one of them.
+    { path = "z3::Solver::get_model",      reason = "Z3 cache stores only the Verdict; fetching model after check returns stale data on cache hits. See crates/sigil-compiler/src/z3_cache.rs." },
+    { path = "z3::Solver::get_unsat_core", reason = "Z3 cache stores only the Verdict; fetching unsat core after check returns stale data on cache hits. See crates/sigil-compiler/src/z3_cache.rs." },
+    { path = "z3::Solver::get_proof",      reason = "Z3 cache stores only the Verdict; fetching proof after check returns stale data on cache hits. See crates/sigil-compiler/src/z3_cache.rs." },
+
+    # Chokepoint fence (see docs/specs/z3-fragment-guard.md §§6-10):
+    # every SAT query must
+    # flow through a wrapper that runs the runtime fragment guard in the
+    # SAME function as the check (ET-Z1) — z3_cache::fresh_check /
+    # check_cached* on the cached path, or air_capability_v2::check_direct
+    # on the cache-bypass capability path.
+    #
+    # Sanctioned expression-level `#[allow(clippy::disallowed_methods)]`
+    # carve-outs are CENSUS-PINNED by tests/z3_guard_fences.rs (a new
+    # appearance fails that test until deliberately added there):
+    #   1. z3_cache::fresh_check          (cache-miss evaluation)
+    #   2. z3_cache::verify_first_hit     (belt-and-braces re-verification)
+    #   3. air_capability_v2::check_direct (guarded direct check)
+    #   4. z3_capability.rs make_solver_applies_rlimit (raw rlimit self-test)
+    #   5. z3_capability.rs check_refinement_subsumption (get_model inside
+    #      the cache-miss closure)
+    #   6. tests/z3_fragment_guard_canaries.rs (the quantifier canary)
+    #   7. sigil-runtime/src/ephemeral.rs z3_solve_smtlib2_with_rlimit
+    #      (the runtime Cap<Z3> shim, a separate trust domain)
+    # Module-/file-scoped `#![allow(clippy::disallowed_methods)]` is
+    # FORBIDDEN workspace-wide (same fence test).
+    #
+    # NOTE: z3 0.12.1 has no `z3::ast::lambda_const` (verified against the
+    # vendored crate); re-audit quantifier/lambda constructors on any z3
+    # version bump per the protocol above.
+    { path = "z3::Solver::check",             reason = "Direct check() bypasses the runtime fragment guard; use z3_cache::check_cached*/fresh_check or air_capability_v2::check_direct. See docs/specs/z3-fragment-guard.md." },
+    { path = "z3::Solver::check_assumptions", reason = "Assumption-checking bypasses the fragment guard + verdict cache; no production query uses assumptions." },
+    { path = "z3::Optimize::check",           reason = "Optimize is a second solver entry point with no fragment-guard/cache integration; the verifier has no optimization queries." },
+    { path = "z3::Optimize::get_model",       reason = "Same staleness hazard as z3::Solver::get_model, on the unused Optimize entry point." },
+]

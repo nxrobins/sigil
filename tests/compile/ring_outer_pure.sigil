@@ -1,0 +1,9 @@
+// Test: outer ring module with pure functions compiles
+#[ring(outer)]
+module ext;
+fn add(a: i64, b: i64) -> i64 {
+    return a + b;
+}
+fn multiply(x: i64, y: i64) -> i64 {
+    return x * y;
+}

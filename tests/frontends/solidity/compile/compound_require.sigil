@@ -1,0 +1,18 @@
+module compound_require;
+
+record C { b: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { b: 0 };
+    }
+
+    pub fn f(self: C @Mut, a: u256) {
+        let mut __fe_0: bool = (a > 0);
+        if __fe_0 {
+            __fe_0 = (a < self.b);
+        }
+        trap_if(!(__fe_0));
+        self.b = a;
+    }
+}

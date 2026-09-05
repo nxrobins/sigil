@@ -1,0 +1,81 @@
+// expect-error: O001
+// Z3 corpus #8: axis-1 inexpressibility evidence — rate limits.
+//
+// Step 9 (first iteration under the axes-1/3/5 supremum prompt) attempted
+// to encode a rate-limit pattern using only existing primitives (actors,
+// cap types, linear move, `.split()`). The attempt FAILS at the language
+// surface because `cap.split(amount)` CONSUMES the parent cap rather
+// than preserving a remainder.
+//
+// The pattern below tries to spawn two workers each with one shard of
+// `fuel`. The second `fuel.split(1)` is rejected by the ownership
+// checker (O001) because the first split moved `fuel`. Generalizing:
+// any pattern that wants N sequential draws from a single parent
+// budget hits this wall after the first draw.
+//
+// Why this matters for the supremum:
+//   * Rate limits, quotas, N-of-M draws, and pool-style allocation
+//     are documented motivating axis-1 patterns. None are expressible
+//     today.
+//   * The user is forced to either (a) hard-code N=1 (single use), or
+//     (b) drop into actor message-passing that carries data instead
+//     of caps. Option (b) is the escape hatch the supremum forbids:
+//     the receiver gets data with no cap-typed safety guarantee.
+//
+// Smallest missing primitive (acceptance criteria for the NEXT axis-1
+// iteration):
+//
+//   Option A: `cap.draw(amount) -> Cap` that returns a shard AND
+//             leaves the parent alive bound to a remainder of
+//             `parent.amount - amount`. The parent's identity
+//             persists; only its quantity decreases. Linear semantics
+//             preserved because the parent is still a single cap
+//             with a single identity.
+//
+//   Option B: `cap.fork(n) -> [Cap; N]` that splits into a fixed
+//             compile-time `N` shards at once. Consumes parent.
+//             Returns an array binding. Less flexible than (A) but
+//             a single new primitive at the AIR level.
+//
+//   Option C: tuple-returning split: `let (shard, fuel) = fuel.split(1)`
+//             where `fuel` on the RHS is consumed and on the LHS is
+//             rebound to the remainder. Requires shadowing-by-let
+//             semantics that may not exist today.
+//
+// Recommendation (subject to next iteration's design review): Option A
+// is simplest because it adds ONE new AIR stmt (`AirStmt::CapDraw`)
+// with a tight Z3 conservation rule (parent.amount -= amount AND
+// child.amount = amount), and reuses the existing CapSplit Phase-1
+// legitimacy machinery. Options B and C require either array-of-cap
+// types or new binding forms — bigger surface.
+//
+// Next axis-1 iteration's acceptance criteria:
+//   1. A new fixture `09_rate_limit_via_draw.sigil` compiles cleanly
+//      and demonstrates two sequential `fuel.draw(1)` operations.
+//   2. This fixture (#08) remains rejected — `cap.split(1)` keeps its
+//      consuming semantics; only `cap.draw(1)` gets the new behavior.
+//   3. Z3 conservation: assert `parent_remaining + child_amount ==
+//      parent_initial` per Draw site.
+//   4. tokei runtime LOC unchanged (compile-time addition only).
+//
+// MUTATION CONTRACT: deleting MUTATION_SITE removes the second spawn
+// entirely. `fuel` is used exactly once, program compiles cleanly.
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    // `fuel` flows in as a linear message payload (a cap HELD in actor state is
+    // borrow-only inside a handler — C010 — so `.split` on state fuel would be
+    // rejected before this O001 point; the inexpressibility argument is about
+    // `.split`'s consuming semantics, which a flowing param exhibits identically).
+    on Tick(fuel: Fuel) -> i64 {
+        let _w1 = spawn::<Worker>(fuel.split(1));
+        let _w2 = spawn::<Worker>(fuel.split(1));  // MUTATION_SITE
+        return 1;
+    }
+}

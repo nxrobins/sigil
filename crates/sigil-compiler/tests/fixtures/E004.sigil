@@ -1,0 +1,13 @@
+// E004 — effect-handler form not yet supported (the EH0 intermediate-rung gate).
+// `effect Name { fn op(..) -> Ty; }` parses (EH0), but a `perform` of an
+// operation is rejected at type-check until the EH1+ rungs land, so the node
+// never reaches AIR (preserving byte-identical AIR).
+module sigil;
+
+effect Reader {
+    fn get() -> i64;
+}
+
+fn f() -> i64 {
+    return perform Reader.get();
+}

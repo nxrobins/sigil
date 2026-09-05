@@ -1,0 +1,232 @@
+// SH-BOOT self-hosted compiler driver; see docs/specs/self-hosting-completion-ladder.md.
+// (This leading comment lets the differential's `\nmodule pipeline;\n` strip match, exactly like
+// the other selfhost modules — keeping all fns in the merged `module tool;`.)
+module pipeline;
+
+// SH-BOOT — `sh_compile`, the driver that makes the composed selfhost modules ONE COMPILER.
+// Composed (module header stripped) into pipeline_differential alongside ALL other selfhost
+// modules (lexer, parser, name_resolution, typecheck, ring_check, effect_check, taint_check,
+// cap_check, own_check, air). Mirrors the Rust oracle pipeline's gate order
+// (compiler.rs:951-977, each stage short-circuiting): nr → tc → ring → effect → taint →
+// cap → own → the CV wasm chain. Output = the frozen protocol:
+//   REJECT:{stage}:{codes}   — the FIRST failing gate's CORE-filtered `;`-joined stream
+//   OK:{hex}                 — the whole-module lowercase-hex WASM (ai_encode_wasm)
+// (The cap/own shadows compute their verdicts from the parse tree — pre-air — but GATE in the
+// oracle's stage positions; gating ORDER is what the differential pins, X-B2.)
+
+const BP_BYTE_PIPE: i64 = 124;
+
+// The n-th `|`-segment of `text` (0-based). Mirrors tc_seg_at, splitting on '|' instead of ';' —
+// nr_encode emits `records|pool|aliases|diags` (diags = seg 3) and tc_encode emits
+// `records|pool|diags` (diags = seg 2).
+fn bp_seg_pipe(text: str, n: i64) -> str {
+    let len: i64 = text.len();
+    let mut seg: i64 = 0;
+    let mut segstart: i64 = 0;
+    let mut i: i64 = 0;
+    while i < len {
+        let b: i64 = text.byte_at(i);
+        if b == BP_BYTE_PIPE {
+            if seg == n {
+                return text.substr(segstart, i);
+            } else {
+            }
+            seg = seg + 1;
+            segstart = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    if seg == n {
+        return text.substr(segstart, len);
+    } else {
+    }
+    return "";
+}
+
+// Is `code` one of the `;`-joined entries of `allowed`? (tc_seg_at-style scan.)
+fn bp_code_in(code: str, allowed: str) -> bool {
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        let cand: str = tc_seg_at(allowed, i);
+        if cand.len() == 0 {
+            scanning = false;
+        } else {
+            if cand.bytes_eq(code) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Keep only the codes of `stream` (a `;`-joined stream) present in `allowed`; rejoin as
+// `code;code;…`. The MI-4 belt-and-suspenders: each gate compares its lane's CORE surface only.
+fn bp_filter(stream: str, allowed: str) -> str ! { Alloc } {
+    let mut out: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    let mut scanning: bool = true;
+    while scanning {
+        let code: str = tc_seg_at(stream, i);
+        if code.len() == 0 {
+            scanning = false;
+        } else {
+            let keep: bool = bp_code_in(code, allowed);
+            if keep {
+                let withsemi: str = code.concat(";");
+                let q: i64 = out.push(withsemi);
+            } else {
+            }
+            i = i + 1;
+        }
+    }
+    let empty: str = "";
+    let joined: str = empty.join(out);
+    return joined;
+}
+
+// bp_filter for the tc stream: tc diags may carry `code,start,end` spans (the a8 span
+// parity), so match on the text BEFORE the first `,`. Same allowlist semantics as
+// bp_filter otherwise.
+fn bp_filter_tc(stream: str, allowed: str) -> str ! { Alloc } {
+    let mut out: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    let mut scanning: bool = true;
+    while scanning {
+        let ent: str = tc_seg_at(stream, i);
+        if ent.len() == 0 {
+            scanning = false;
+        } else {
+            let elen: i64 = ent.len();
+            let mut cut: i64 = elen;
+            let mut j: i64 = 0;
+            while j < elen {
+                let bc: i64 = ent.byte_at(j);
+                if bc == 44 {
+                    cut = j;
+                    j = elen;
+                } else {
+                    j = j + 1;
+                }
+            }
+            let code: str = ent.substr(0, cut);
+            let keep: bool = bp_code_in(code, allowed);
+            if keep {
+                let withsemi: str = ent.concat(";");
+                let q: i64 = out.push(withsemi);
+            } else {
+            }
+            i = i + 1;
+        }
+    }
+    let empty: str = "";
+    let joined: str = empty.join(out);
+    return joined;
+}
+
+// The composed self-hosted COMPILER: gate in the oracle's stage order, emit the frozen protocol.
+pub fn sh_compile(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    // Gate 1: name resolution (the diags segment of `records|pool|aliases|diags`).
+    let nrout: str = nr_encode(nodes, kids, root);
+    let nrd: str = bp_seg_pipe(nrout, 3);
+    if nrd.len() > 0 {
+        let p1: str = "REJECT:nr:";
+        let r1: str = p1.concat(nrd);
+        return r1;
+    } else {
+    }
+
+    // Gate 2: type check (the diags segment of `records|pool|diags`), filtered to the
+    // parity-covered codes that are SOUND to enforce in composition — the same discipline
+    // every other gate already applies (taint's 13, ring {R001,R003}, effect {E001,E002},
+    // cap {C003}, own {O001,O007}); this gate was the ONE consuming a raw stream.
+    //
+    // T060 and T062 are ENFORCED: the shadow resolves intrinsic calls (the tc_build_sigs
+    // seed table: alloc/load8/store8/vec_load/vec_store/str_from_raw) and bare
+    // unit-variant values (unique-enum rule, locals shadow variants), so an undefined
+    // callee or undefined local rejects HERE, at tc, with parity fixtures behind it.
+    //
+    // DROPPED by name, each with its measured reason:
+    //   * T046 — cross-module TYPE annotations. The shadow deliberately does not resolve
+    //     types across module boundaries (the X-S9 isolated-row artifact); the certified
+    //     artifact never fires it (measured 0 over cap0).
+    //   * T071 — free-call argument assignability, ONE attributed shape: a record's
+    //     Vec-typed FIELD passed as a call argument (`sg.parmtp`, `sgm.parmtp`,
+    //     `brec.tpnames` — 3 sites, post-mono only: the callee's substituted param code
+    //     goes concrete while the field-access encoding stays composite). The ORACLE
+    //     accepts all three; enforcing T071 would reject the certified artifact on a
+    //     shadow imprecision. Fix = reconcile field-access vs param encodings, with
+    //     parity evidence, then restore.
+    let tcout: str = tc_encode(nodes, kids, root);
+    let tcraw: str = bp_seg_pipe(tcout, 2);
+    let tcd: str = bp_filter_tc(tcraw, "T041;T044;T045;T049;T050;T051;T054;T055;T060;T062;T070;T087;T088;T120;T190;T248;T249;T250;T245;T246;T150;T233;T234;T236;T262");
+    if tcd.len() > 0 {
+        let p2: str = "REJECT:tc:";
+        let r2: str = p2.concat(tcd);
+        return r2;
+    } else {
+    }
+
+    // Gate 3: ring (CORE {R001, R003}).
+    let rcout: str = rc_encode(nodes, kids, root);
+    let rcd: str = bp_filter(rcout, "R001;R003");
+    if rcd.len() > 0 {
+        let p3: str = "REJECT:ring:";
+        let r3: str = p3.concat(rcd);
+        return r3;
+    } else {
+    }
+
+    // Gate 4: effect (CORE {E001, E002}).
+    let ecout: str = ec_encode(nodes, kids, root);
+    let ecd: str = bp_filter(ecout, "E001;E002");
+    if ecd.len() > 0 {
+        let p4: str = "REJECT:effect:";
+        let r4: str = p4.concat(ecd);
+        return r4;
+    } else {
+    }
+
+    // Gate 5: taint (the 13 in-core scalar codes).
+    let ttout: str = tt_encode(nodes, kids, root);
+    let ttd: str = bp_filter(ttout, "T001;T020;T021;T022;T023;T024;T025;T026;T027;T029;T030;T031;T032;SH_TAINT_UNSUPPORTED");
+    if ttd.len() > 0 {
+        let p5: str = "REJECT:taint:";
+        let r5: str = p5.concat(ttd);
+        return r5;
+    } else {
+    }
+
+    // Gate 6: capability (the bitwise C003 verdict — == Z3 on the slot-free covered surface).
+    let capout: str = cap_verdict_encode(nodes, kids, root);
+    let capd: str = bp_filter(capout, "C003");
+    if capd.len() > 0 {
+        let p6: str = "REJECT:cap:";
+        let r6: str = p6.concat(capd);
+        return r6;
+    } else {
+    }
+
+    // Gate 7: ownership (CORE {O001, O007}, ordered).
+    let ownout: str = own_encode(nodes, kids, root);
+    let ownd: str = bp_filter(ownout, "O001;O007");
+    if ownd.len() > 0 {
+        let p7: str = "REJECT:own:";
+        let r7: str = p7.concat(ownd);
+        return r7;
+    } else {
+    }
+
+    // All gates clean: the CV chain to whole-module WASM hex (ai_encode_wasm = the byte-identical
+    // W-lane emitter; a `!!` poison on out-of-surface input fails the harness's strict hex decode
+    // loudly, never silently).
+    let hex: str = ai_encode_wasm(nodes, kids, root);
+    let okp: str = "OK:";
+    let ok: str = okp.concat(hex);
+    return ok;
+}

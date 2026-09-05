@@ -1,0 +1,29 @@
+// Mutual recursion: is_even calls is_odd calls is_even
+module sigil;
+cap type Fuel {}
+
+fn is_even(n: i64) -> i64 {
+    if n < 1 {
+        return 1;
+    } else {
+        return is_odd(n - 1);
+    }
+}
+
+fn is_odd(n: i64) -> i64 {
+    if n < 1 {
+        return 0;
+    } else {
+        return is_even(n - 1);
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let a = is_even(4);
+        let b = is_odd(3);
+        return a + b;
+    }
+}

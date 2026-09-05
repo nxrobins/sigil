@@ -1,0 +1,28 @@
+// expect-ok
+// Z3 corpus #66: axis-1 — Wall 4 Step 10 Eq narrowing implies range.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `if input == 5` narrows `input` to the exact value 5. Z3 trivially
+// discharges `5 > 0` against the callee's `where x > 0`. This
+// exercises the Eq relop branch of the recognizer; Eq is
+// self-symmetric under negation (Eq↔Ne) and under side-swap
+// (5 == x ⇔ x == 5).
+//
+// Eq narrowing is the strongest single-clause refinement: knowing the
+// exact value lets Z3 discharge any predicate the value satisfies.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input == 5 {
+            return need_positive(input);
+        } else {
+            return 0;
+        }
+    }
+}

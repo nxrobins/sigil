@@ -1,0 +1,9 @@
+pub fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
+    let mut r = x;
+    if x < lo {
+        r = lo;
+    } else if x > hi {
+        r = hi;
+    }
+    return r;
+}

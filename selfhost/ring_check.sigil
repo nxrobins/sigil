@@ -1,0 +1,281 @@
+// SH-RING self-hosted ring-boundary checker; see docs/specs/sh-security-checkers.md.
+// (This leading comment lets the differential's `\nmodule ring_check;\n` strip match,
+// exactly like lexer.sigil/parser.sigil/name_resolution.sigil — keeping all fns in
+// the merged `module tool;`.)
+module ring_check;
+
+// SH-RING — self-hosted ring checker (prefix rc_/RC_). Composed (module header
+// stripped) into ring_check_differential alongside lexer + parser + typecheck;
+// reuses PNode + P_K_* (parser.sigil) and the cap helpers + TC_* (typecheck.sigil:
+// tc_build_caps, tc_build_recs, tc_cap_name_of_typenode, tc_fn_ret_typeid,
+// tc_fn_body, tc_seg_at). Mirrors the Rust oracle ring_check::check_rings @739784e
+// for MIN_COVERED = {R001, R003}:
+//   R001 — an OUTER-ring fn that OWNS a cap (a DIRECT cap param / return / let).
+//   R003 — an INNER-ring fn body that calls a declared extern fn.
+// R002 is DEMOTED (its only trigger is also a T253 type error — ET-R1). Output is a
+// `;`-joined R-code stream (one `R001;`/`R003;` per detected site, module/fn order);
+// the harness dedups to a set (AG-R6: count/span parity is a follow-on).
+
+// Module ids under `root`: a P_K_PROGRAM (83) wrapper's children, or the bare
+// P_K_MODULE root (single-module). Mirrors nr_collect_modules.
+fn rc_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// True iff the module's ring is OUTER = flags low bit set. flags =
+// ring-outer(+1) + trusted(+2) + pub(+4); ring is bit 0 ONLY (ET-R3: trusted/pub
+// never affect ring). Computed as flags - (flags/2)*2 == 1 (a 1-bit read, no
+// bitwise `&`); a truthiness test (`flags != 0`) is FORBIDDEN.
+fn rc_is_outer(flags: i64) -> bool {
+    let half: i64 = flags / 2;
+    let lowbit: i64 = flags - half * 2;
+    if lowbit == 1 {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// Collect every declared extern-fn NAME across all modules (the oracle's
+// `universe.extern_fns` is program-wide). A P_K_EXTERN_FN's text is
+// "abi;name;effect…", so the name is segment 1 (tc_seg_at(text, 1)) — a STRUCTURAL
+// fact, NOT the rejected cap-re-derivation.
+fn rc_collect_externs(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let nm: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nm {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_EXTERN_FN {
+                let enm: str = tc_seg_at(cn.text, 1);
+                let p: i64 = out.push(enm);
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Linear membership: is `name` byte-equal to some entry of `names`?
+fn rc_name_in(names: Vec<str>, name: str) -> bool {
+    let n: i64 = names.len();
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let cand: str = names.get(i);
+            if cand.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Recursive subtree walk of a function BODY, parameterized by ring:
+//   OUTER (is_outer) → a P_K_LET with a DIRECT cap annotation → R001 (mirrors the
+//     oracle's check_outer_body let-scan; lets only appear in block-statement
+//     positions, so a generic descent finds exactly the same set);
+//   INNER → a P_K_CALL whose callee name (its `text`) is a declared extern → R003.
+// Does NOT descend into P_K_CLOSURE (the oracle types closures independently — their
+// ring checks fire on the closure's own fn; extern-in-closure is out-of-core, AG-R5).
+// Every other child is descended (call args included).
+fn rc_scan_body(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, is_outer: bool, externs: Vec<str>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    if n.kind == P_K_CLOSURE {
+        return 0;
+    } else {
+    }
+    if is_outer {
+        if n.kind == P_K_LET {
+            if n.child_count == 2 {
+                let aid: i64 = kids.get(n.child_start);
+                let capn: str = tc_cap_name_of_typenode(nodes, aid, rdefs, cdefs);
+                if capn.len() > 0 {
+                    let p: i64 = diags.push("R001;");
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+    } else {
+        if n.kind == P_K_CALL {
+            let isext: bool = rc_name_in(externs, n.text);
+            if isext {
+                let p: i64 = diags.push("R003;");
+            } else {
+            }
+        } else {
+        }
+    }
+    let mut i: i64 = 0;
+    while i < n.child_count {
+        let cid: i64 = kids.get(n.child_start + i);
+        let r: i64 = rc_scan_body(nodes, kids, cid, is_outer, externs, rdefs, cdefs, diags);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// R001 for one OUTER-ring fn: a DIRECT owned-cap param type / return type / body let.
+// `tc_cap_name_of_typenode` returns the bare cap name ONLY for a flags-0, childless
+// P_K_TYPE whose name is a declared cap — a `&`-borrow type node has non-zero flags
+// → "" → never R001 (ET-R2, at the helper level). One R001 per offending site
+// (matching the oracle's per-site emission; the harness dedups to a set).
+fn rc_check_outer_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let fnn: PNode = nodes.get(fnid);
+    // params: each P_K_PARAM's first child is its declared type node.
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            if cn.child_count >= 1 {
+                let tid: i64 = kids.get(cn.child_start);
+                let capn: str = tc_cap_name_of_typenode(nodes, tid, rdefs, cdefs);
+                if capn.len() > 0 {
+                    let p: i64 = diags.push("R001;");
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    // return type node (the lone type-family direct child, or -1 for Unit).
+    let rtid: i64 = tc_fn_ret_typeid(nodes, kids, fnid);
+    if rtid >= 0 {
+        let rcapn: str = tc_cap_name_of_typenode(nodes, rtid, rdefs, cdefs);
+        if rcapn.len() > 0 {
+            let pr: i64 = diags.push("R001;");
+        } else {
+        }
+    } else {
+    }
+    // body lets (walked through if/while/for/match by rc_scan_body's descent).
+    let body: i64 = tc_fn_body(nodes, kids, fnid);
+    if body >= 0 {
+        let emptyext: Vec<str> = Vec::new();
+        let rs: i64 = rc_scan_body(nodes, kids, body, true, emptyext, rdefs, cdefs, diags);
+    } else {
+    }
+    return 0;
+}
+
+// A generic fn (a P_K_FN with a P_K_TYPE_PARAM child) is SKIPPED: the oracle only
+// ring-checks MONOMORPHIZED instances of a generic (built on demand at a call site),
+// never the generic source — an uncalled generic produces zero typed functions, so
+// check_rings never sees it; a called generic's instances are out-of-core (the
+// self-host models no monomorphization). Skipping the generic source is subset-safe
+// (fewer R-codes) and mirrors the typecheck self-host's generic-body skip + AG-G9.
+fn rc_is_generic_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= fnn.child_count {
+            scanning = false;
+        } else {
+            let cid: i64 = kids.get(fnn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_TYPE_PARAM {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Emit the `;`-joined R-code stream (R001/R003) for the parsed program. Per module:
+// read the ring from the P_K_MODULE node's flags low bit; an OUTER module's fns get
+// the R001 owned-cap checks; an INNER module's fn bodies are scanned for extern
+// calls (R003). The cap/record/extern tables are built once across ALL modules.
+pub fn rc_encode(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut diags: Vec<str> = Vec::new();
+
+    let mut mods: Vec<i64> = Vec::new();
+    let cm: i64 = rc_collect_modules(nodes, kids, root, mods);
+    let nmod: i64 = mods.len();
+
+    // cap + record tables (program-wide). tc_build_caps/tc_build_recs walk a node's
+    // DIRECT children for cap-type/record decls — call per module so a P_K_PROGRAM
+    // root (whose children are modules, not decls) is handled.
+    let mut cdefs: Vec<TcCap> = Vec::new();
+    let mut rdefs: Vec<TcRec> = Vec::new();
+    let mut bi: i64 = 0;
+    while bi < nmod {
+        let mid: i64 = mods.get(bi);
+        let bc: i64 = tc_build_caps(nodes, kids, mid, cdefs);
+        let br: i64 = tc_build_recs(nodes, kids, mid, rdefs);
+        bi = bi + 1;
+    }
+
+    // extern decl names (program-wide).
+    let mut externs: Vec<str> = Vec::new();
+    let ce: i64 = rc_collect_externs(nodes, kids, mods, externs);
+
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let outer: bool = rc_is_outer(mn.flags);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                let gen: bool = rc_is_generic_fn(nodes, kids, cid);
+                if gen {
+                    // generic source fn — never monomorphized self-host-side; the
+                    // oracle ring-checks only its (out-of-core) instances. Skip.
+                } else {
+                    if outer {
+                        let rr: i64 = rc_check_outer_fn(nodes, kids, cid, rdefs, cdefs, diags);
+                    } else {
+                        let body: i64 = tc_fn_body(nodes, kids, cid);
+                        if body >= 0 {
+                            let rs: i64 = rc_scan_body(nodes, kids, body, false, externs, rdefs, cdefs, diags);
+                        } else {
+                        }
+                    }
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+
+    let empty: str = "";
+    let diagj: str = empty.join(diags);
+    return diagj;
+}

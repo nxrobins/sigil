@@ -1,0 +1,66 @@
+// TASK: fetch url detect type — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn render_text_plain() -> i64 @Internal ! { Alloc } {
+    let out_ptr: i64 @Internal = alloc(10);
+    store8(out_ptr, 116);
+    store8(out_ptr + 1, 101);
+    store8(out_ptr + 2, 120);
+    store8(out_ptr + 3, 116);
+    store8(out_ptr + 4, 47);
+    store8(out_ptr + 5, 112);
+    store8(out_ptr + 6, 108);
+    store8(out_ptr + 7, 97);
+    store8(out_ptr + 8, 105);
+    store8(out_ptr + 9, 110);
+    return out_ptr * 4294967296 + 10;
+}
+
+fn render_application_json() -> i64 @Internal ! { Alloc } {
+    let out_ptr: i64 @Internal = alloc(16);
+    store8(out_ptr, 97);
+    store8(out_ptr + 1, 112);
+    store8(out_ptr + 2, 112);
+    store8(out_ptr + 3, 108);
+    store8(out_ptr + 4, 105);
+    store8(out_ptr + 5, 99);
+    store8(out_ptr + 6, 97);
+    store8(out_ptr + 7, 116);
+    store8(out_ptr + 8, 105);
+    store8(out_ptr + 9, 111);
+    store8(out_ptr + 10, 110);
+    store8(out_ptr + 11, 47);
+    store8(out_ptr + 12, 106);
+    store8(out_ptr + 13, 115);
+    store8(out_ptr + 14, 111);
+    store8(out_ptr + 15, 110);
+    return out_ptr * 4294967296 + 16;
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let body_ptr: i64 @Internal = raw / 4294967296;
+        let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+        if body_len > 0 {
+            let first: i64 @Internal = load8(body_ptr);
+            if first == 123 {
+                return render_application_json();
+            } else {
+            }
+        } else {
+        }
+
+        return render_text_plain();
+    }
+}

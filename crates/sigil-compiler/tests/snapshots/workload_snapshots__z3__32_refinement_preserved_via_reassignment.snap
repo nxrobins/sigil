@@ -1,0 +1,143 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "value",
+                    op: Ge,
+                    rhs: Literal(
+                        0,
+                    ),
+                    span: Span {
+                        start: 1163,
+                        end: 1179,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    42,
+                ),
+                site: Span {
+                    start: 1295,
+                    end: 1314,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "record construction violates refinement: field `value` supplied with literal `42`, but predicate `value >= 0` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1295,
+                            end: 1314,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging refinement on field `value` against literal `42`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1295,
+                            end: 1314,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "value",
+                    op: Ge,
+                    rhs: Literal(
+                        0,
+                    ),
+                    span: Span {
+                        start: 1163,
+                        end: 1179,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    99,
+                ),
+                site: Span {
+                    start: 1343,
+                    end: 1362,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "record construction violates refinement: field `value` supplied with literal `99`, but predicate `value >= 0` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1343,
+                            end: 1362,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging refinement on field `value` against literal `99`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1343,
+                            end: 1362,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

@@ -1,0 +1,10 @@
+// PROBE: fs i64 — compiler/runtime scaffolding, not a pattern example.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i64, path_len: i64) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    return fs_read(input_ptr, input_len);
+}

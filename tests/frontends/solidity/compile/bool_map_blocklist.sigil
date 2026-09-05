@@ -1,0 +1,26 @@
+module bool_map_blocklist;
+
+record Blocklist { blocked: BoundedMap_u256_u256_64, total: u256 }
+
+impl Blocklist {
+    pub fn new() -> Blocklist {
+        return Blocklist { blocked: BoundedMap_u256_u256_64::new(), total: 0 };
+    }
+
+    pub fn ban(self: Blocklist @Mut, account: u256) {
+        self.blocked.insert(account, 1);
+    }
+
+    pub fn unban(self: Blocklist @Mut, account: u256) {
+        self.blocked.insert(account, 0);
+    }
+
+    pub fn isBlocked(self: Blocklist, account: u256) -> bool {
+        return (self.blocked.get_or(account, 0) == 1);
+    }
+
+    pub fn deposit(self: Blocklist @Mut, __fe_sender: u256, amount: u256) {
+        trap_if(!(!((self.blocked.get_or(__fe_sender, 0) == 1))));
+        self.total = (self.total + amount);
+    }
+}

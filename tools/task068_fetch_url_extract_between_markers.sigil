@@ -1,0 +1,173 @@
+// TASK: fetch url extract between markers — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split2 = input_len;
+    let mut split1 = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if b == 58 {
+            if split2 == input_len {
+                split2 = scan - one;
+            } else {
+                if split1 == input_len {
+                    split1 = scan - one;
+                } else {
+                }
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split1 == input_len {
+        return 0 - 400;
+    } else {
+        let raw: i64 @Internal = http_get(input_ptr, split1);
+
+        if raw < 0 {
+            return raw;
+        } else {
+            let start_src: i32 @Internal = input_ptr + split1 + one;
+            let end_src: i32 @Internal = input_ptr + split2 + one;
+            let mut start_len: i64 @Internal = 0;
+            let mut start_scan: i32 @Internal = start_src;
+            let mut end_len: i64 @Internal = 0;
+            let mut end_scan: i32 @Internal = end_src;
+
+            while start_scan < input_ptr + split2 {
+                start_len = start_len + 1;
+                start_scan = start_scan + one;
+            }
+
+            while end_scan < input_ptr + input_len {
+                end_len = end_len + 1;
+                end_scan = end_scan + one;
+            }
+
+            if start_len == 0 {
+                return 0 - 400;
+            } else {
+                if end_len == 0 {
+                    return 0 - 400;
+                } else {
+                    let start_ptr: i64 @Internal = alloc(start_len);
+                    let mut start_copy_scan: i32 @Internal = start_src;
+                    let mut copy_i: i64 @Internal = 0;
+
+                    while start_copy_scan < input_ptr + split2 {
+                        let b: i64 @Internal = load8(start_copy_scan);
+                        store8(start_ptr + copy_i, b);
+                        copy_i = copy_i + 1;
+                        start_copy_scan = start_copy_scan + one;
+                    }
+
+                    let end_ptr: i64 @Internal = alloc(end_len);
+                    let mut end_copy_scan: i32 @Internal = end_src;
+                    copy_i = 0;
+
+                    while end_copy_scan < input_ptr + input_len {
+                        let b: i64 @Internal = load8(end_copy_scan);
+                        store8(end_ptr + copy_i, b);
+                        copy_i = copy_i + 1;
+                        end_copy_scan = end_copy_scan + one;
+                    }
+
+                    let body_ptr: i64 @Internal = raw / 4294967296;
+                    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+                    let mut found_start: i64 @Internal = 0;
+                    let mut start_out: i64 @Internal = 0;
+                    let mut i: i64 @Internal = 0;
+
+                    while i < body_len {
+                        if found_start == 0 {
+                            if body_len - i >= start_len {
+                                let mut same: i64 @Internal = 1;
+                                let mut j: i64 @Internal = 0;
+
+                                while j < start_len {
+                                    if same == 1 {
+                                        let a: i64 @Internal = load8(body_ptr + i + j);
+                                        let b: i64 @Internal = load8(start_ptr + j);
+                                        if a == b {
+                                        } else {
+                                            same = 0;
+                                        }
+                                    } else {
+                                    }
+                                    j = j + 1;
+                                }
+
+                                if same == 1 {
+                                    found_start = 1;
+                                    start_out = i + start_len;
+                                } else {
+                                }
+                            } else {
+                            }
+                        } else {
+                        }
+                        i = i + 1;
+                    }
+
+                    if found_start == 0 {
+                        return 0;
+                    } else {
+                        let mut end_at: i64 @Internal = body_len;
+                        let mut found_end: i64 @Internal = 0;
+                        i = start_out;
+
+                        while i < body_len {
+                            if found_end == 0 {
+                                if body_len - i >= end_len {
+                                    let mut same: i64 @Internal = 1;
+                                    let mut j: i64 @Internal = 0;
+
+                                    while j < end_len {
+                                        if same == 1 {
+                                            let a: i64 @Internal = load8(body_ptr + i + j);
+                                            let b: i64 @Internal = load8(end_ptr + j);
+                                            if a == b {
+                                            } else {
+                                                same = 0;
+                                            }
+                                        } else {
+                                        }
+                                        j = j + 1;
+                                    }
+
+                                    if same == 1 {
+                                        found_end = 1;
+                                        end_at = i;
+                                    } else {
+                                    }
+                                } else {
+                                }
+                            } else {
+                            }
+                            i = i + 1;
+                        }
+
+                        if found_end == 1 {
+                            let out_ptr: i64 @Internal = body_ptr + start_out;
+                            let out_len: i64 @Internal = end_at - start_out;
+                            return out_ptr * 4294967296 + out_len;
+                        } else {
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

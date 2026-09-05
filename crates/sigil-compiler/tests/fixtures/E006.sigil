@@ -1,0 +1,6 @@
+// E006 — `perform E.op(..)` names an effect that is not declared.
+module sigil;
+
+fn f() -> i64 {
+    return perform Nope.get();
+}

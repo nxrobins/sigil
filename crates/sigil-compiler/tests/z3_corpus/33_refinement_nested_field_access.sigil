@@ -1,0 +1,42 @@
+// expect-ok
+// Z3 corpus #33: axis-1 — Wall 4 Step 2 refinement chains through nested field access.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// MI-S2-ε: chained field access on nested records preserves refinement
+// at the leaf. `outer.inner.value` is a 2-segment path that the parser
+// lowers as `Expr::Path` through `infer_path_expr`. Each segment of the
+// chain hits `compute_field_access_refinement` via the path-chain code.
+// Refinement attaches at the LEAF segment (the i64 field), not at
+// intermediate record-typed segments.
+//
+// Intermediate `outer.inner` is `Type::Named("Inner", _)` — not i64
+// — so V18's attachment gate filters it (returns None). The final
+// `.value` segment is i64 and carries `Inner`'s refinement.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// SIGIL records support fields whose type is another named record.
+// Step 2's path-chain attachment in `infer_path_expr` calls
+// `compute_field_access_refinement` at EACH segment; only the i64
+// leaf attaches a non-None refinement.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok).
+module sigil;
+
+record Inner { value: i64 } where value >= 0
+
+record Outer { inner: Inner }
+
+record Mirror { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let inner_val: Inner = Inner { value: 42 };
+        let outer: Outer = Outer { inner: inner_val };
+        let m: Mirror = Mirror { copy: outer.inner.value };
+        return 1;
+    }
+}

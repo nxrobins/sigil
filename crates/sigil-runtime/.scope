@@ -1,0 +1,42 @@
+description: Runtime crate for Wasmtime actor hosting and ephemeral tool execution
+includes:
+  - crates/sigil-runtime/
+  - Cargo.toml
+excludes:
+  - crates/sigil-runtime/target/
+context: |
+  This crate owns the Wasmtime-backed execution environment for compiled Sigil
+  modules and ephemeral ToolForge modules.
+  Put capability provisioning, actor/message dispatch, runtime fuel enforcement,
+  host imports, and ephemeral execution support here.
+
+  Do not move compiler front-end logic into this crate. Compiler analysis stays in
+  `sigil-compiler`; shared handoff types belong in `sigil-abi`; this crate is the
+  execution environment.
+
+  Current implemented slice:
+  - `RuntimeHost` instantiates compiled Wasm with Wasmtime, bootstraps the entry
+    actor, queues `Start`, and dispatches handlers through shared ABI metadata
+  - runtime host imports wire `fuel_decrement`, `send`, `ask`, and `spawn`
+    directly into actor/capability/message state and audit logging
+  - runtime dispatch decodes the currently supported ABI payload types and tracks
+    supervision, actor state transitions, and message delivery
+  - the crate also exposes `execute_ephemeral`, a one-shot runtime for compiled
+    tool modules with fuel metering and grant-controlled filesystem/network access
+  - supporting modules isolate actor state, capabilities, grants, audit logging,
+    supervision, local fuel accounting, and ephemeral host behavior
+  - current bounded edges remain around actor init provisioning, spawn capability
+    flow, and the set of payload/value types that can cross the runtime ABI today
+related:
+  - crates/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-registry/.scope
+  - crates/sigil-cli/.scope
+  - crates/sigil-runtime/src/.scope
+tags:
+  - runtime
+  - rust
+  - wasmtime
+  - actors
+  - toolforge

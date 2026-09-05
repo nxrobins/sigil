@@ -1,0 +1,70 @@
+description: Sigil workspace boundary across compiler, runtime, registry, ToolForge, and CLI crates
+includes:
+  - crates/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-abi/Cargo.toml
+  - crates/sigil-compiler/.scope
+  - crates/sigil-compiler/Cargo.toml
+  - crates/sigil-runtime/.scope
+  - crates/sigil-runtime/Cargo.toml
+  - crates/sigil-registry/.scope
+  - crates/sigil-registry/Cargo.toml
+  - crates/sigil-cli/.scope
+  - crates/sigil-cli/Cargo.toml
+  - .editorconfig
+  - .gitattributes
+  - .github/workflows/ci.yml
+  - .gitignore
+  - Cargo.toml
+  - README.md
+excludes:
+  - crates/__pycache__/
+  - "*.pyc"
+context: |
+  This scope is the cross-crate workspace view.
+  Use it for changes that span crate boundaries, workspace manifests, or top-level
+  architecture decisions.
+
+  Crate ownership:
+  - `crates/sigil-abi`: the shared runtime ABI boundary
+  - `crates/sigil-compiler`: the Sigil compiler pipeline and Wasm backend
+  - `crates/sigil-runtime`: the Wasmtime actor host plus ephemeral tool runtime
+  - `crates/sigil-registry`: the SQLite-backed template registry for ToolForge
+  - `crates/sigil-cli`: the command line entry point over compiler, runtime, and registry
+
+  Prefer the crate-local scopes for focused implementation work so agent context
+  stays small and responsibilities remain clear.
+
+  Current repository shape:
+  - the compiler implements the Phase 2 language surface: generics and eager
+    monomorphization, records/enums/arrays, actor messaging, two-ring checks,
+    effect rows, taint tracking, typed FFI, region blocks, AIR lowering,
+    capability and ownership verification, memory and fuel lowering, and Wasm
+    emission
+  - the runtime has two execution paths: `RuntimeHost` for actor-oriented Sigil
+    modules and `execute_ephemeral` for one-shot outer-ring tool execution with
+    I/O grants
+  - the ABI crate owns shared import names and runtime metadata so compiler and
+    runtime stay aligned without duplicating handoff structs
+  - the registry crate stores reusable tool templates and metadata in SQLite for
+    the CLI's `forge` and `registry` workflows
+  - the CLI exposes compile/run commands plus ToolForge/template-registry flows
+  - each major crate has a nested `src` scope so implementation work can stay local
+  - repo-level hygiene is enforced with shared editor defaults, line-ending rules,
+    and CI checks for `fmt`, `clippy`, and `test`
+related:
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-registry/.scope
+  - crates/sigil-cli/.scope
+  - crates/sigil-abi/src/.scope
+  - crates/sigil-compiler/src/.scope
+  - crates/sigil-runtime/src/.scope
+  - crates/sigil-registry/src/.scope
+  - crates/sigil-cli/src/.scope
+tags:
+  - workspace
+  - crates
+  - rust
+  - toolforge

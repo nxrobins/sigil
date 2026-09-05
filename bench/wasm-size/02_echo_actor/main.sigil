@@ -1,0 +1,20 @@
+// Spawn an Echo actor, send it a value, reply with the same value.
+// Exercises spawn + capability move + actor handler dispatch.
+// 02_echo_actor pair — SIGIL side.
+module echo;
+
+cap type SpawnAuth {}
+
+actor Echo {
+    init(auth: SpawnAuth) {}
+    on Ping(v: i64) -> i64 { return v; }
+}
+
+entry actor Main {
+    state { auth: SpawnAuth }
+
+    on Start(v: i64) -> i64 {
+        let _e = spawn::<Echo>(auth);
+        return v;
+    }
+}

@@ -1,0 +1,13 @@
+// expect-error: T200
+//
+// T200 — `cap.restrict_deadline(D')` cannot extend a cap's declared
+// deadline. The intrinsic can only NARROW: `D' <= D_orig` is required.
+// Stage 2 of the deadline-typed cap rollout.
+module main;
+cap type Approval(deadline_ms: i64) {}
+
+fn boot(c: Approval(2025)) -> i64 {
+    let extended = c.restrict_deadline(2030);
+    let _ = extended;
+    return 0;
+}

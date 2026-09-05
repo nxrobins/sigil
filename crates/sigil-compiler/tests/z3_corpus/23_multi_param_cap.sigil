@@ -1,0 +1,43 @@
+// expect-ok
+// Z3 corpus #23: axis-1 — multi-parameter parametric caps (Wall 3).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 3 closes the last regression-locked wall by generalizing the
+// Wall 2 single-parameter parametric cap (`cap type Approval(deadline_ms:
+// i64) {}`) to multi-parameter form: caps that compose a deadline AND
+// a rate-limit simultaneously.
+//
+// The composite shape:
+//
+//   * `cap type Limited(deadline_ms: i64, max_uses: i64) {}` declares
+//     a cap parametric in BOTH dimensions.
+//   * Subtyping is all-positions covariance: a cap with deadline >=
+//     and max_uses >= the target's positions is acceptable. This
+//     fixture passes `Limited(2031, 6)` into a sink expecting
+//     `Limited(2030, 5)` — both dimensions strictly larger, both
+//     accepted by the covariant subtype rule.
+//   * The values DIFFER per position (2031 vs 6) to prevent any lazy
+//     "treats all positions identically" implementation from passing.
+//
+// MUTATION CONTRACT
+//
+// Not applicable. This is an `expect-ok` fixture (positive evidence
+// of expressiveness). Removing any line would break compilation, not
+// flip a verdict.
+module sigil;
+
+cap type Limited(deadline_ms: i64, max_uses: i64) {}
+
+fn settle(c: Limited(2030, 5)) -> i64 {
+    return 1;
+}
+
+entry actor Main {
+    state { authority: Limited(2031, 6) }
+
+    on Start() -> i64 {
+        // All-positions covariance: 2031 >= 2030 AND 6 >= 5 → OK.
+        return settle(authority);
+    }
+}

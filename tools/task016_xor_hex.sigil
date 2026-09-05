@@ -1,0 +1,60 @@
+// TASK: xor hex — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn xor_byte_pair(a_in: i64, b_in: i64) -> i64 {
+    let mut a = a_in;
+    let mut b = b_in;
+    let mut place = 1;
+    let mut result = 0;
+    let mut i = 0;
+
+    while i < 8 {
+        let a_half = a / 2;
+        let b_half = b / 2;
+        let a_bit = a - a_half * 2;
+        let b_bit = b - b_half * 2;
+        let bit_sum = a_bit + b_bit;
+
+        if bit_sum == 1 {
+            result = result + place;
+        } else {
+        }
+
+        a = a_half;
+        b = b_half;
+        place = place + place;
+        i = i + 1;
+    }
+
+    return result;
+}
+
+fn hex_digit(n: i64) -> i64 {
+    if n < 10 {
+        return 48 + n;
+    } else {
+        return 87 + n;
+    }
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut acc = 0;
+    let mut i = 0;
+
+    while i < input_len {
+        let b = load8(input_ptr + i);
+        acc = xor_byte_pair(acc, b);
+        i = i + 1;
+    }
+
+    let hi = acc / 16;
+    let lo = acc - hi * 16;
+    let out_ptr = alloc(2);
+    store8(out_ptr, hex_digit(hi));
+    store8(out_ptr + 1, hex_digit(lo));
+    return out_ptr * 4294967296 + 2;
+}

@@ -1,0 +1,29 @@
+// expect-error: E003
+// CVE Retrofit #01: CVE-2021-44228 — Log4Shell (Apache Log4j JNDI injection)
+// Scope: STRUCTURAL
+//
+// ORIGINAL VULNERABILITY
+//   Apache Log4j 2.x performed JNDI lookups when log messages contained
+//   `${jndi:...}` substrings. An attacker who controlled any string
+//   reaching the logger (e.g., User-Agent header) could trigger the
+//   server to fetch and execute arbitrary code over LDAP/RMI. CVSS 10.0.
+//
+// SIGIL RETROFIT
+//   In SIGIL, inner-ring (default) modules cannot declare functions
+//   carrying `FFI` or `Unsafe` effects. A logger that secretly performs
+//   network fetches must declare those effects in its row; the effect
+//   checker fires E003 against the function in inner ring.
+//
+// Why this resembles the original: Log4Shell existed because a logger
+// (intuitively a pure-write operation) had hidden FFI authority for
+// JNDI lookups. SIGIL refuses the "logger silently does I/O" pattern
+// at the declaration site, before any malicious payload can be crafted.
+//
+// MUTATION CONTRACT
+//   MUTATION_SITE: the single line declaring an inner-ring function
+//   with `FFI, Unsafe` effects. Removing it leaves only a pure
+//   inner-ring `safe_log` function; the program compiles cleanly.
+module cve;
+
+fn safe_log(msg_ptr: i64) -> i64 ! { Alloc } { let buf: i64 = alloc(msg_ptr); return buf; }
+fn bad_log(msg_ptr: i64) -> i64 ! { FFI, Unsafe } { return msg_ptr; }  // MUTATION_SITE

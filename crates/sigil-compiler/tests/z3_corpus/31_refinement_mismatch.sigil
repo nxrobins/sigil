@@ -1,0 +1,46 @@
+// expect-error: T215
+// Z3 corpus #31: axis-1 — Wall 4 Step 2 refinement structural-mismatch.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// V14 (syntactic equality): `>= 0` does NOT match `> 0`. Source's
+// refinement says `value >= 0` (includes 0); destination requires
+// `copy > 0` (strict — excludes 0). The supplied refinement carries
+// the source's clause, but `refinements_match` returns false because
+// `(Ge, 0) != (Gt, 0)`. The dispatcher emits T215 with V13/V20's 5
+// non-empty fields and V31's field-name-disclaimer hint.
+//
+// This is the principal Step 2 vs Step 1 differentiation in error
+// codes: Step 1 had only T211 for symbolic RHS. Step 2 splits the
+// agent's fix recipe: T211 → "supply a literal or inline";
+// T215 → "align (op, literal) to destination".
+//
+// V14 is intentional: Z3 would prove `value >= 0 → copy > 0` is
+// REFUTABLE (counterexample x=0), so even semantic-equivalence
+// checking (Step 3) would emit T215 here. The strict subset
+// destination is the canonical mismatch case.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Step 2's dispatcher V3 step (c): symbolic with `Some(supplied)`
+// where no `s` matches a given destination clause → T215. V9
+// short-circuit at first unmatched clause.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the offending `Mirror` construction.
+// What remains is `Index { value: 42 }` (literal-RHS, Step 1 path,
+// Z3 confirms `42 >= 0`). Compilation succeeds.
+module sigil;
+
+record Index { value: i64 } where value >= 0
+
+record Mirror { copy: i64 } where copy > 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx: Index = Index { value: 42 };
+        let m: Mirror = Mirror { copy: idx.value };  // MUTATION_SITE
+        return 1;
+    }
+}

@@ -1,0 +1,26 @@
+module bool_map_roles;
+
+record Roles { MINTER_ROLE: u256, hasRole: BoundedMap2_u256_u256_u256_64, minted: u256 }
+
+impl Roles {
+    pub fn new() -> Roles {
+        return Roles { MINTER_ROLE: 0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, hasRole: BoundedMap2_u256_u256_u256_64::new(), minted: 0 };
+    }
+
+    pub fn grantMinter(self: Roles @Mut, account: u256) {
+        self.hasRole.insert(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, account, 1);
+    }
+
+    pub fn revokeMinter(self: Roles @Mut, account: u256) {
+        self.hasRole.insert(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, account, 0);
+    }
+
+    pub fn isMinter(self: Roles, account: u256) -> bool {
+        return (self.hasRole.get_or(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, account, 0) == 1);
+    }
+
+    pub fn mint(self: Roles @Mut, __fe_sender: u256, amount: u256) {
+        trap_if(!((self.hasRole.get_or(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, __fe_sender, 0) == 1)));
+        self.minted = (self.minted + amount);
+    }
+}

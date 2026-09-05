@@ -1,0 +1,12 @@
+// E010 — orphan `perform`: the outer-ring function performs `Reader.get` but
+// does not declare `Reader` in its effect row, and nothing discharges it.
+#[ring(outer)]
+module sigil;
+
+effect Reader {
+    fn get() -> i64;
+}
+
+fn f() -> i64 {
+    return perform Reader.get();
+}

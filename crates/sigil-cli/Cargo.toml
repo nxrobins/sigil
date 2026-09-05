@@ -1,0 +1,42 @@
+[package]
+name = "sigil"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sigil"
+path = "src/main.rs"
+
+[features]
+# Enable the full Z3-backed verification path (capability flow C002-C004 +
+# refinement discharge T210/T215/…). OFF by default so the stock build carries
+# no z3 in its TCB — but a RELEASE / distribution build should turn it on:
+# `cargo build -p sigil --release --features solver`. Without it every cert this
+# CLI emits records `solver_verified: false`, and the run/forge --cert gate then
+# fails closed (R817), forcing operators to the SIGIL_ALLOW_UNVERIFIED_CERT
+# escape hatch. Requires the z3 development headers at build time.
+solver = [
+    "sigil-compiler/solver",
+    "sigil-runtime/solver",
+    "sigil-frontends/solver",
+]
+
+[dependencies]
+anyhow = { workspace = true }
+sigil-compiler = { path = "../sigil-compiler", default-features = false, features = ["json"] }
+sigil-frontends = { path = "../sigil-frontends" }
+sigil-registry = { path = "../sigil-registry" }
+sigil-runtime = { path = "../sigil-runtime" }
+wasmprinter = "0.245.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Unix-only: `O_NOFOLLOW` constant for the no-follow, open-once cert file
+# load (TOCTOU hardening). Only constants are referenced — no unsafe calls.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+proptest = { workspace = true }
+sigil-abi = { path = "../sigil-abi" }

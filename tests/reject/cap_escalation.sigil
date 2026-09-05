@@ -1,0 +1,18 @@
+// Attack: escalate authority at spawn — pass a plain i64 where the callee's
+// cap-typed init parameter is expected, with a surplus argument.
+// expect-error: T094, T095, T096
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(seed: i64) {
+        let child = spawn::<Worker>(seed, fuel); // MUTATION_SITE
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on Ping() {}
+}

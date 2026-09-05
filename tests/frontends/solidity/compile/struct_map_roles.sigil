@@ -1,0 +1,34 @@
+module struct_map_roles;
+
+record RoleStore { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64, __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64, minted: u256 }
+
+impl RoleStore {
+    pub fn new() -> RoleStore {
+        return RoleStore { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64::new(), __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64::new(), minted: 0 };
+    }
+
+    pub fn hasRole(self: RoleStore, role: u256, account: u256) -> bool {
+        return (self.__fe_sm_6__roles_hasRole.get_or(role, account, 0) == 1);
+    }
+
+    pub fn getRoleAdmin(self: RoleStore, role: u256) -> u256 {
+        return self.__fe_sm_6__roles_adminRole.get_or(role, 0);
+    }
+
+    pub fn grantRole(self: RoleStore @Mut, role: u256, account: u256) {
+        self.__fe_sm_6__roles_hasRole.insert(role, account, 1);
+    }
+
+    pub fn revokeRole(self: RoleStore @Mut, role: u256, account: u256) {
+        self.__fe_sm_6__roles_hasRole.insert(role, account, 0);
+    }
+
+    pub fn setRoleAdmin(self: RoleStore @Mut, role: u256, admin: u256) {
+        self.__fe_sm_6__roles_adminRole.insert(role, admin);
+    }
+
+    pub fn mint(self: RoleStore @Mut, __fe_sender: u256, amount: u256) {
+        trap_if(!((self.__fe_sm_6__roles_hasRole.get_or(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, __fe_sender, 0) == 1)));
+        self.minted = (self.minted + amount);
+    }
+}

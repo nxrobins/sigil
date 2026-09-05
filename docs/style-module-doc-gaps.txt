@@ -1,0 +1,10 @@
+# Module-doc gap manifest — the exact set of src files still lacking a
+# leading `//!` module doc. Checked by set-equality in
+# crates/sigil-runtime/tests/style_census.rs (style_module_doc_gaps_match_the_manifest).
+#
+# The set is EMPTY and pinned there: the 26-file pre-convention backlog was
+# cleared by the coherency campaign (sigil-registry on 2026-08-17, the
+# remaining 25 files on 2026-08-18). Every src file now opens with a module
+# doc, so any file the census finds without one is a fresh regression and
+# fails loudly — write the doc; never add a row here. The file itself stays
+# so the census keeps an exact set to hold the line at zero.

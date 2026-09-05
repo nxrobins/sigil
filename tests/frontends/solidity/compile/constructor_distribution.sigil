@@ -1,0 +1,14 @@
+module constructor_distribution;
+
+record Distributor { bal: BoundedMap_u256_u256_64, total: u256 }
+
+impl Distributor {
+    pub fn new(a: u256, b: u256, amt: u256) -> Distributor {
+        let mut __fe_c = Distributor { bal: BoundedMap_u256_u256_64::new(), total: 0 };
+        __fe_c.bal.insert(a, amt);
+        __fe_c.bal.insert(b, amt);
+        __fe_c.total = (amt + amt);
+        trap_if(!((__fe_c.total > 0)));
+        return __fe_c;
+    }
+}

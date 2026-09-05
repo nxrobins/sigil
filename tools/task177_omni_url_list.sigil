@@ -1,0 +1,48 @@
+// TASK: omni url list — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read a file of URLs (one per line), HTTP GET the first one.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Find first newline (or end of file) to get first line length.
+    let mut url_len_i64: i64 @Internal = file_len;
+    let mut i: i64 @Internal = 0;
+    while i < file_len {
+        let b: i64 @Internal = load8(file_ptr + i);
+        if b == 10 {
+            if url_len_i64 == file_len {
+                url_len_i64 = i;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+
+    // Write URL bytes into input_ptr (host-writable, i32-friendly region).
+    let zero_i32: i32 @Internal = input_len - input_len;
+    let one_i32: i32 @Internal = input_len / input_len;
+    let mut out_i32: i32 @Internal = zero_i32;
+    let mut j: i64 @Internal = 0;
+    while j < url_len_i64 {
+        let bb: i64 @Internal = load8(file_ptr + j);
+        store8(input_ptr + out_i32, bb);
+        out_i32 = out_i32 + one_i32;
+        j = j + 1;
+    }
+    return http_get(input_ptr, out_i32);
+}

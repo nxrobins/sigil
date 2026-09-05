@@ -1,0 +1,21 @@
+// Attack: use capability after it has been moved to a spawned actor
+// expect-error: O001
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let child_fuel = fuel.split(50);
+        let child = spawn::<Worker>(child_fuel);
+        // child_fuel already moved into spawn — this is use-after-move
+        let second = spawn::<Worker>(child_fuel); // MUTATION_SITE
+        return 1;
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}

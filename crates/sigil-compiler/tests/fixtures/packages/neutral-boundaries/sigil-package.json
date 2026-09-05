@@ -1,0 +1,55 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": ">=0.1.0"
+  },
+  "declared": {
+    "determinism": "pure",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "tests/fixtures/packages/neutral-boundaries/OBLIGATIONS.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "app::internal_roundtrip(value:Internal)->Internal",
+      "app::public_roundtrip(value:Public)->Public",
+      "app::secret_roundtrip(value:Secret)->Secret"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:bc9bc57c5227a87ea3096249d7ae133e3899aba7eef9c78c80a0487164c28f4a",
+      "default_features": true,
+      "features": [],
+      "optional": false,
+      "package": "test/helper",
+      "requirement": "=1.0.0",
+      "source": "workspace"
+    }
+  ],
+  "description": "Neutral package-boundary compiler fixture.",
+  "evidence": {
+    "api_card_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "api_contract_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "charter_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence_manifest_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "CC0-1.0",
+  "maturity": "contracted",
+  "modules": [
+    "app"
+  ],
+  "name": "app",
+  "namespace": "test",
+  "version": "1.0.0"
+}

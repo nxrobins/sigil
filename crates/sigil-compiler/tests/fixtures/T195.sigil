@@ -1,0 +1,21 @@
+// expect-error: T195
+//
+// T195 — deadline-typed capability subtype mismatch. A cap whose
+// declared deadline is earlier than the target site requires
+// (covariant rule: `D_actual >= D_expected`) cannot satisfy that
+// site. Here the caller's `c: Approval(2025)` is passed to a sink
+// expecting `Approval(2030)`; `2025 >= 2030` is false → T195.
+//
+// MUTATION_SITE: line 18 (the `(2025)` literal in the caller's
+// parameter type). Replacing `2025` with any value `>= 2030`
+// satisfies the subtype rule and compiles cleanly.
+module main;
+cap type Approval(deadline_ms: i64) {}
+
+fn use_before_2030(c: Approval(2030)) -> i64 {
+    return 1;
+}
+
+fn boot(c: Approval(2025)) -> i64 {  // MUTATION_SITE
+    return use_before_2030(c);
+}

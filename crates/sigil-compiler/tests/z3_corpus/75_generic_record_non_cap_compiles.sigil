@@ -1,0 +1,30 @@
+// expect-ok
+// Z3 corpus #75: axis-6 negative control — generic records and
+// generic enum variants with NON-cap type-args still compile cleanly
+// after T242 ships.
+//
+// `Holder<i64>` and `MyOpt<i64>` are the normal-use cases that PR #75 +
+// PR #79's generic-aggregate machinery enabled. T242 must NOT fire on
+// these. Confirms the recursive `type_contains_cap` returns false for
+// non-cap-bearing type-args, so the helper passes through silently on
+// the common case.
+//
+// Uses a user-defined `MyOpt` rather than stdlib `Option` so the
+// corpus harness's bare `compile_module` (no ambient stdlib include)
+// can run this fixture.
+module main;
+
+record Holder<T> { value: T }
+
+enum MyOpt<T> { Just(T), Nothing }
+
+entry actor Main {
+    on Start() -> i64 {
+        let h: Holder<i64> = Holder { value: 42 };
+        let opt: MyOpt<i64> = Just(h.value);
+        match opt {
+            Just(n) => { return n; },
+            Nothing => { return 0; },
+        }
+    }
+}

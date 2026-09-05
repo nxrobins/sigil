@@ -1,0 +1,23 @@
+module enum_struct_field;
+
+record Entry { id: u256, kind: u256 }
+
+record Registry { head: Entry }
+
+impl Registry {
+    pub fn new() -> Registry {
+        return Registry { head: Entry { id: 0, kind: 0 } };
+    }
+
+    pub fn makeAdmin(self: Registry, i: u256) -> Entry {
+        return Entry { id: i, kind: 1 };
+    }
+
+    pub fn setHead(self: Registry @Mut, i: u256) {
+        self.head = Entry { id: i, kind: 1 };
+    }
+
+    pub fn headKind(self: Registry) -> u256 {
+        return self.head.kind;
+    }
+}

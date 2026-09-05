@@ -1,0 +1,6 @@
+#[ring(outer)]
+module net_effect;
+effect NetIO;
+pub fn fetch(n: i64) -> i64 ! { NetIO } {
+  return (n + 1);
+}

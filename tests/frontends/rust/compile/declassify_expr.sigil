@@ -1,0 +1,5 @@
+module declassify_expr;
+cap type Declassify {}
+pub fn bump(a: i64 @Secret, __fe_declassify_cap_0: Declassify) -> i64 {
+  return (declassify(a, __fe_declassify_cap_0) + 1);
+}

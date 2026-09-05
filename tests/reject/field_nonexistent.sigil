@@ -1,0 +1,16 @@
+// Accessing a field that doesn't exist on the record type
+// expect-error: T120
+module sigil;
+cap type Fuel {}
+
+record Point { x: i64, y: i64 }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let p = Point { x: 1, y: 2 };
+        let z = p.z; // MUTATION_SITE
+        return 0;
+    }
+}

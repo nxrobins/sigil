@@ -1,0 +1,11 @@
+// expect-error: T060
+// Cascade-guard fixture (a10 precision). Exercises the `place_ok` follow-on
+// suppression (type_check/statements.rs): the assignment target is undefined
+// (its place type resolves to `Error`), so `place_ok` is false and the
+// "invalid assignment target" sibling is suppressed — only the undefined-name
+// error reports. Deleting the gate makes the sibling reappear (precision red).
+module main;
+fn f() -> i64 {
+    undefined_target = 5;
+    return 0;
+}

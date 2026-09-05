@@ -1,0 +1,14 @@
+module airdrop_from_debit;
+
+record Airdrop { balances: BoundedMap_u256_u256_64 }
+
+impl Airdrop {
+    pub fn new() -> Airdrop {
+        return Airdrop { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn airdrop(self: Airdrop @Mut, __fe_sender: u256, recipients: BoundedVec_u256_64, amounts: BoundedVec_u256_64) {
+        trap_if(!((recipients.len() == amounts.len())));
+        self.balances.batch_transfer(__fe_sender, recipients, amounts);
+    }
+}

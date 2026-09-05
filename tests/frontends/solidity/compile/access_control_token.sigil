@@ -1,0 +1,54 @@
+module access_control_token;
+
+record AccessControlMintToken { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64, __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64, _balances: BoundedMap_u256_u256_64, _totalSupply: u256, DEFAULT_ADMIN_ROLE: u256, MINTER_ROLE: u256 }
+
+impl AccessControlMintToken {
+    pub fn new(admin: u256, minter: u256) -> AccessControlMintToken {
+        let mut __fe_c = AccessControlMintToken { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64::new(), __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64::new(), _balances: BoundedMap_u256_u256_64::new(), _totalSupply: 0, DEFAULT_ADMIN_ROLE: 0x00, MINTER_ROLE: 0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6 };
+        let mut __fe_inl7_role: u256 = __fe_c.DEFAULT_ADMIN_ROLE;
+        let mut __fe_inl7_account: u256 = admin;
+        let mut __fe_inl8_role: u256 = __fe_inl7_role;
+        let mut __fe_inl8_account: u256 = __fe_inl7_account;
+        if !((__fe_c.__fe_sm_6__roles_hasRole.get_or(__fe_inl8_role, __fe_inl8_account, 0) == 1)) {
+            __fe_c.__fe_sm_6__roles_hasRole.insert(__fe_inl7_role, __fe_inl7_account, 1);
+        }
+        let mut __fe_inl9_role: u256 = __fe_c.MINTER_ROLE;
+        let mut __fe_inl9_account: u256 = minter;
+        let mut __fe_inl10_role: u256 = __fe_inl9_role;
+        let mut __fe_inl10_account: u256 = __fe_inl9_account;
+        if !((__fe_c.__fe_sm_6__roles_hasRole.get_or(__fe_inl10_role, __fe_inl10_account, 0) == 1)) {
+            __fe_c.__fe_sm_6__roles_hasRole.insert(__fe_inl9_role, __fe_inl9_account, 1);
+        }
+        return __fe_c;
+    }
+
+    pub fn hasRole(self: AccessControlMintToken, role: u256, account: u256) -> bool {
+        return (self.__fe_sm_6__roles_hasRole.get_or(role, account, 0) == 1);
+    }
+
+    pub fn getRoleAdmin(self: AccessControlMintToken, role: u256) -> u256 {
+        return self.__fe_sm_6__roles_adminRole.get_or(role, 0);
+    }
+
+    pub fn grantRole(self: AccessControlMintToken @Mut, __fe_sender: u256, role: u256, account: u256) {
+        let mut __fe_inl1_role: u256 = role;
+        let mut __fe_m0_role: u256 = self.__fe_sm_6__roles_adminRole.get_or(__fe_inl1_role, 0);
+        trap_if(!((self.__fe_sm_6__roles_hasRole.get_or(__fe_m0_role, __fe_sender, 0) == 1)));
+        let mut __fe_inl3_role: u256 = role;
+        let mut __fe_inl3_account: u256 = account;
+        let mut __fe_inl4_role: u256 = __fe_inl3_role;
+        let mut __fe_inl4_account: u256 = __fe_inl3_account;
+        if !((self.__fe_sm_6__roles_hasRole.get_or(__fe_inl4_role, __fe_inl4_account, 0) == 1)) {
+            self.__fe_sm_6__roles_hasRole.insert(__fe_inl3_role, __fe_inl3_account, 1);
+        }
+    }
+
+    pub fn mint(self: AccessControlMintToken @Mut, __fe_sender: u256, to: u256, amount: u256) {
+        let mut __fe_inl6_role: u256 = self.MINTER_ROLE;
+        let mut __fe_inl6_account: u256 = __fe_sender;
+        if !((self.__fe_sm_6__roles_hasRole.get_or(__fe_inl6_role, __fe_inl6_account, 0) == 1)) {
+            trap();
+        }
+        self._balances.insert(to, self._balances.get_or(to, 0) + (amount));
+    }
+}

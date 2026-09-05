@@ -1,0 +1,65 @@
+// TASK: http unique count — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn render_decimal(n_in: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    if n_in == 0 {
+        let out: i64 @Internal = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch: i64 @Internal = alloc(20);
+        let mut digits: i64 @Internal = 0;
+        let mut n: i64 @Internal = n_in;
+        while n > 0 {
+            let q: i64 @Internal = n / 10;
+            let d: i64 @Internal = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out: i64 @Internal = alloc(digits);
+        let mut i: i64 @Internal = 0;
+        while i < digits {
+            let b: i64 @Internal = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let seen: i64 @Internal = alloc(256);
+    let mut k: i64 @Internal = 0;
+    while k < 256 {
+        store8(seen + k, 0);
+        k = k + 1;
+    }
+    let mut uniq: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let b: i64 @Internal = load8(body_ptr + i);
+        let prev: i64 @Internal = load8(seen + b);
+        if prev == 0 {
+            store8(seen + b, 1);
+            uniq = uniq + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return render_decimal(uniq);
+}

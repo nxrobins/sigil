@@ -1,0 +1,12 @@
+// expect-error: T196
+//
+// T196 — parametric capability referenced without a bound deadline.
+// `Approval` is declared parametric; usages must always supply a
+// deadline literal (e.g., `Approval(2030_06_01)`). The bare
+// `Approval` on the function parameter type triggers T196.
+module main;
+cap type Approval(deadline_ms: i64) {}
+
+fn use_bare(c: Approval) -> i64 {
+    return 1;
+}

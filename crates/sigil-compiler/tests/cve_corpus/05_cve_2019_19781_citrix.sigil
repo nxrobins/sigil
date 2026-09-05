@@ -1,0 +1,29 @@
+// expect-error: E003
+// CVE Retrofit #05: CVE-2019-19781 — Citrix NetScaler path traversal
+// Scope: STRUCTURAL
+//
+// ORIGINAL VULNERABILITY
+//   Citrix NetScaler/Gateway accepted HTTP requests containing `..`
+//   path segments and routed them to the filesystem WITHOUT canonicalizing
+//   the path. An unauthenticated attacker could read or write arbitrary
+//   files on the appliance, achieving RCE. Mass exploitation January 2020.
+//
+// SIGIL RETROFIT
+//   In SIGIL, inner-ring (default) modules cannot declare functions
+//   carrying `FFI` or `Unsafe` effects. A function exposing the
+//   filesystem to user-controlled paths must declare those effects;
+//   the privilege type validator fires E003 against the inner-ring function.
+//
+// Why this resembles the original: the Citrix bug existed because
+// arbitrary user-controlled paths reached a filesystem primitive with
+// no gating. SIGIL forces FFI authority into a trusted outer-ring
+// module where the capability discipline is explicit.
+//
+// MUTATION CONTRACT
+//   MUTATION_SITE: the single line declaring an inner-ring function
+//   carrying `FFI, Unsafe`. Removing it leaves only a pure inner-ring
+//   `safe_lookup` function; the program compiles cleanly.
+module cve;
+
+fn safe_lookup(key: i64) -> i64 { return key; }
+fn read_user_path(path_ptr: i64, path_len: i64) -> i64 ! { FFI, Unsafe } { return path_ptr + path_len; }  // MUTATION_SITE

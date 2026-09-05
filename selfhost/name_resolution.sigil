@@ -1,0 +1,779 @@
+// Self-hosted structural name resolver; see docs/specs/sh-name-resolution.md.
+// (This leading comment lets the differential's `\nmodule name_resolution;\n` strip match,
+// exactly like lexer.sigil/parser.sigil — keeping all fns in the merged `module tool;`.)
+module name_resolution;
+
+// SH-NR-0 — structural name-resolver (self-hosted, prefix nr_/NR_).
+// Composed (module header stripped) into the name_resolution_differential tool
+// alongside lexer.sigil + parser.sigil; uses PNode + P_K_* from parser.sigil.
+// Mirrors the Rust oracle `name_resolution::resolve` for the CLEAN single-module
+// path: a single pre-order DefId counter — the module is DefId 0, then each NAMED
+// top-level item in source order gets the next DefId. `use`/`impl` items are
+// name()==None in the oracle → skipped (consume no DefId). Output is the
+// `records|pool|diags` stream; each record is `<def_id>,<kind_tag>,<name>;`.
+// pool + diags are empty in SH-NR-0 (clean corpus, no N-codes).
+
+const NR_K_MODULE: i64 = 0;
+const NR_K_UNHANDLED: i64 = 99;
+const NR_BYTE_SEMI: i64 = 59;
+// ':' (58) — SH-NR-1 scans for the `::` path separator in `use` item text.
+const NR_BYTE_COLON: i64 = 58;
+// SH-NR-2 ASCII byte ranges for N011 (valid module name) + N012 (case-fold).
+const NR_BYTE_UA: i64 = 65;
+const NR_BYTE_UZ: i64 = 90;
+const NR_BYTE_LA: i64 = 97;
+const NR_BYTE_LZ: i64 = 122;
+const NR_BYTE_D0: i64 = 48;
+const NR_BYTE_D9: i64 = 57;
+const NR_BYTE_USCORE: i64 = 95;
+
+// kind_tag mirrors the oracle `ResolvedItemKind`: Const=1, Function=2, Actor=3,
+// CapabilityType=4, Record=5, Enum=6, Impl=7 (impl never emitted — it is skipped).
+// EffectDecl/TraitDef/TypeAlias map to Const(1); ExternFn maps to Function(2).
+// NO catch-all `_`: an unmapped, non-skipped kind routes to NR_K_UNHANDLED (99),
+// which the oracle can never emit, forcing a loud differential mismatch (ET-NR0-4).
+fn nr_kind_tag(k: i64) -> i64 {
+    if k == P_K_CONST {
+        return 1;
+    } else {
+    }
+    if k == P_K_FN {
+        return 2;
+    } else {
+    }
+    if k == P_K_ACTOR {
+        return 3;
+    } else {
+    }
+    if k == P_K_CAP_TYPE {
+        return 4;
+    } else {
+    }
+    if k == P_K_RECORD_DEF {
+        return 5;
+    } else {
+    }
+    if k == P_K_ENUM_DEF {
+        return 6;
+    } else {
+    }
+    if k == P_K_TRAIT {
+        return 1;
+    } else {
+    }
+    if k == P_K_EFFECT_DECL {
+        return 1;
+    } else {
+    }
+    if k == P_K_TYPE_ALIAS {
+        return 1;
+    } else {
+    }
+    if k == P_K_EXTERN_FN {
+        return 2;
+    } else {
+    }
+    return NR_K_UNHANDLED;
+}
+
+// A top-level item the oracle gives name()==None (no DefId): use + impl.
+fn nr_is_skipped(k: i64) -> bool {
+    if k == P_K_USE {
+        return true;
+    } else {
+    }
+    if k == P_K_IMPL {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// Prefix of `s` before the first ';' byte. P_K_CONST text is "name;literal";
+// every other named kind carries the bare name in `text`, so the scan returns
+// the whole string when there is no ';'.
+fn nr_seg0(s: str) -> str {
+    let n: i64 = s.len();
+    let mut i: i64 = 0;
+    let mut cut: i64 = n;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let b: i64 = s.byte_at(i);
+            if b == NR_BYTE_SEMI {
+                cut = i;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    let pre: str = s.substr(0, cut);
+    return pre;
+}
+
+// The item's resolved name = the prefix of `text` before the first ';'. Bare-name
+// kinds (fn/record/enum/trait/type-alias/actor/effect/extern-fn) carry no ';' so
+// this is a no-op; compound kinds (const "name;literal", cap-type "name;authorities")
+// yield the leading name — matching the oracle's `ConstDef.name` / `CapTypeDef.name`.
+// (impl "trait;type" is never reached — impl is skipped in nr_encode.)
+fn nr_item_name(cn: PNode) -> str {
+    if cn.kind == P_K_EXTERN_FN {
+        return nr_seg1(cn.text);
+    } else {
+    }
+    let nm: str = nr_seg0(cn.text);
+    return nm;
+}
+
+// The 2nd ';'-segment of `s` (between the 1st and 2nd ';', or to end). An extern
+// fn's text is "abi;name;effect…" so the resolved NAME is this segment, not seg0
+// (which is the ABI). Other kinds keep the bare/seg0 name.
+fn nr_seg1(s: str) -> str {
+    let n: i64 = s.len();
+    let mut i: i64 = 0;
+    let mut a: i64 = 0 - 1;
+    let mut sc1: bool = true;
+    while sc1 {
+        if i >= n {
+            sc1 = false;
+        } else {
+            let b: i64 = s.byte_at(i);
+            if b == NR_BYTE_SEMI {
+                a = i;
+                sc1 = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    if a < 0 {
+        return s;
+    } else {
+    }
+    let mut j: i64 = a + 1;
+    let mut e: i64 = n;
+    let mut sc2: bool = true;
+    while sc2 {
+        if j >= n {
+            sc2 = false;
+        } else {
+            let b2: i64 = s.byte_at(j);
+            if b2 == NR_BYTE_SEMI {
+                e = j;
+                sc2 = false;
+            } else {
+                j = j + 1;
+            }
+        }
+    }
+    let seg: str = s.substr(a + 1, e);
+    return seg;
+}
+
+// Push one `<def_id>,<kind_tag>,<name>;` record.
+fn nr_push_rec(recs: Vec<str> @Mut, did: i64, tag: i64, name: str) -> i64 ! { Alloc } {
+    let a1: str = did.itoa();
+    let a2: str = a1.concat(",");
+    let a3: str = a2.concat(tag.itoa());
+    let a4: str = a3.concat(",");
+    let a5: str = a4.concat(name);
+    let a6: str = a5.concat(";");
+    let pushed: i64 = recs.push(a6);
+    return pushed;
+}
+
+// ── SH-NR-1 use-resolution helpers ───────────────────────────────────────────
+
+// Byte-exact string equality (length-then-byte; self-contained so it does not
+// depend on str.bytes_eq's signature). Used to compare module names / use targets.
+fn nr_str_eq(a: str, b: str) -> bool {
+    let la: i64 = a.len();
+    let lb: i64 = b.len();
+    if la == lb {
+    } else {
+        return false;
+    }
+    let mut i: i64 = 0;
+    let mut eq: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= la {
+            scanning = false;
+        } else {
+            let ba: i64 = a.byte_at(i);
+            let bb: i64 = b.byte_at(i);
+            if ba == bb {
+                i = i + 1;
+            } else {
+                eq = false;
+                scanning = false;
+            }
+        }
+    }
+    return eq;
+}
+
+// Segment count of a `use` path text = (count of `::`) + 1. "a"->1, "a::b"->2,
+// "a::b::c"->3. The oracle accepts only 1 or 2 segments (`use M;` / `use crate::M;`).
+fn nr_use_segcount(s: str) -> i64 {
+    let n: i64 = s.len();
+    let mut i: i64 = 0;
+    let mut c: i64 = 0;
+    let mut scanning: bool = true;
+    while scanning {
+        if i + 1 >= n {
+            scanning = false;
+        } else {
+            let b0: i64 = s.byte_at(i);
+            let b1: i64 = s.byte_at(i + 1);
+            if b0 == NR_BYTE_COLON {
+                if b1 == NR_BYTE_COLON {
+                    c = c + 1;
+                    i = i + 2;
+                } else {
+                    i = i + 1;
+                }
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return c + 1;
+}
+
+// The target module = the LAST `::`-segment of the use path. "a"->"a",
+// "a::b"->"b", "crate::b"->"b". (Only consulted when segcount <= 2.)
+fn nr_use_target(s: str) -> str {
+    let n: i64 = s.len();
+    let mut i: i64 = 0;
+    let mut cut: i64 = 0;
+    let mut scanning: bool = true;
+    while scanning {
+        if i + 1 >= n {
+            scanning = false;
+        } else {
+            let b0: i64 = s.byte_at(i);
+            let b1: i64 = s.byte_at(i + 1);
+            if b0 == NR_BYTE_COLON {
+                if b1 == NR_BYTE_COLON {
+                    cut = i + 2;
+                    i = i + 2;
+                } else {
+                    i = i + 1;
+                }
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    let seg: str = s.substr(cut, n);
+    return seg;
+}
+
+// Index of `target` in the module-name list, or -1. Linear scan (module counts
+// are tiny; this mirrors the oracle's `module_names.contains`).
+fn nr_find_module(names: Vec<str>, target: str) -> i64 {
+    let n: i64 = names.len();
+    let mut i: i64 = 0;
+    let mut found: i64 = 0 - 1;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let nm: str = names.get(i);
+            let e: bool = nr_str_eq(nm, target);
+            if e {
+                found = i;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// The module node-ids under `root`: a P_K_PROGRAM (83) wrapper's children, or the
+// bare P_K_MODULE root itself (single-module — byte-identical to SH-NR-0).
+fn nr_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// ── SH-NR-2 collision/validity helpers (N001/N002/N003/N004/N005/N006/N011/N012) ──
+
+// Fold one ASCII byte to lowercase (A-Z -> a-z). For N012 case-collision.
+fn nr_fold(b: i64) -> i64 {
+    if b >= NR_BYTE_UA {
+        if b <= NR_BYTE_UZ {
+            return b + 32;
+        } else {
+        }
+    } else {
+    }
+    return b;
+}
+
+// Case-insensitive ASCII string equality (per-byte fold). For N012.
+fn nr_eq_ci(a: str, b: str) -> bool {
+    let la: i64 = a.len();
+    let lb: i64 = b.len();
+    if la == lb {
+    } else {
+        return false;
+    }
+    let mut i: i64 = 0;
+    let mut eq: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= la {
+            scanning = false;
+        } else {
+            let ca: i64 = nr_fold(a.byte_at(i));
+            let cb: i64 = nr_fold(b.byte_at(i));
+            if ca == cb {
+                i = i + 1;
+            } else {
+                eq = false;
+                scanning = false;
+            }
+        }
+    }
+    return eq;
+}
+
+// True iff `s` matches ^[a-z_][a-z0-9_]*$ (non-empty). For N011.
+fn nr_valid_module_name(s: str) -> bool {
+    let n: i64 = s.len();
+    if n == 0 {
+        return false;
+    } else {
+    }
+    let f: i64 = s.byte_at(0);
+    let mut okfirst: bool = false;
+    if f == NR_BYTE_USCORE {
+        okfirst = true;
+    } else {
+    }
+    if f >= NR_BYTE_LA {
+        if f <= NR_BYTE_LZ {
+            okfirst = true;
+        } else {
+        }
+    } else {
+    }
+    if okfirst {
+    } else {
+        return false;
+    }
+    let mut i: i64 = 1;
+    let mut ok: bool = true;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let b: i64 = s.byte_at(i);
+            let mut good: bool = false;
+            if b == NR_BYTE_USCORE {
+                good = true;
+            } else {
+            }
+            if b >= NR_BYTE_LA {
+                if b <= NR_BYTE_LZ {
+                    good = true;
+                } else {
+                }
+            } else {
+            }
+            if b >= NR_BYTE_D0 {
+                if b <= NR_BYTE_D9 {
+                    good = true;
+                } else {
+                }
+            } else {
+            }
+            if good {
+                i = i + 1;
+            } else {
+                ok = false;
+                scanning = false;
+            }
+        }
+    }
+    return ok;
+}
+
+// Push `code` into `diags` once per 2nd-and-later occurrence of a repeated name
+// (oracle emits one diagnostic per duplicate occurrence). Reuses nr_find_module.
+fn nr_emit_dups(names: Vec<str>, code: str, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: i64 = names.len();
+    let mut seen: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < n {
+        let nm: str = names.get(i);
+        let idx: i64 = nr_find_module(seen, nm);
+        if idx < 0 {
+            let p: i64 = seen.push(nm);
+        } else {
+            let d: i64 = diags.push(code);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Collect the param NAMES (nr_seg0 of each P_K_PARAM child's text; the form is
+// `name` or `name;region`) under `parent` (a fn / handler / actor-init node).
+fn nr_collect_params(nodes: Arena<PNode>, kids: Vec<i64>, parent: i64, out: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let pn: PNode = nodes.get(parent);
+    let mut i: i64 = 0;
+    while i < pn.child_count {
+        let cid: i64 = kids.get(pn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            let nm: str = nr_seg0(cn.text);
+            let p: i64 = out.push(nm);
+        } else {
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Actor checks: N004 (dup state field), N003 (dup handler), N005 (dup param per
+// handler/init), N006 (handler/init param shadows a state field). Children are in
+// slot order [P_K_FIELD*, P_K_ACTOR_INIT?, P_K_HANDLER*].
+fn nr_check_actor(nodes: Arena<PNode>, kids: Vec<i64>, actorid: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let an: PNode = nodes.get(actorid);
+    let mut fields: Vec<str> = Vec::new();
+    let mut handlers: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < an.child_count {
+        let cid: i64 = kids.get(an.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_FIELD {
+            let fn0: str = nr_seg0(cn.text);
+            let pf: i64 = fields.push(fn0);
+        } else {
+        }
+        if cn.kind == P_K_HANDLER {
+            let hn: str = cn.text;
+            let ph: i64 = handlers.push(hn);
+        } else {
+        }
+        i = i + 1;
+    }
+    let e4: i64 = nr_emit_dups(fields, "N004;", diags);
+    let e3: i64 = nr_emit_dups(handlers, "N003;", diags);
+    let mut k: i64 = 0;
+    while k < an.child_count {
+        let cid: i64 = kids.get(an.child_start + k);
+        let cn: PNode = nodes.get(cid);
+        let mut docheck: bool = false;
+        if cn.kind == P_K_HANDLER {
+            docheck = true;
+        } else {
+        }
+        if cn.kind == P_K_ACTOR_INIT {
+            docheck = true;
+        } else {
+        }
+        if docheck {
+            let mut params: Vec<str> = Vec::new();
+            let c: i64 = nr_collect_params(nodes, kids, cid, params);
+            let e5: i64 = nr_emit_dups(params, "N005;", diags);
+            let np: i64 = params.len();
+            let mut pi: i64 = 0;
+            while pi < np {
+                let pn0: str = params.get(pi);
+                let fidx: i64 = nr_find_module(fields, pn0);
+                if fidx < 0 {
+                } else {
+                    let d6: i64 = diags.push("N006;");
+                }
+                pi = pi + 1;
+            }
+        } else {
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// First-occurrence subchecks for one item: N005 for a fn's params, the actor checks
+// for an actor. (impl/use are skipped before this; dup items skip subchecks.)
+fn nr_subcheck_item(nodes: Arena<PNode>, kids: Vec<i64>, itemid: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let it: PNode = nodes.get(itemid);
+    if it.kind == P_K_FN {
+        let mut params: Vec<str> = Vec::new();
+        let c: i64 = nr_collect_params(nodes, kids, itemid, params);
+        let e: i64 = nr_emit_dups(params, "N005;", diags);
+    } else {
+        if it.kind == P_K_ACTOR {
+            let a: i64 = nr_check_actor(nodes, kids, itemid, diags);
+        } else {
+        }
+    }
+    return 0;
+}
+
+// One module's items: N002 (dup item name); the FIRST occurrence of each name gets
+// its subchecks, a duplicate emits N002 and is skipped (item-level continue).
+fn nr_validate_items(nodes: Arena<PNode>, kids: Vec<i64>, modid: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let mn: PNode = nodes.get(modid);
+    let mut seen_names: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < mn.child_count {
+        let cid: i64 = kids.get(mn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        let skip: bool = nr_is_skipped(cn.kind);
+        if skip {
+        } else {
+            let nm: str = nr_item_name(cn);
+            let idx: i64 = nr_find_module(seen_names, nm);
+            if idx < 0 {
+                let p: i64 = seen_names.push(nm);
+                let s: i64 = nr_subcheck_item(nodes, kids, cid, diags);
+            } else {
+                let d: i64 = diags.push("N002;");
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// SH-NR-2 validation pass: emit the collision/validity codes into `diags`. Per
+// module: N011 (invalid name) / N012 (case-collision) / N001 (exact dup) — first
+// match wins and SKIPS the module's items (module-level continue); else descend.
+fn nr_validate(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, mod_names: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let nmod: i64 = mods.len();
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let myname: str = mod_names.get(mi);
+        let validname: bool = nr_valid_module_name(myname);
+        if validname {
+            let mut bad: bool = false;
+            let mut j: i64 = 0;
+            let mut scanning: bool = true;
+            while scanning {
+                if j >= mi {
+                    scanning = false;
+                } else {
+                    let other: str = mod_names.get(j);
+                    let exact: bool = nr_str_eq(myname, other);
+                    if exact {
+                        let d1: i64 = diags.push("N001;");
+                        bad = true;
+                        scanning = false;
+                    } else {
+                        let cieq: bool = nr_eq_ci(myname, other);
+                        if cieq {
+                            let d2: i64 = diags.push("N012;");
+                            bad = true;
+                            scanning = false;
+                        } else {
+                            j = j + 1;
+                        }
+                    }
+                }
+            }
+            if bad {
+            } else {
+                let vi: i64 = nr_validate_items(nodes, kids, mods.get(mi), diags);
+            }
+        } else {
+            let d0: i64 = diags.push("N011;");
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// Emit the `records|pool|aliases|diags` stream (SH-NR-1). `records`: one global
+// pre-order DefId counter — each module (NR_K_MODULE) then its named items, across
+// ALL modules (single-module byte-identical to SH-NR-0). `aliases`: `<module>,<target>;`
+// per resolved `use`. `diags`: `N007;` (unsupported-shape / unresolved / self-use) and
+// `N009;` (one per distinct cyclic-use SCC, min-index representative). pool stays empty.
+pub fn nr_encode(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut recs: Vec<str> = Vec::new();
+    let pool: Vec<str> = Vec::new();
+    let mut aliases: Vec<str> = Vec::new();
+    let mut diags: Vec<str> = Vec::new();
+
+    let mut mods: Vec<i64> = Vec::new();
+    let cm: i64 = nr_collect_modules(nodes, kids, root, mods);
+    let nmod: i64 = mods.len();
+
+    // module names (source order; index = position in this list).
+    let mut mod_names: Vec<str> = Vec::new();
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let pushed: i64 = mod_names.push(mn.text);
+        mi = mi + 1;
+    }
+
+    // PASS 1 — global pre-order DefId records (module, then its named items).
+    let mut next: i64 = 0;
+    let mut m1: i64 = 0;
+    while m1 < nmod {
+        let mid: i64 = mods.get(m1);
+        let mn: PNode = nodes.get(mid);
+        let pr: i64 = nr_push_rec(recs, next, NR_K_MODULE, mn.text);
+        next = next + 1;
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            let skip: bool = nr_is_skipped(cn.kind);
+            if skip {
+            } else {
+                let tag: i64 = nr_kind_tag(cn.kind);
+                let nm: str = nr_item_name(cn);
+                let pr2: i64 = nr_push_rec(recs, next, tag, nm);
+                next = next + 1;
+            }
+            i = i + 1;
+        }
+        m1 = m1 + 1;
+    }
+
+    // reachability matrix (nmod*nmod), seeded with resolved use edges.
+    let total: i64 = nmod * nmod;
+    let mut reach: Vec<i64> = Vec::new();
+    let mut ri: i64 = 0;
+    while ri < total {
+        let pz: i64 = reach.push(0);
+        ri = ri + 1;
+    }
+
+    // PASS 2 — per module, resolve each `use`: alias + edge, else N007.
+    let mut m2: i64 = 0;
+    while m2 < nmod {
+        let mid: i64 = mods.get(m2);
+        let mn: PNode = nodes.get(mid);
+        let myname: str = mn.text;
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_USE {
+                let segc: i64 = nr_use_segcount(cn.text);
+                if segc >= 3 {
+                    let d: i64 = diags.push("N007;");
+                } else {
+                    let target: str = nr_use_target(cn.text);
+                    let tidx: i64 = nr_find_module(mod_names, target);
+                    if tidx < 0 {
+                        let d: i64 = diags.push("N007;");
+                    } else {
+                        let selfeq: bool = nr_str_eq(target, myname);
+                        if selfeq {
+                            let d: i64 = diags.push("N007;");
+                        } else {
+                            let a1: str = myname.concat(",");
+                            let a2: str = a1.concat(target);
+                            let a3: str = a2.concat(";");
+                            let pa: i64 = aliases.push(a3);
+                            let eidx: i64 = m2 * nmod + tidx;
+                            let se: i64 = reach.set(eidx, 1);
+                        }
+                    }
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        m2 = m2 + 1;
+    }
+
+    // transitive closure: reach[i][k] AND reach[k][j] => reach[i][j].
+    let mut k: i64 = 0;
+    while k < nmod {
+        let mut i: i64 = 0;
+        while i < nmod {
+            let ik: i64 = reach.get(i * nmod + k);
+            if ik == 1 {
+                let mut j: i64 = 0;
+                while j < nmod {
+                    let kj: i64 = reach.get(k * nmod + j);
+                    if kj == 1 {
+                        let se: i64 = reach.set(i * nmod + j, 1);
+                    } else {
+                    }
+                    j = j + 1;
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+
+    // N009: one per cyclic SCC, emitted at the MIN-INDEX representative. A node ci
+    // is on a cycle iff reach[ci][ci]; ci is the rep iff no smaller on-cycle node j
+    // shares its SCC (reach[ci][j] AND reach[j][ci]).
+    let mut ci: i64 = 0;
+    while ci < nmod {
+        let oncyc: i64 = reach.get(ci * nmod + ci);
+        if oncyc == 1 {
+            let mut isrep: bool = true;
+            let mut j: i64 = 0;
+            while j < ci {
+                let jc: i64 = reach.get(j * nmod + j);
+                if jc == 1 {
+                    let ij: i64 = reach.get(ci * nmod + j);
+                    if ij == 1 {
+                        let ji: i64 = reach.get(j * nmod + ci);
+                        if ji == 1 {
+                            isrep = false;
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+                j = j + 1;
+            }
+            if isrep {
+                let d: i64 = diags.push("N009;");
+            } else {
+            }
+        } else {
+        }
+        ci = ci + 1;
+    }
+
+    // SH-NR-2 — collision/validity diagnostics (N011/N012/N001/N002/N005/N003/N004/N006).
+    let nv: i64 = nr_validate(nodes, kids, mods, mod_names, diags);
+
+    let empty: str = "";
+    let recj: str = empty.join(recs);
+    let poolj: str = empty.join(pool);
+    let aliasj: str = empty.join(aliases);
+    let diagj: str = empty.join(diags);
+    let b1: str = recj.concat("|");
+    let b2: str = b1.concat(poolj);
+    let b3: str = b2.concat("|");
+    let b4: str = b3.concat(aliasj);
+    let b5: str = b4.concat("|");
+    let full: str = b5.concat(diagj);
+    return full;
+}

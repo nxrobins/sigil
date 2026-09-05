@@ -1,0 +1,10 @@
+// FFI-gated file read. Outer-ring + trusted module.
+// 05_file_read_cap pair — SIGIL side.
+#[ring(outer)] #[trusted]
+module fsread;
+
+extern "C" fn host_read_file(path_ptr: i64, path_len: i64) -> i64 ! { FFI, Unsafe };
+
+pub fn read_path(path_ptr: i64, path_len: i64) -> i64 @Internal ! { FFI, Unsafe } {
+    return host_read_file(path_ptr, path_len);
+}

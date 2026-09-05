@@ -1,0 +1,43 @@
+// expect-error: T215
+// Z3 corpus #36: axis-1 — Wall 4 Step 3 semantic non-subsumption.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Source has `value >= 0`; destination requires `copy >= 5`. The
+// source's set (`x >= 0`) is NOT a subset of the destination's
+// (`x >= 5`) — counterexamples are {0, 1, 2, 3, 4}. Step 3's
+// dispatcher iterates the supplied clauses; the single clause fails
+// syntactic match (`(Ge, 0) != (Ge, 5)`) AND fails Z3 subsumption
+// (∃x. (x >= 0) ∧ ¬(x >= 5) is satisfiable). T215 fires with the
+// Z3 counterexample embedded in the message.
+//
+// V36 + V44 + V45: the counterexample integer is extracted from Z3's
+// model at the moment of fresh evaluation and cached alongside the
+// verdict. The T215 message reads "Z3 found a counterexample to
+// subsumption: x = <value>". V47 ensures we report the FIRST
+// violation deterministically. V43 forbids `"x = ?"` placeholder.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixtures 34/35 + the T215 emission path. V47's
+// first-violation capture relies on `Vec::iter()` order being
+// deterministic.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the offending Mirror construction.
+// What remains is `let s: Source = Source { value: 100 };` (Step 1
+// literal-RHS path; Z3 confirms `100 >= 0`) + the return. Compiles.
+module sigil;
+
+record Source { value: i64 } where value >= 0
+
+record Mirror { copy: i64 } where copy >= 5
+
+entry actor Main {
+    on Tick() -> i64 {
+        let s: Source = Source { value: 100 };
+        let m: Mirror = Mirror { copy: s.value };  // MUTATION_SITE
+        return 1;
+    }
+}

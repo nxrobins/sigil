@@ -1,0 +1,24 @@
+// expect-ok
+// CVE Retrofit #05 (safe form): CVE-2019-19781 — Citrix path traversal
+// Scope: STRUCTURAL
+//
+// LEGITIMATE INTENT
+//   Expose a file-read primitive for trusted callers. The Citrix bug
+//   existed because the file-read path was reachable from
+//   user-controlled inputs without gating.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   The file-read function lives in a `#[ring(outer)] #[trusted]`
+//   module. Its `FFI` and `Unsafe` effects are explicit in the row.
+//   Callers from inner ring cannot reach it directly — they must go
+//   through a controlled actor message or a grant boundary. The
+//   inner-ring caller would itself need explicit grants at runtime
+//   (FsGrant) for path prefix scoping.
+#[ring(outer)] #[trusted]
+module cve;
+
+extern "C" fn host_read_file(path_ptr: i64, path_len: i64) -> i64 ! { FFI, Unsafe };
+
+pub fn read_user_path(path_ptr: i64, path_len: i64) -> i64 @Internal ! { FFI, Unsafe } {
+    return host_read_file(path_ptr, path_len);
+}

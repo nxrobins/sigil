@@ -1,0 +1,4 @@
+module requires_pos;
+pub fn use_pos(x: i64) where x >= 1 -> i64 {
+  return x;
+}

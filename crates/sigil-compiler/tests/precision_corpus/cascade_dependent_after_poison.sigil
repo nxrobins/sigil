@@ -1,0 +1,12 @@
+// expect-error: T060
+// Cascade-guard fixture (a10 precision). Exercises `Type::Error` poison through
+// a dependent operation: the binding `x` is poisoned by its undefined
+// initializer, so `x + 1` yields `Error` silently instead of a spurious
+// operand-type-mismatch sibling. Deleting the poison propagation turns the
+// precision test red (report-once guard).
+module main;
+fn f() -> i64 {
+    let x = missing_init;
+    let y = x + 1;
+    return 0;
+}

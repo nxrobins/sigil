@@ -1,0 +1,11 @@
+// R001: outer ring module holds a cap-typed parameter
+// expect-error: R001
+#[ring(outer)]
+module ext;
+cap type Fuel {}
+fn bad(fuel: Fuel) -> i64 { return 0; } // MUTATION_SITE
+
+// The mutant (marked line deleted) must still be a valid outer-ring module.
+fn benign() -> i64 {
+    return 0;
+}

@@ -1,0 +1,28 @@
+// expect-error: T190
+//
+// T190 — inclusive range pattern with `lo > hi` is rejected at type-check.
+//
+// The new `lo..=hi` syntax (added alongside the stdlib unpack helpers
+// in this expressiveness pass) intentionally fires T190 when the lower
+// bound exceeds the upper bound. The condition is unsatisfiable —
+// `scrutinee >= 57 && scrutinee <= 48` can never hold for any integer
+// scrutinee — so the arm would be dead code. Catching it at type-check
+// produces a clear message ("swap the bounds") instead of leaving the
+// user to wonder why their arm never fires at runtime.
+//
+// (Sigil's lexer is decimal-only at the time of writing; 48 and 57
+// are the ASCII codes for '0' and '9'.)
+//
+// The MUTATION_SITE below is the swapped pair on the arm line. Reorder
+// it to `48..=57` and the fixture compiles cleanly — proving the test
+// pins the lo-gt-hi check, not an incidental property of the
+// surrounding match.
+module main;
+
+fn classify(b: i64) -> i64 {
+    match b {
+        // MUTATION_SITE
+        57..=48 => { return 1; },
+        _ => { return 0; },
+    }
+}

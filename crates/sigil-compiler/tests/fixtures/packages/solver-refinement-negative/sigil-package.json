@@ -1,0 +1,43 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": ">=0.1.0"
+  },
+  "declared": {
+    "determinism": "pure",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "tests/fixtures/packages/solver-refinement-negative/OBLIGATIONS.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "solver_probe::violate()->Public"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Neutral solver-only package rejection fixture.",
+  "evidence": {
+    "api_card_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "api_contract_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "charter_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence_manifest_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "CC0-1.0",
+  "maturity": "contracted",
+  "modules": [
+    "solver_probe"
+  ],
+  "name": "solver_probe",
+  "namespace": "test",
+  "version": "1.0.0"
+}

@@ -1,0 +1,28 @@
+// expect-ok
+// Z3 corpus #67: axis-1 — Wall 4 Step 10 Ne ↔ Eq negation pair.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The else-arm narrowing flips Ne to Eq. `if input != 5` narrows
+// then-arm to `input != 5`; else-arm receives `input == 5` — the
+// MOST EXPRESSIVE narrowing in the negation table (exact value
+// known). The else-arm call admits `need_positive(input)` because
+// Z3 trivially knows 5 > 0.
+//
+// This exercises the Ne→Eq negation specifically; complements fixture
+// 66 which exercises Eq→Ne via the symmetric direction.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input != 5 {
+            return 0;
+        } else {
+            return need_positive(input);
+        }
+    }
+}

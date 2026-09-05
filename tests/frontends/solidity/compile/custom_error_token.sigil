@@ -1,0 +1,22 @@
+module custom_error_token;
+
+record Guarded { value: u256 }
+
+impl Guarded {
+    pub fn new() -> Guarded {
+        return Guarded { value: 0 };
+    }
+
+    pub fn setValue(self: Guarded @Mut, v: u256) {
+        if (v == 0) {
+            trap();
+        }
+        self.value = v;
+    }
+
+    pub fn check(self: Guarded @Mut, who: u256) {
+        if (who == 0) {
+            trap();
+        }
+    }
+}

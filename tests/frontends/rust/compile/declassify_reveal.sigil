@@ -1,0 +1,5 @@
+module declassify_reveal;
+cap type Declassify {}
+pub fn reveal(s: i64 @Secret, __fe_declassify_cap_0: Declassify) -> i64 {
+  return declassify(s, __fe_declassify_cap_0);
+}

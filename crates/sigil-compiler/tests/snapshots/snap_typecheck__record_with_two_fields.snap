@@ -1,0 +1,157 @@
+---
+source: crates/sigil-compiler/tests/snap_typecheck.rs
+expression: "&typed"
+---
+TypedProgram {
+    modules: [
+        TypedModule {
+            def_id: DefId(
+                0,
+            ),
+            name: "m",
+            ring: Inner,
+            trusted: false,
+            span: Span {
+                start: 0,
+                end: 112,
+                source: SourceId(
+                    4294967295,
+                ),
+            },
+            functions: [
+                TypedFunction {
+                    name: "m::make_origin",
+                    export_name: "m__make_origin",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [],
+                    captures: [],
+                    ret: Named(
+                        "Point",
+                        [],
+                    ),
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: Named(
+                                                "Point",
+                                                [],
+                                            ),
+                                            kind: RecordConstruct(
+                                                TypedRecordConstructExpr {
+                                                    type_name: "Point",
+                                                    fields: [
+                                                        (
+                                                            "x",
+                                                            TypedExpr {
+                                                                ty: I64,
+                                                                kind: Literal(
+                                                                    Int(
+                                                                        0,
+                                                                    ),
+                                                                ),
+                                                                span: Span {
+                                                                    start: 100,
+                                                                    end: 101,
+                                                                    source: SourceId(
+                                                                        4294967295,
+                                                                    ),
+                                                                },
+                                                                refinement: None,
+                                                            },
+                                                        ),
+                                                        (
+                                                            "y",
+                                                            TypedExpr {
+                                                                ty: I64,
+                                                                kind: Literal(
+                                                                    Int(
+                                                                        0,
+                                                                    ),
+                                                                ),
+                                                                span: Span {
+                                                                    start: 106,
+                                                                    end: 107,
+                                                                    source: SourceId(
+                                                                        4294967295,
+                                                                    ),
+                                                                },
+                                                                refinement: None,
+                                                            },
+                                                        ),
+                                                    ],
+                                                },
+                                            ),
+                                            span: Span {
+                                                start: 89,
+                                                end: 109,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 82,
+                                        end: 110,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 76,
+                            end: 112,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 46,
+                        end: 112,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+            ],
+        },
+    ],
+    records: {
+        "Point": (
+            [],
+            [
+                (
+                    "x",
+                    I64,
+                ),
+                (
+                    "y",
+                    I64,
+                ),
+            ],
+        ),
+    },
+    enums: {},
+    effect_registry: EffectRegistry {
+        effects: {
+            "FFI": 0,
+            "Unsafe": 1,
+        },
+        next_id: 2,
+    },
+    effect_ops: {},
+}

@@ -1,0 +1,26 @@
+// expect-error: C003
+// Z3 corpus #2: attenuation reaches Spawn sink.
+//
+// `spawn::<Worker>(cap)` requires full authority on cap so the spawned actor
+// can do anything Worker's `init` permits. We pass a `.restrict(burn)`-
+// attenuated cap. Z3's Spawn-sink check must reject this with C003.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the spawn —
+// `fuel` is unconsumed (state caps persist), program reduces to `return 1;`,
+// and verification passes.
+module sigil;
+cap type Fuel { burn, query }
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let _child = spawn::<Worker>(fuel.restrict(burn));  // MUTATION_SITE
+        return 1;
+    }
+}

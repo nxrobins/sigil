@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "run_id": "20260621T054956Z-ab",
+  "source_commit": "b9e62b146151fb6d34665432ca1ed7594d92ce16",
+  "release_tag": "diagnostic-evidence-2026-06",
+  "archive_url": "release:diagnostic-evidence-2026-06/20260621T054956Z-ab-transcripts.tar.gz",
+  "archive_sha256": "0dc6cd937d466a5257193f952d309dfe6be571ef8a257e6327cb8f1616169ec1",
+  "archive_bytes": 39513,
+  "transcript_count": 90,
+  "file_manifest": "transcripts.sha256"
+}

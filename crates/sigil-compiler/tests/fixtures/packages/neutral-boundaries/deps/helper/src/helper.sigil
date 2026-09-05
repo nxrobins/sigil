@@ -1,0 +1,13 @@
+module helper;
+
+pub fn public_echo(value: i64 @Public) -> i64 @Public {
+    return value;
+}
+
+pub fn internal_echo(value: i64 @Internal) -> i64 @Internal {
+    return value;
+}
+
+pub fn secret_echo(value: i64 @Secret) -> i64 @Secret {
+    return value;
+}

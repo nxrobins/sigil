@@ -1,0 +1,54 @@
+description: MCP server source for JSON-RPC envelope handling, tool dispatch, and compiler/runtime composition
+includes:
+  - crates/sigil-mcp/src/
+excludes:
+  - crates/sigil-mcp/target/
+context: |
+  This scope is the implementation-level view of the MCP server. Edits here
+  cover JSON-RPC framing, tool argument parsing, and how requests fan out
+  into `sigil-compiler` and `sigil-runtime` calls.
+
+  Keep this layer thin and translation-only: parse the request envelope,
+  validate arguments, invoke the right compiler/runtime API, marshal the
+  response. Language semantics, diagnostic content, or runtime behavior
+  belong in the underlying crates — not here.
+
+  Pass ordering inside a request:
+  parse JSON-RPC envelope -> dispatch on method (initialize / tools/list /
+  tools/call) -> for tools/call, dispatch on tool name -> parse tool args ->
+  call into compiler or runtime -> serialize a tool-shaped JSON response.
+
+  Current hygiene expectations:
+  - keep the protocol contract stable: any change to the envelope shape
+    (the `data` keys, error codes, `output_text`/`output_bytes`/`fuel_consumed`
+    placement) is a breaking change for every agent harness
+  - integration tests in `crates/sigil-mcp/tests/protocol.rs` spawn the real
+    binary and exercise this exactly — treat their assertions as the
+    boundary contract
+  - error codes follow JSON-RPC 2.0: -32601 method-not-found, -32602
+    invalid-params, -32603 internal-error
+  - protocol version is pinned at the top of `main.rs` (`PROTOCOL_VERSION`);
+    changes require coordinated agent-harness updates
+
+  Current implemented surface (all in `main.rs`, no submodules):
+  - `handle_initialize` / `handle_tools_list` — MCP handshake + capability
+    advertisement
+  - `tool_sigil_check` — compile via `compile_named_module`, emit diagnostics
+    JSON
+  - `tool_sigil_forge` — compile via `compile_tool`, then `execute_ephemeral`
+    with caller-supplied `IoGrants` (fuel, network, filesystem); the source
+    must export the canonical `tool_main` entry point
+  - `tool_sigil_lookup_error` — query the diagnostics `registry`
+  - `tool_sigil_inspect_uses` — parser-only path that surfaces `use` decls
+    without running the full compile pipeline (advisory; bench harness uses
+    this for stdlib-usage checks)
+related:
+  - crates/sigil-mcp/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+tags:
+  - mcp
+  - src
+  - json-rpc
+  - agent

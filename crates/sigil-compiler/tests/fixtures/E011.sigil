@@ -1,0 +1,11 @@
+// E011 — invalid effect-row variable: the binder `Log` shadows the declared
+// effect `Log`, so kind-by-use cannot tell "the variable Log" from "the effect
+// Log" (the binding walk would hijack the concrete effect's meaning).
+#[ring(outer)]
+module sigil;
+
+effect Log;
+
+fn h<Log>(f: Fn(i64) -> i64 ! { Log }) -> i64 {
+    return f(1);
+}

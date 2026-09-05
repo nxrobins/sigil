@@ -1,0 +1,39 @@
+// expect-error: T210
+// Z3 corpus #27: axis-1 — Wall 4 Step 1 refinement violation via reassignment.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Reassignment of a refined-typed binding goes through the same typed-AST
+// node (`RecordConstructExpr`) as construction, so the refinement check
+// fires identically. This fixture closes V5's mutation-path test gap:
+// the first construction satisfies the predicate (value > 100), but the
+// reassignment supplies `value: 42`, which is refutable. T210 fires on
+// the reassignment site.
+//
+// Per V15 the refinement check has a single entry point
+// (`infer_record_construct_expr`); reassignment routes through this
+// entry too. The CI grep-lint asserts this single-entry invariant.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Wall 1 Step 1 already allows reassignment of non-cap aggregate types.
+// Wall 4 Step 1 adds the refinement check at construction; this fixture
+// proves that the reassignment lowering inherits the check without
+// extra plumbing.
+//
+// MUTATION CONTRACT
+//
+// Deleting the mutation site leaves only `Index { value: 200 }`, which
+// satisfies `value > 100` and compiles cleanly. The fixture would then
+// be expect-ok (overlapping #25's role).
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut idx: Index = Index { value: 200 };
+        idx = Index { value: 42 };  // MUTATION_SITE
+        return 1;
+    }
+}

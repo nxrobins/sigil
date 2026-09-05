@@ -1,0 +1,33 @@
+// expect-error: T224
+// Z3 corpus #53: axis-1 — Wall 4 Step 7 function parameter refinement violation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The rejecting counterpart of fixture 52. `validate(0)` supplies a
+// literal `0` against `where x > 0`. Z3 returns `Sat` for `not(0 > 0)`
+// (the counterexample is the supplied value itself), and T224 fires
+// at the call site.
+//
+// Per N27-S7, `SubsumptionResult::Timeout` ALSO fires T224 (timeout-
+// flavored detail) — never silently collapsed into Holds. This
+// fixture exercises the Violated path; a separate test exercises
+// Timeout under a low rlimit.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the offending call. The remaining
+// `let ok: bool = ...;` line referencing `validate` would error
+// independently, so we also delete that line via leaving the
+// surrounding block clean.
+module sigil;
+
+fn validate(x: i64) where x > 0 -> bool {
+    return true;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let ok: bool = validate(0);  // MUTATION_SITE
+        return 1;
+    }
+}

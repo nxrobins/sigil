@@ -1,0 +1,22 @@
+// Integration test: capability pipeline
+// Exercises: cap types, split, spawn, actor state
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let child_fuel = fuel.split(50);
+        let child = spawn::<Worker>(child_fuel);
+        return 1;
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+
+    on Ping(x: i64) -> i64 {
+        return x + 1;
+    }
+}

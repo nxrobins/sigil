@@ -1,0 +1,12 @@
+module color;
+enum Color { Red, Green, Blue }
+pub fn code(c: Color) -> i64 {
+  match c {
+    Color::Red => { return 1; },
+    Color::Green => { return 2; },
+    Color::Blue => { return 3; }
+  }
+}
+pub fn first() -> Color {
+  return Color::Red;
+}

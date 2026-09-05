@@ -1,0 +1,68 @@
+// expect-ok
+// Z3 corpus #11: axis-1 — time-bound approval, expressible today.
+//
+// The fixture #10 deferred-work list flagged "time-bound approvals"
+// as a real gap. Examining what "time-bound" actually means revealed
+// it's expressible with existing primitives:
+//
+//   * Caps stay caps (linear, unforgeable).
+//   * The DEADLINE is a regular `i64` constant or runtime parameter.
+//   * `time::now_ms()` is a runtime-side check.
+//   * A handler function pattern-matches: if `now_ms() < deadline_ms`
+//     then use the cap, else don't (the cap is consumed either way
+//     because linear values can't be returned unused).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A `gated_use` function takes an approval cap and a deadline. If
+// the wall clock is before the deadline, the cap is used (passed to
+// a sink). If past the deadline, the cap is consumed but the action
+// doesn't fire — the policy author's "valid until T" intent is
+// honored at runtime without requiring any new language primitive.
+//
+// This is the WEAKER form of time-bound: the cap itself doesn't
+// carry the deadline in its type. The deadline is metadata the user
+// threads through. A STRONGER form (where the cap's type carries the
+// deadline and a use-after-deadline is statically impossible) would
+// require deadline-typed caps — a real new primitive, deferred and
+// regression-locked in fixture `14_deadline_typed_cap_wall.sigil`
+// (step 33, axis-1 sixth touch). That fixture documents the parser-
+// level wall and gives acceptance criteria for the closing iteration.
+//
+// Today's encoding has one caveat: linear consumption is unconditional.
+// If `now_ms() >= deadline_ms`, the cap is still consumed (the
+// function takes ownership and discards). Callers must understand
+// that "passing a cap past its deadline" wastes the cap rather than
+// preserving it. A future iteration could add `Result<T, Cap>` to
+// return-and-recover, but that needs its own design.
+//
+// REQUIREMENTS
+//
+// The fixture is an outer-ring trusted module because time::now_ms()
+// is FFI-backed (TimeGrant::Wall required at runtime).
+#[ring(outer)] #[trusted]
+module ext;
+
+// Wall-clock FFI shim (mirrors sigil::time::time_now). Inlined here
+// because the corpus harness compiles each fixture standalone without
+// the stdlib search path.
+extern "C" fn time_now() -> i64 ! { FFI, Unsafe };
+
+// `valid_until_ms` is the deadline; `now` is the wall clock at use.
+// Returns 1 if the action would fire (deadline future), 0 if past.
+// In a real policy the `return 1` branch would invoke the privileged
+// operation; this fixture demonstrates the DECISION shape that
+// requires no new language primitive.
+// Return type is @Internal because `time_now()` is FFI and FFI returns
+// are tainted @Internal — even branching on the result poisons the
+// return taint. A real policy that needs a @Public yes/no would
+// declassify via a Declassify cap; that's a separate cap operation
+// orthogonal to time-bound semantics.
+fn gated_use(valid_until_ms: i64) -> i64 @Internal ! { FFI, Unsafe } {
+    let now: i64 @Internal = time_now();
+    if now < valid_until_ms {
+        return 1;
+    } else {
+        return 0;
+    }
+}

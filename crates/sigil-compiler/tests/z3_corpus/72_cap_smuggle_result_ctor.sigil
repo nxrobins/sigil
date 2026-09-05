@@ -1,0 +1,32 @@
+// expect-error: T242
+// Z3 corpus #72: axis-6 — cap smuggle through Result<T, E>'s hardcoded
+// Ok/Err parser shortcut.
+//
+// Companion to #71. PR #79's Hybrid scope (AG-PRB-B) preserved
+// `try_parse_result_ctor`'s parser shortcut and `TypedExprKind::ResultCtor`
+// — so `Ok(cap)` and `Err(cap)` bypass the generic enum-variant
+// construction path that #71 closes. T242 must fire at the ResultCtor
+// site too, on the value's type, to close the same cap-smuggling
+// channel for the syntactic shortcut.
+//
+// ABUSE VECTOR (verified live against pre-T242 commit 42e43f6):
+// `Ok(restricted)` produced Type::Named("Result", [Fuel, Error]); the
+// match arm bound the payload as `extracted`; needs_full(extracted)
+// passed Z3's Call-sink check. 462-byte WASM module shipped the
+// unsafe flow.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// Ok(restricted) ctor; the program reduces to `return 1;` and
+// verification passes.
+module main;
+
+cap type Fuel { burn, query }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let smuggle: Result<Fuel, i64> = Ok(restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

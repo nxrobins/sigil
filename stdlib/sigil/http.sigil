@@ -1,0 +1,56 @@
+// Phase 5a-3: stdlib `http` module — HTTP GET/POST.
+//
+// Tools that `use sigil::http;` MUST declare `#[ring(outer)] #[trusted]`
+// (per R004) and supply `NetGrant`s naming the host patterns they need
+// to reach. Without a matching grant, GET/POST return -403.
+//
+// Response body cap: 5 MB. Beyond that, returns -413.
+//
+// Taint: every parameter and return is `@Internal`. A request URL or body
+// is routinely built from data that came off the network in the first
+// place, and a response is exactly that. The `@Internal` returns said this
+// already; the parameters now say it too, so a caller need not launder an
+// `@Internal` URL to make a request. `@Secret` bodies still require an
+// explicit declassification — and `post_secret` exists precisely so that
+// secret VALUES never have to enter guest memory at all.
+#[ring(outer)] #[trusted] module http;
+
+effect NetIO;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_post(url: i32, url_len: i32, body: i32, body_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_post_hdrs(url: i32, url_len: i32, body: i32, body_len: i32, hdrs: i32, hdrs_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_post_secret(url: i32, url_len: i32, body: i32, body_len: i32, hdrs: i32, hdrs_len: i32) -> i64 ! { FFI, Unsafe };
+
+// HTTP GET. Returns packed pointer to the response body on success,
+// or a negative HTTP-style error code (e.g. -403, -404, -413, -502).
+pub fn get(url_ptr: i32 @Internal, url_len: i32 @Internal) -> i64 @Internal ! { NetIO, Alloc, FFI, Unsafe } {
+    return http_get(url_ptr, url_len);
+}
+
+// HTTP POST with the given request body. Returns packed pointer to the
+// response body on success, or a negative HTTP-style error code.
+pub fn post(url_ptr: i32 @Internal, url_len: i32 @Internal, body_ptr: i32 @Internal, body_len: i32 @Internal) -> i64 @Internal ! { NetIO, Alloc, FFI, Unsafe } {
+    return http_post(url_ptr, url_len, body_ptr, body_len);
+}
+
+// HTTP POST with caller-supplied request headers, for authenticated APIs.
+// `hdrs` points at a newline-separated "Name: Value" blob (8 KB cap →
+// -431 beyond it; a line without ':' → -400). Same grants and caps as
+// `post`. NOTE: header VALUES routinely carry secrets (API keys) — they
+// are ordinary @Internal guest bytes here, and never echo into output
+// unless the tool itself copies them.
+pub fn post_hdrs(url_ptr: i32 @Internal, url_len: i32 @Internal, body_ptr: i32 @Internal, body_len: i32 @Internal, hdrs_ptr: i32 @Internal, hdrs_len: i32 @Internal) -> i64 @Internal ! { NetIO, Alloc, FFI, Unsafe } {
+    return http_post_hdrs(url_ptr, url_len, body_ptr, body_len, hdrs_ptr, hdrs_len);
+}
+
+// HTTP POST with HOST-INJECTED secrets in the headers. The `hdrs` blob
+// carries `{{secret:NAME}}` placeholders, NOT secret values; the host
+// substitutes each granted secret before sending, so the secret bytes
+// never enter guest memory. Requires a `secret` grant naming NAME plus
+// the usual `net` grant. Placeholder for an ungranted name → -403; an
+// unterminated `{{secret:` → -400. This is the leak-proof path: with no
+// secret bytes in the guest, there is nothing to copy into the output.
+pub fn post_secret(url_ptr: i32 @Internal, url_len: i32 @Internal, body_ptr: i32 @Internal, body_len: i32 @Internal, hdrs_ptr: i32 @Internal, hdrs_len: i32 @Internal) -> i64 @Internal ! { NetIO, Alloc, FFI, Unsafe } {
+    return http_post_secret(url_ptr, url_len, body_ptr, body_len, hdrs_ptr, hdrs_len);
+}

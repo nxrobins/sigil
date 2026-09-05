@@ -1,0 +1,43 @@
+// expect-ok
+// Z3 corpus #34: axis-1 — Wall 4 Step 3 semantic subsumption (strict subset).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Step 2 emitted T215 on this construction because syntactic equality
+// (`refinements_match`) is the only acceptance test: `(Ge, 5) != (Ge, 0)`.
+// Step 3 lifts this via V33's syntactic-first / Z3-fallback dispatcher:
+// on syntactic miss, `check_refinement_subsumption` asks Z3 whether
+// `∀x. (x >= 5) → (x >= 0)`. Z3 returns Unsat on
+// `∃x. (x >= 5) ∧ ¬(x >= 0)` — no counterexample exists — so
+// subsumption holds and the construction is accepted.
+//
+// This is the canonical "strict subset accepts" case that
+// differentiates Step 3 from Step 2.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 2's refinement-preservation through field reads
+//     (`infer_field_access_expr` attaches the source's clauses).
+//   * Step 3's V33 dispatcher: syntactic match fails → Z3 implication
+//     query → `SubsumptionResult::Holds` → accept (V47 early-exit).
+//   * V45 cache extension: counterexample storage doesn't fire here
+//     because the verdict is Unsat, not Sat.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok). Tightening Loose's predicate to
+// `where copy >= 10` would flip the construction into a T215 case
+// (fixture 36 illustrates).
+module sigil;
+
+record Strict { value: i64 } where value >= 5
+
+record Loose { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let s: Strict = Strict { value: 42 };
+        let l: Loose = Loose { copy: s.value };
+        return 1;
+    }
+}

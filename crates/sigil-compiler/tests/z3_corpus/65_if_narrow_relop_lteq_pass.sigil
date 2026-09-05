@@ -1,0 +1,25 @@
+// expect-ok
+// Z3 corpus #65: axis-1 — Wall 4 Step 10 LtEq → Gt else-arm negation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Exercises the Le↔Gt negation pair specifically. `if input <= 0`
+// narrows the then-arm to `input <= 0`; the else-arm receives the
+// negation, `input > 0`, which satisfies `need_positive(x)`. This is
+// structurally similar to fixture 60 but isolates the LtEq path
+// (rather than testing it via the `<` path).
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input <= 0 {
+            return 0;
+        } else {
+            return need_positive(input);
+        }
+    }
+}

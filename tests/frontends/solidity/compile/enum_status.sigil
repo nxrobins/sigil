@@ -1,0 +1,33 @@
+module enum_status;
+
+record Workflow { status: u256, count: u256 }
+
+impl Workflow {
+    pub fn new() -> Workflow {
+        return Workflow { status: 0, count: 0 };
+    }
+
+    pub fn activate(self: Workflow @Mut) {
+        self.status = 1;
+    }
+
+    pub fn close(self: Workflow @Mut) {
+        self.status = 2;
+    }
+
+    pub fn isActive(self: Workflow) -> bool {
+        return (self.status == 1);
+    }
+
+    pub fn before(self: Workflow, other: u256) -> bool {
+        return (self.status < other);
+    }
+
+    pub fn reset(self: Workflow @Mut, s: u256) {
+        self.status = s;
+    }
+
+    pub fn current(self: Workflow) -> u256 {
+        return self.status;
+    }
+}

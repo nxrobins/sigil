@@ -1,0 +1,5 @@
+module declassify_bool;
+cap type Declassify {}
+pub fn flag(s: bool @Secret, __fe_declassify_cap_0: Declassify) -> bool {
+  return declassify(s, __fe_declassify_cap_0);
+}

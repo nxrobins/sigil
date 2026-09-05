@@ -1,0 +1,17 @@
+module inh_abstract_base;
+
+record B { total: u256 }
+
+impl B {
+    pub fn new() -> B {
+        return B { total: 0 };
+    }
+
+    pub fn bump(self: B @Mut, v: u256) {
+        self.total = (self.total + v);
+    }
+
+    pub fn get(self: B) -> u256 {
+        return self.total;
+    }
+}

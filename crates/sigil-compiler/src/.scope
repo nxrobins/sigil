@@ -1,0 +1,49 @@
+description: Compiler source modules for parsing, Phase 2 analyses, AIR, and Wasm emission
+includes:
+  - crates/sigil-compiler/src/
+excludes:
+  - crates/sigil-compiler/target/
+context: |
+  This scope is the implementation-level view of the compiler crate.
+  It is the right place for edits to AST design, parser behavior, diagnostics,
+  ring/effect/taint analysis, AIR lowering, ownership/capability logic, or Wasm
+  code generation.
+
+  Keep pass ordering aligned with the current compiler pipeline:
+  parse -> resolve -> type-check/monomorphize -> ring/effect/taint -> AIR ->
+  cap/ownership -> memory -> fuel -> Wasm.
+
+  Current hygiene expectations:
+  - keep diagnostics source-located and readable from the CLI
+  - keep control-flow lowering explicit at AIR boundaries rather than hiding it
+    in Wasm emission
+  - preserve crate-local ownership of language semantics; the CLI should stay thin
+  - emit shared runtime metadata through `sigil-abi` rather than inventing
+    compiler-private handoff types
+
+  Current implemented slice:
+  - `parser.rs` and `ast.rs` cover records, enums, arrays, references/slices,
+    closures, ring/trust annotations, effect declarations, grants, declassify,
+    region blocks, actor syntax, and typed FFI declarations
+  - `type_check.rs` owns generic instantiation, actor/handler typing, closure
+    capture analysis, effect-row resolution, taint annotations, extern FFI
+    validation, and ToolForge entry-point checks
+  - `ring_check.rs`, `effect_check.rs`, and `taint_check.rs` enforce the Phase 2
+    security analyses after type checking
+  - `air.rs` lowers into explicit blocks plus bump allocation, capability
+    restrict/split, message serialize/deserialize, and runtime-call descriptors
+  - `compiler.rs` orchestrates the passes and exposes both full-module compile
+    paths and `compile_tool` / `compile_tool_with_limits`
+  - `wasm.rs` emits either a full host-import module or a reduced outer-ring
+    module and knows about `alloc`, `cap_restrict`, `cap_split`, and
+    `fuel_exhausted` imports in addition to actor ops
+related:
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-cli/.scope
+tags:
+  - compiler
+  - src
+  - parser
+  - wasm
+  - phase2

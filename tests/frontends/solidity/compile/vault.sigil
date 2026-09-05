@@ -1,0 +1,14 @@
+module vault;
+
+record Vault { balance: u256 }
+
+impl Vault {
+    pub fn new() -> Vault {
+        return Vault { balance: 0 };
+    }
+
+    pub fn withdraw(self: Vault @Mut, amount: u256) {
+        trap_if(!((self.balance >= amount)));
+        self.balance = self.balance - (amount);
+    }
+}

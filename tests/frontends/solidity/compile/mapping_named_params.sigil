@@ -1,0 +1,19 @@
+module mapping_named_params;
+
+record Named { balances: BoundedMap_u256_u256_64, supply: BoundedMap_u256_u256_64, ledger: BoundedMap_u256_u256_64, allowances: BoundedMap2_u256_u256_u256_64 }
+
+impl Named {
+    pub fn new() -> Named {
+        return Named { balances: BoundedMap_u256_u256_64::new(), supply: BoundedMap_u256_u256_64::new(), ledger: BoundedMap_u256_u256_64::new(), allowances: BoundedMap2_u256_u256_u256_64::new() };
+    }
+
+    pub fn shift(self: Named @Mut, a: u256, b: u256) {
+        let mut x: u256 = self.balances.get_or(a, 0);
+        let mut __fe_rb0: u256 = x;
+        let mut __fe_rb1: u256 = x;
+        self.supply.reserve1(b);
+        self.ledger.reserve1(a);
+        self.supply.insert(b, __fe_rb0);
+        self.ledger.insert(a, __fe_rb1);
+    }
+}

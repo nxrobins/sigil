@@ -1,0 +1,70 @@
+// TASK: simple substitution cipher — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let map_ptr = split + one;
+        let map_len = input_len - map_ptr;
+        let out_ptr = alloc(split);
+        let mut i = 0;
+
+        while i < split {
+            let b = load8(input_ptr + i);
+            if b >= 97 {
+                if b <= 122 {
+                    let idx = b - 97;
+                    if idx < map_len {
+                        let mapped = load8(input_ptr + map_ptr + idx);
+                        store8(out_ptr + i, mapped);
+                    } else {
+                        store8(out_ptr + i, b);
+                    }
+                } else {
+                    store8(out_ptr + i, b);
+                }
+            } else {
+                if b >= 65 {
+                    if b <= 90 {
+                        let idx = b - 65;
+                        if idx < map_len {
+                            let mapped = load8(input_ptr + map_ptr + idx);
+                            store8(out_ptr + i, mapped);
+                        } else {
+                            store8(out_ptr + i, b);
+                        }
+                    } else {
+                        store8(out_ptr + i, b);
+                    }
+                } else {
+                    store8(out_ptr + i, b);
+                }
+            }
+            i = i + 1;
+        }
+
+        return out_ptr * 4294967296 + split;
+    }
+}

@@ -1,0 +1,35 @@
+// expect-error: T225
+// Z3 corpus #55: axis-1 — Wall 4 Step 7 return refinement violation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The rejecting counterpart of fixture 54. `fn bad() -> i64 where @ > 0`
+// declares the return value must be `> 0`. The body's `return 0;` Z3-
+// fails on `not(0 > 0)`, and T225 fires at the return statement.
+//
+// Per N25-S7 the check fires at every `return <expr>` in the function
+// body (including those nested inside `if`/`match`/`while`/`for`/blocks)
+// via the recursive walker baked into `check_return`. Per N15-S7 the
+// check is ADDITIVE on top of the existing `type_compatible` check at
+// the same site.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 7 `tracker.current_return_refinement` set by
+//     `check_function_block` at fn entry.
+//   * Step 7 `check_return` body-level dispatch to T225.
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the entire single-line `fn bad` declaration.
+// Removing the line removes the violating function and leaves a
+// compiling program (just the entry actor).
+module sigil;
+
+fn bad() -> i64 where @ > 0 { return 0; }  // MUTATION_SITE
+
+entry actor Main {
+    on Tick() -> i64 {
+        return 1;
+    }
+}

@@ -1,0 +1,127 @@
+// expect-ok
+// Z3 corpus #18: axis-1 — inter-actor 3-of-3 quorum.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Fixture #17 (`17_m_of_n_quorum.sigil`) proved that a single
+// `Coordinator` actor can accumulate M-of-N caps within its own
+// message-handler invocations. This fixture goes one step further:
+// the N approvals each originate in a SEPARATE actor (`Party`) and
+// arrive at the coordinator via `coord.send(Approve(cap, id))`.
+//
+// The combination of three Wall-1 capabilities makes this writable:
+//
+//   * `Slot<Cap>` state fields hold incoming caps between handler
+//     invocations (Step 2).
+//   * `Slot<Cap>` is accepted as a spawn init argument so `Main` can
+//     construct the slots locally and hand them to the coordinator
+//     at spawn time (Step 3, R010 + T096 carve-out).
+//   * `ActorRef<T>` is a first-class message-payload type, so each
+//     `Party` learns about the coordinator by being sent a `Sign`
+//     message that includes the `ActorRef<Coordinator>`.
+//
+// THREAT-MODEL STANCE
+//
+//   1. Cap isolation: each `Party` owns its own `Fuel` cap, drawn
+//      from `Main` at spawn time. Parties cannot impersonate each
+//      other because they only have their own sub-cap.
+//   2. Coordinator integrity: the coordinator's `slot1/2/3` are
+//      private state — no other actor can put or take from them.
+//      Only `Approve` is an external entry point, and it puts the
+//      cap into a slot keyed by `party_id`. The `party_id` argument
+//      is unauthenticated; a malicious party could claim `id == 2`
+//      to fill Bob's slot. Distinct-party enforcement is achievable
+//      by giving each party a distinct cap TYPE (`AliceAuth` /
+//      `BobAuth` / `CarolAuth`) — see fixture #10. This fixture
+//      proves the SHAPE of inter-actor accumulation; the per-type
+//      hardening composes orthogonally.
+//   3. Replay: out of scope. Same caveats as fixture #17.
+//   4. Message ordering: per-actor mailbox semantics guarantee
+//      handler invocations don't interleave. The Z3 source rule
+//      tracks within-function authority via the meet of every
+//      SlotPut (Step 4); ACROSS handler invocations a single slot
+//      can still be put twice in sequence — the runtime trap on
+//      `slot_put` to a full slot catches that at execution time.
+//
+// MUTATION CONTRACT
+//
+// The structural shape this fixture pins is the language's ability
+// to compose `Slot<Cap>` state + `ActorRef<T>` message payloads +
+// inter-actor `coord.send(...)` cap delivery. Removing the
+// `slot_take` chain in `Settle` would leave caps unconsumed (fine —
+// state-resident caps are not required to be drained). Removing
+// the `coord.send(Approve(...))` line keeps the cap in the party's
+// fuel state (also fine — state caps don't need to flow out). The
+// fixture's verdict pivots on whether the inter-actor cap-delivery
+// path TYPE-CHECKS, not on runtime behavior.
+module sigil;
+
+cap type Fuel {}
+
+actor Coordinator {
+    state {
+        slot1: Slot<Fuel>,
+        slot2: Slot<Fuel>,
+        slot3: Slot<Fuel>,
+        fuel: Fuel,
+    }
+
+    init(s1: Slot<Fuel>, s2: Slot<Fuel>, s3: Slot<Fuel>, f: Fuel) {}
+
+    on Approve(approval: Fuel, party_id: i64) -> i64 {
+        if party_id == 1 {
+            slot_put(slot1, approval);
+        } else {
+            if party_id == 2 {
+                slot_put(slot2, approval);
+            } else {
+                slot_put(slot3, approval);
+            }
+        }
+        return 1;
+    }
+
+    on Settle() -> i64 {
+        let c1: Fuel = slot_take(slot1);
+        let c2: Fuel = slot_take(slot2);
+        let c3: Fuel = slot_take(slot3);
+        let _b1 = c1.draw(1);
+        let _b2 = c2.draw(1);
+        let _b3 = c3.draw(1);
+        return 1;
+    }
+}
+
+actor Party {
+    state { fuel: Fuel }
+
+    init(f: Fuel) {}
+
+    on Sign(coord: ActorRef<Coordinator>, id: i64) -> i64 {
+        let approval = fuel.draw(1);
+        coord.send(Approve(approval, id));
+        return 1;
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let coord_fuel = fuel.draw(100);
+        let s1 = slot_new::<Fuel>();
+        let s2 = slot_new::<Fuel>();
+        let s3 = slot_new::<Fuel>();
+        let coord = spawn::<Coordinator>(s1, s2, s3, coord_fuel);
+        let alice_fuel = fuel.draw(10);
+        let bob_fuel = fuel.draw(10);
+        let carol_fuel = fuel.draw(10);
+        let alice = spawn::<Party>(alice_fuel);
+        let bob = spawn::<Party>(bob_fuel);
+        let carol = spawn::<Party>(carol_fuel);
+        alice.send(Sign(coord, 1));
+        bob.send(Sign(coord, 2));
+        carol.send(Sign(coord, 3));
+        return 1;
+    }
+}

@@ -1,0 +1,28 @@
+// expect-error: T224
+// Z3 corpus #40: axis-1 — refinement at zero boundary does not subsume.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A function requiring `where x > 0` rejects the literal `0` because
+// `0 > 0` is false. This is a boundary-value test for the refinement
+// checker: the guard is strict inequality (>), not non-strict (>=).
+//
+// This pins the distinction between `>` and `>=` in the Z3 assertion.
+// An implementation that used `>=` instead of `>` would accept `0`
+// incorrectly. Z3 returns Sat for `not(0 > 0)`, firing T224 at the
+// call site (same diagnostic as fixture #53).
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the call
+// with the boundary value. The function definition alone compiles.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Start() -> i64 {
+        let result: i64 = need_positive(0);  // MUTATION_SITE
+        return 0;
+    }
+}

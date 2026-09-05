@@ -1,0 +1,25 @@
+module struct_map_scalars;
+
+record C { __fe_sm_6_points_x: BoundedMap_u256_u256_64, __fe_sm_6_points_y: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { __fe_sm_6_points_x: BoundedMap_u256_u256_64::new(), __fe_sm_6_points_y: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn setX(self: C @Mut, a: u256, v: u256) {
+        self.__fe_sm_6_points_x.insert(a, v);
+    }
+
+    pub fn setY(self: C @Mut, a: u256, v: u256) {
+        self.__fe_sm_6_points_y.insert(a, v);
+    }
+
+    pub fn getX(self: C, a: u256) -> u256 {
+        return self.__fe_sm_6_points_x.get_or(a, 0);
+    }
+
+    pub fn sum(self: C, a: u256) -> u256 {
+        return (self.__fe_sm_6_points_x.get_or(a, 0) + self.__fe_sm_6_points_y.get_or(a, 0));
+    }
+}

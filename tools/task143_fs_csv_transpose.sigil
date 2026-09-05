@@ -1,0 +1,137 @@
+// TASK: fs csv transpose — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read a CSV file, transpose rows and columns.
+// Max 32 columns, 32 rows. Each cell up to 64 bytes.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // cells[row][col] stored at offset (row * 32 + col) * 64
+    // lens[row][col] at offset (row * 32 + col) * 2
+    let cells: i64 @Internal = alloc(32 * 32 * 64);
+    let cell_lens: i64 @Internal = alloc(32 * 32 * 2);
+    let mut nrows: i64 @Internal = 0;
+    let mut ncols: i64 @Internal = 0;
+
+    let mut row: i64 @Internal = 0;
+    let mut col: i64 @Internal = 0;
+    let mut cell_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= file_len {
+        let mut eol: i64 @Internal = 0;
+        let mut sep_c: i64 @Internal = 0;
+        if i == file_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(file_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+                if b == 44 {
+                    sep_c = 1;
+                } else {
+                }
+            }
+        }
+        if sep_c == 1 {
+            // store cell
+            let cell_len: i64 @Internal = i - cell_start;
+            let cell_idx: i64 @Internal = row * 32 + col;
+            let cell_off: i64 @Internal = cell_idx * 64;
+            let len_off: i64 @Internal = cell_idx * 2;
+            let mut k: i64 @Internal = 0;
+            while k < cell_len {
+                let cb: i64 @Internal = load8(file_ptr + cell_start + k);
+                store8(cells + cell_off + k, cb);
+                k = k + 1;
+            }
+            store8(cell_lens + len_off, cell_len);
+            store8(cell_lens + len_off + 1, cell_len / 256);
+            col = col + 1;
+            if col > ncols {
+                ncols = col;
+            } else {
+            }
+            cell_start = i + 1;
+        } else {
+        }
+        if eol == 1 {
+            let cell_len2: i64 @Internal = i - cell_start;
+            if cell_len2 > 0 {
+                let cell_idx2: i64 @Internal = row * 32 + col;
+                let cell_off2: i64 @Internal = cell_idx2 * 64;
+                let len_off2: i64 @Internal = cell_idx2 * 2;
+                let mut k2: i64 @Internal = 0;
+                while k2 < cell_len2 {
+                    let cb2: i64 @Internal = load8(file_ptr + cell_start + k2);
+                    store8(cells + cell_off2 + k2, cb2);
+                    k2 = k2 + 1;
+                }
+                store8(cell_lens + len_off2, cell_len2);
+                store8(cell_lens + len_off2 + 1, cell_len2 / 256);
+                col = col + 1;
+                if col > ncols {
+                    ncols = col;
+                } else {
+                }
+                row = row + 1;
+                nrows = row;
+            } else {
+                if col > 0 {
+                    row = row + 1;
+                    nrows = row;
+                } else {
+                }
+            }
+            col = 0;
+            cell_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+
+    // Emit transposed: for each column c, emit row r cells separated by comma.
+    let out: i64 @Internal = alloc(file_len + 64);
+    let mut out_len: i64 @Internal = 0;
+    let mut c: i64 @Internal = 0;
+    while c < ncols {
+        let mut r: i64 @Internal = 0;
+        while r < nrows {
+            if r > 0 {
+                store8(out + out_len, 44);
+                out_len = out_len + 1;
+            } else {
+            }
+            let idx: i64 @Internal = r * 32 + c;
+            let off: i64 @Internal = idx * 64;
+            let loff: i64 @Internal = idx * 2;
+            let llo: i64 @Internal = load8(cell_lens + loff);
+            let lhi: i64 @Internal = load8(cell_lens + loff + 1);
+            let ll: i64 @Internal = llo + lhi * 256;
+            let mut k3: i64 @Internal = 0;
+            while k3 < ll {
+                let cb3: i64 @Internal = load8(cells + off + k3);
+                store8(out + out_len, cb3);
+                out_len = out_len + 1;
+                k3 = k3 + 1;
+            }
+            r = r + 1;
+        }
+        store8(out + out_len, 10);
+        out_len = out_len + 1;
+        c = c + 1;
+    }
+    return out * 4294967296 + out_len;
+}

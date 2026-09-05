@@ -1,0 +1,57 @@
+// expect-ok
+// Z3 corpus #50: axis-1 — Wall 4 Step 6 nested-match narrowing stack.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The `pattern_refinement_stack` on `MonomorphTracker` correctly handles
+// nested `match` scopes: an inner arm's bindings DO shadow outer ones,
+// and the inner-arm pop restores the outer-arm's view.
+//
+// In this fixture, an outer `match v { Positive(x) => ... }` binds
+// `x` to `Positive`'s refinement (`x > 0`). Inside that arm body, a
+// nested `match w { Positive(x) => ... }` ALSO binds `x` — shadowing
+// the outer `x`. Both bindings narrow correctly: the inner-arm
+// construction `Positive(x)` uses the INNER scope's `x` (which carries
+// the same `> 0` refinement, by virtue of being bound to a `Positive`
+// payload).
+//
+// Per the stack push/pop discipline, after the inner arm closes the
+// outer arm's `x` is restored. (No fixture-internal observation
+// validates this directly here; the determinism gate and additional
+// integration tests cover the regression.)
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 6 commit #3 `pattern_refinement_stack` push/pop discipline.
+//   * Step 6 commit #3 inner-arm-shadows-outer behavior of
+//     `lookup_pattern_refinement` (top-down stack walk).
+//
+// MUTATION CONTRACT
+//
+// Replacing the inner `Positive(x)` pattern with `Positive(_)` would
+// drop the inner binding's refinement; the inner construction
+// would then fire T211. Replacing the outer `Positive(x)` pattern
+// with `Positive(_)` is harmless because the inner-arm's binding is
+// the load-bearing one.
+module sigil;
+
+enum SignedInt {
+    Positive(x: i64) where x > 0,
+    Negative(x: i64) where x < 0,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let v: SignedInt = Positive(3);
+        let w: SignedInt = Positive(11);
+        match v {
+            Positive(x) => {
+                match w {
+                    Positive(x) => { let p: SignedInt = Positive(x); return 1; },
+                    Negative(z) => { return 0 - 1; },
+                }
+            },
+            Negative(y) => { return 0 - 1; },
+        }
+    }
+}

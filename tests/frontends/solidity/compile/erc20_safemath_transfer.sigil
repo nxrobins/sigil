@@ -1,0 +1,13 @@
+module erc20_safemath_transfer;
+
+record Token { balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn transfer(self: Token @Mut, __fe_sender: u256, to: u256, amount: u256) {
+        self.balances.transfer(__fe_sender, to, amount);
+    }
+}

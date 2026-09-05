@@ -1,0 +1,14 @@
+module unchecked_compound_transfer;
+
+record Token { balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn move(self: Token @Mut, from: u256, to: u256, amount: u256) {
+        trap_if(!((self.balances.get_or(from, 0) >= amount)));
+        self.balances.transfer(from, to, amount);
+    }
+}

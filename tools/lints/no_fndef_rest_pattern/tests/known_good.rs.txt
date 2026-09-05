@@ -1,0 +1,29 @@
+// NF-S7-13 negative fixture: this MUST NOT be flagged by no_fndef_rest_pattern.
+//
+// Two legitimate patterns the lint must allow:
+// 1. Fully-enumerated `FnDef { ... }` literal (no rest-pattern at all).
+// 2. Clone-with-override (`..existing_def`) — NF-S7-9 explicitly permits
+//    this; only `..Default::default()` is the bypass target.
+
+struct FnDef {
+    name: String,
+    params: Vec<i32>,
+    param_refinements: Vec<String>,
+    return_refinement: Option<String>,
+}
+
+fn make_explicit() -> FnDef {
+    FnDef {
+        name: String::from("validate"),
+        params: Vec::new(),
+        param_refinements: Vec::new(),
+        return_refinement: None,
+    }
+}
+
+fn make_via_clone(existing: FnDef) -> FnDef {
+    FnDef {
+        name: String::from("renamed"),
+        ..existing
+    }
+}

@@ -1,0 +1,98 @@
+// TASK: edge patterns — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+        while n > 0 {
+            let q = n / 10;
+            let d = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out = alloc(digits);
+        let mut i = 0;
+        while i < digits {
+            let b = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+// Parse a decimal digit, return "positive:N", "zero:0", or "negative" string.
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let b: i64 = load8(input_ptr);
+    let n: i64 = b - 48;
+
+    let mut prefix_buf: i64 = 0;
+    let mut prefix_len: i64 = 0;
+
+    if n == 0 {
+        prefix_buf = alloc(5);
+        store8(prefix_buf, 122); // z
+        store8(prefix_buf + 1, 101); // e
+        store8(prefix_buf + 2, 114); // r
+        store8(prefix_buf + 3, 111); // o
+        store8(prefix_buf + 4, 58); // :
+        prefix_len = 5;
+    } else {
+        if n > 0 {
+            prefix_buf = alloc(9);
+            store8(prefix_buf, 112); // p
+            store8(prefix_buf + 1, 111); // o
+            store8(prefix_buf + 2, 115); // s
+            store8(prefix_buf + 3, 105); // i
+            store8(prefix_buf + 4, 116); // t
+            store8(prefix_buf + 5, 105); // i
+            store8(prefix_buf + 6, 118); // v
+            store8(prefix_buf + 7, 101); // e
+            store8(prefix_buf + 8, 58); // :
+            prefix_len = 9;
+        } else {
+            prefix_buf = alloc(8);
+            store8(prefix_buf, 110);
+            store8(prefix_buf + 1, 101);
+            store8(prefix_buf + 2, 103);
+            store8(prefix_buf + 3, 97);
+            store8(prefix_buf + 4, 116);
+            store8(prefix_buf + 5, 105);
+            store8(prefix_buf + 6, 118);
+            store8(prefix_buf + 7, 101);
+            prefix_len = 8;
+        }
+    }
+
+    let num_pkg: i64 = render_decimal(n);
+    let num_ptr: i64 = num_pkg / 4294967296;
+    let num_len: i64 = num_pkg - num_ptr * 4294967296;
+
+    let total: i64 = prefix_len + num_len;
+    let out = alloc(total);
+    let mut k: i64 = 0;
+    while k < prefix_len {
+        let pb: i64 = load8(prefix_buf + k);
+        store8(out + k, pb);
+        k = k + 1;
+    }
+    let mut m: i64 = 0;
+    while m < num_len {
+        let nb: i64 = load8(num_ptr + m);
+        store8(out + prefix_len + m, nb);
+        m = m + 1;
+    }
+
+    return out * 4294967296 + total;
+}

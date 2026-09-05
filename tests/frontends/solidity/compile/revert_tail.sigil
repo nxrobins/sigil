@@ -1,0 +1,16 @@
+module revert_tail;
+
+record Store { value: u256, present: bool }
+
+impl Store {
+    pub fn new() -> Store {
+        return Store { value: 0, present: false };
+    }
+
+    pub fn get(self: Store) -> u256 {
+        if self.present {
+            return self.value;
+        }
+        trap();
+    }
+}

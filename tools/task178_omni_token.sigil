@@ -1,0 +1,84 @@
+// TASK: omni token — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "token_path:url_prefix". Read token from file, build url = prefix+token, fetch.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    // Find first ':' (path ends there).
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Trim trailing newline from token
+    let mut tok_len: i64 @Internal = file_len;
+    if tok_len > 0 {
+        let last: i64 @Internal = load8(file_ptr + tok_len - 1);
+        if last == 10 {
+            tok_len = tok_len - 1;
+        } else {
+        }
+    } else {
+    }
+
+    // URL prefix is after ':' in input
+    let pref_off: i32 @Internal = sep32 + one_i32;
+    let pref_len: i32 @Internal = input_len - pref_off;
+
+    // Count pref_len as i64
+    let mut pref_len_i64: i64 @Internal = 0;
+    let mut c: i32 @Internal = zero_i32;
+    while c < pref_len {
+        pref_len_i64 = pref_len_i64 + 1;
+        c = c + one_i32;
+    }
+
+    // Write URL = prefix + token into input buffer starting at 0
+    let mut out_i32: i32 @Internal = zero_i32;
+    let mut pi: i32 @Internal = zero_i32;
+    while pi < pref_len {
+        let pb: i64 @Internal = load8(input_ptr + pref_off + pi);
+        store8(input_ptr + out_i32, pb);
+        out_i32 = out_i32 + one_i32;
+        pi = pi + one_i32;
+    }
+    let mut ti: i64 @Internal = 0;
+    while ti < tok_len {
+        let tb: i64 @Internal = load8(file_ptr + ti);
+        store8(input_ptr + out_i32, tb);
+        out_i32 = out_i32 + one_i32;
+        ti = ti + 1;
+    }
+
+    return http_get(input_ptr, out_i32);
+}

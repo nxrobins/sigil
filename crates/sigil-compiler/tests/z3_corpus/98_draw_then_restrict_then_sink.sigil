@@ -1,0 +1,36 @@
+// expect-error: C003
+// Z3 corpus #98: axis-2 — draw-then-restrict pipeline rejects at sink.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A cap that flows through draw → restrict → sink retains the
+// restriction applied AFTER the draw. This tests the composition of
+// two authority-modifying operations in sequence:
+//   1. draw(10) from full-authority state cap → full authority drawn cap
+//   2. restrict(burn) on drawn cap → burn-only drawn cap
+//   3. needs_full(restricted_drawn) → C003
+//
+// This is distinct from fixture #82 (restrict → draw, where
+// restriction flows FORWARD through draw) and fixture #84 (draw →
+// restrict → draw, where a sibling draw remains independent). This
+// fixture tests the simpler draw → restrict → sink pipeline,
+// ensuring that draw's full authority is correctly downgraded by a
+// subsequent restrict.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// sink call. The restricted drawn cap persists unused.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let drawn: Fuel = fuel.draw(10);
+        let restricted_drawn: Fuel = drawn.restrict(burn);
+        needs_full(restricted_drawn);  // MUTATION_SITE
+        return 1;
+    }
+}

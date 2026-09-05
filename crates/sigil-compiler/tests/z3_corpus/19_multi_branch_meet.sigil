@@ -1,0 +1,62 @@
+// expect-error: C003
+// Z3 corpus #19: axis-1 — multi-branch SlotPut authority meet.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 1 Step 4 retired T194 (the static "at most one slot_put per
+// slot per function" rejection). To stay sound without the structural
+// check, the Z3 source rule now folds every SlotPut's authority into
+// a **conservative meet** (bitwise AND) at each SlotTake. This
+// fixture exercises that meet:
+//
+//   * Branch A puts a full-authority cap (`burn | query`).
+//   * Branch B puts an attenuated cap (`burn` only).
+//   * The take site can see EITHER, so the meet is `burn`.
+//   * A sink that requires the full mask (here `use_full` — a call
+//     site, full-authority required for any cap arg) fails C003.
+//
+// Without the meet (e.g., if SlotPut used `.insert()` and SlotTake
+// saw only one branch's authority), this program would compile
+// cleanly — a silent authority smuggle across the slot. The fixture
+// pins the meet's soundness against that regression.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Wall 1 Step 2: Slot<Cap> built-in, three intrinsics, Z3 source
+//     rule that propagates put-cap authority into take-cap.
+//   * Wall 1 Step 4: T194 retired; Z3 source rule extended to the
+//     meet model so multi-branch puts stay sound.
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is branch B's `slot_put` line. Removing it leaves
+// only branch A's put contributing to the slot's authority pool — the
+// meet collapses to branch A's full mask, the sink check passes, and
+// the program compiles cleanly. The restricted cap (`f_restricted`)
+// becomes unused and falls out of scope per Sigil's linear-cap drop
+// semantics. This pivot proves the fixture pins the meet's
+// authority-loss behavior and not an incidental property of the
+// surrounding shape.
+module sigil;
+
+cap type Fuel { burn, query }
+
+fn use_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(cond: i64) -> i64 {
+        let f_full = fuel.draw(10);
+        let f_restricted_raw = fuel.draw(10);
+        let f_restricted = f_restricted_raw.restrict(burn);
+        let s = slot_new::<Fuel>();
+        if cond == 1 {
+            slot_put(s, f_full);
+        } else {
+            slot_put(s, f_restricted);   // MUTATION_SITE
+        }
+        let taken: Fuel = slot_take(s);
+        return use_full(taken);
+    }
+}

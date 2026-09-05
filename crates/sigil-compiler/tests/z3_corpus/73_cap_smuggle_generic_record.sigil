@@ -1,0 +1,34 @@
+// expect-error: T242
+// Z3 corpus #73: axis-6 — cap smuggle through a user-defined generic
+// record (T183 analog gap).
+//
+// T183 fires at record DECLARATION time on cap-typed fields. PR #75
+// (PR A) wired generic-record-construction substitution, so
+// `record Holder<T> { value: T }` declares `value: Type::Generic("T")`
+// — no cap visible. `Holder<Fuel> { value: cap }` constructs a record
+// whose `value` field is post-substitution a cap; `h.value`
+// field-projection then loses the cap's restriction provenance
+// (same Z3 authority-tracker gap T183 closes for concrete cap-typed
+// record fields).
+//
+// ABUSE VECTOR (verified live against pre-T242 commit 42e43f6): 351-byte
+// WASM module shipped the unsafe field-projection flow live at runtime.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// generic-record construction. The restricted cap is created but
+// never consumed; program reduces to `return 1;` and verification
+// passes.
+module main;
+
+cap type Fuel { burn, query }
+
+record Holder<T> { value: T }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let h: Holder<Fuel> = Holder { value: restricted };  // MUTATION_SITE
+        return 1;
+    }
+}

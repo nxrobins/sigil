@@ -1,0 +1,63 @@
+// stdlib::bounded_set_i64 — a BOUNDED, stack-backed set of `i64` (COMPLETENESS
+// Phase 4). The map shape minus values: one fixed `[i64; 64]` backing + a `count`
+// live-prefix length; membership is a LINEAR SCAN of `elems[0..count]`. Same
+// bounded guarantees as `bounded_map_i64_i64` — `Alloc`-free fixed backing,
+// construction-SEALED (T258), full+new-element insert force-traps via `elems[64]`.
+//
+// `insert(elem) -> bool` is IDEMPOTENT: true iff the element was newly added,
+// false if already present (NOT an error). A NEW element into a full set traps
+// (the bounded-overflow contract). The scan is bounded by `count`, never 64.
+
+module bounded_set_i64;
+
+record BoundedSet_i64_64 { elems: [i64; 64], count: i64 }
+
+impl BoundedSet_i64_64 {
+    pub fn new() -> BoundedSet_i64_64 {
+        return BoundedSet_i64_64 { elems: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedSet_i64_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedSet_i64_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedSet_i64_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedSet_i64_64) -> bool {
+        return self.count == 64;
+    }
+
+    // Add `elem`. Already present → false (idempotent, count unchanged). Absent →
+    // append at `count`; at count == 64 this writes `elems[64]` → backing trap.
+    pub fn insert(self: BoundedSet_i64_64 @Mut, elem: i64) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.elems[i] == elem {
+                return false;
+            } else {
+            }
+            i = i + 1;
+        }
+        self.elems[self.count] = elem;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn contains(self: BoundedSet_i64_64, elem: i64) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.elems[i] == elem {
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}

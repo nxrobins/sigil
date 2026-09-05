@@ -1,0 +1,15 @@
+# Explicit lint config for `tools/`.
+#
+# WHY THIS FILE EXISTS. Same hazard interp/.ruff.toml records: ruff discovers
+# configuration by walking up from each file, there is no pyproject at the
+# repo root, and CI invokes `ruff check bench interp tools` while a developer
+# is more likely to run `ruff check tools` — two invocations that can demand
+# contradictory results unless the rules are stated here, invocation-
+# independently. tools/ was the one Python root OUTSIDE the lint lane
+# entirely: the gate scripts that guard the compiler were themselves
+# unlinted. Selection mirrors interp's (the strictest set in the repo).
+
+target-version = "py310"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "RUF", "SIM", "B", "UP"]

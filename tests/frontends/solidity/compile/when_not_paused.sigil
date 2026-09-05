@@ -1,0 +1,14 @@
+module when_not_paused;
+
+record C { paused: bool, x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { paused: false, x: 0 };
+    }
+
+    pub fn setX(self: C @Mut, v: u256) {
+        trap_if(!(!(self.paused)));
+        self.x = v;
+    }
+}

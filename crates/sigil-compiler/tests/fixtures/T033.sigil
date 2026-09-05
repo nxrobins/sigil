@@ -1,0 +1,34 @@
+// expect-error: T033
+//
+// T033 / CT018 — `str` `==` (and `!=`) with a `@SecretCT` operand is rejected.
+//
+// `str` equality compares CONTENT with an early-exit byte loop. Its trip count
+// reveals the length of the common prefix between the two strings, and so does
+// the fuel it consumes — which the runtime surfaces to the caller. Either is a
+// timing oracle over secret data, so the comparison is rejected outright.
+//
+// The gate lives in the taint checker rather than anywhere downstream because
+// taint runs on the typed AST, strictly before AIR lowering. By the time the
+// byte loop exists as a construct, the taint labels are gone.
+//
+// It rejects rather than silently selecting a constant-time lowering, for three
+// reasons: taint results are not carried into lowering, so there is no channel
+// to select on; a branch-free compare still leaks `min(len_a, len_b)` through
+// both trip count and fuel; and the CT intrinsics (`ct_eq` / `ct_select` /
+// `ct_lt`) are integer-only, so there is nothing to build a constant-time `str`
+// compare out of today. Promising one would be a lie told in the compiler's own
+// voice.
+//
+// Integer `==` on `@SecretCT` stays legal — a single machine instruction with
+// no data-dependent control flow and nothing to time.
+//
+// The MUTATION_SITE below is the operand type. Change both parameters from
+// `str` to `i64` and the fixture compiles cleanly, proving this pins the
+// string-content comparison specifically and not merely the presence of
+// `@SecretCT` on an operand.
+module main;
+
+// MUTATION_SITE
+fn cmp(a: str @SecretCT, b: str @SecretCT) -> bool @SecretCT {
+    return a == b;
+}

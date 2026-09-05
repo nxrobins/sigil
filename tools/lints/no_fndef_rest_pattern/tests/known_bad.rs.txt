@@ -1,0 +1,30 @@
+// NF-S7-13 positive fixture: this MUST be flagged by no_fndef_rest_pattern.
+//
+// A real-world bypass pattern: a future PR uses `..Default::default()`
+// to skip enumerating FnDef's new Wall 4 Step 7 refinement fields
+// (`param_refinements`, `return_refinement`). The lint MUST catch this.
+
+struct FnDef {
+    name: String,
+    params: Vec<i32>,
+    param_refinements: Vec<String>,
+    return_refinement: Option<String>,
+}
+
+impl Default for FnDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            params: Vec::new(),
+            param_refinements: Vec::new(),
+            return_refinement: None,
+        }
+    }
+}
+
+fn make_bypass() -> FnDef {
+    FnDef {
+        name: String::from("validate"),
+        ..Default::default()
+    }
+}

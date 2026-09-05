@@ -1,0 +1,4 @@
+module taint_upward;
+pub fn keep(s: i64 @Secret) -> i64 @Secret {
+  return s;
+}

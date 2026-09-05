@@ -1,0 +1,30 @@
+// expect-error: T120
+// Z3 corpus #80: cross-field refinement RHS names an undeclared field → T120.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// V70 (T120): a cross-field refinement `amount <= limit` requires the RHS field
+// (`limit`) to actually be declared on the record. Here the record declares only
+// `amount`, so the cross-field RHS `limit` is undeclared and fails the T120 shape
+// check. As of the Phase-2 refinement quarantine this fires at DECLARATION
+// (`validate_refinement_shapes_at_decls`), reading only the declared clause + the
+// record's declared field set — no construction required.
+//
+// This is the T120 backstop the relocation adds: before this, T120's
+// cross-field-RHS-undeclared emission had no fixture or behavioral test.
+//
+// MUTATION CONTRACT
+//
+// Deleting the `where` clause (MUTATION_SITE) leaves a plain single-field record
+// and its construction, which compile cleanly.
+module sigil;
+
+record Account { amount: i64 }
+    where amount <= limit  // MUTATION_SITE
+
+entry actor Main {
+    on Tick() -> i64 {
+        let a: Account = Account { amount: 5 };
+        return 1;
+    }
+}

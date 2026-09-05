@@ -1,0 +1,118 @@
+// TASK: http grep — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "url:keyword". Fetch URL, return only lines containing keyword.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    // Find last ':'
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            sep32 = scan;
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    // Check if what follows is actually a keyword (not a port number).
+    // Use last : before input end if preceding char is not part of scheme.
+    // Simpler: assume input is <url>:<keyword> where URL has scheme.
+    // Skip the "://" pattern.
+    let url_end: i32 @Internal = sep32;
+    let raw: i64 @Internal = http_get(input_ptr, url_end);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let kw_off: i32 @Internal = sep32 + one_i32;
+    let kw_len_i32: i32 @Internal = input_len - kw_off;
+    // Count kw_len in i64
+    let mut kw_len: i64 @Internal = 0;
+    let mut c: i32 @Internal = zero_i32;
+    while c < kw_len_i32 {
+        kw_len = kw_len + 1;
+        c = c + one_i32;
+    }
+
+    let out: i64 @Internal = alloc(body_len);
+    let mut out_len: i64 @Internal = 0;
+    let mut line_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= body_len {
+        let mut eol: i64 @Internal = 0;
+        if i == body_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(body_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+            }
+        }
+        if eol == 1 {
+            let ln: i64 @Internal = i - line_start;
+            if ln >= kw_len {
+                let search_limit: i64 @Internal = ln - kw_len + 1;
+                let mut found: i64 @Internal = 0;
+                let mut j: i64 @Internal = 0;
+                while j < search_limit {
+                    if found == 0 {
+                        let mut match_ok: i64 @Internal = 1;
+                        let mut k: i64 @Internal = 0;
+                        let mut k32: i32 @Internal = zero_i32;
+                        while k < kw_len {
+                            let bb: i64 @Internal = load8(body_ptr + line_start + j + k);
+                            let kb: i64 @Internal = load8(input_ptr + kw_off + k32);
+                            if bb == kb {
+                            } else {
+                                match_ok = 0;
+                            }
+                            k = k + 1;
+                            k32 = k32 + one_i32;
+                        }
+                        if match_ok == 1 {
+                            found = 1;
+                        } else {
+                        }
+                    } else {
+                    }
+                    j = j + 1;
+                }
+                if found == 1 {
+                    let mut m: i64 @Internal = 0;
+                    while m < ln {
+                        let mb: i64 @Internal = load8(body_ptr + line_start + m);
+                        store8(out + out_len, mb);
+                        out_len = out_len + 1;
+                        m = m + 1;
+                    }
+                    store8(out + out_len, 10);
+                    out_len = out_len + 1;
+                } else {
+                }
+            } else {
+            }
+            line_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return out * 4294967296 + out_len;
+}

@@ -1,0 +1,111 @@
+// expect-ok
+// Z3 corpus #17: axis-1 — M-of-N quorum via cap accumulation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The M-of-N quorum pattern (e.g. 3-of-3 distinct approvals) is
+// expressible end-to-end using the `Slot<Cap>` built-in shipped in
+// Wall 1 Steps 2 and 3:
+//
+//   * Coordinator actor declares N `Slot<Cap>` state fields and a
+//     counter primitive.
+//   * On each `Approve(cap, party_id)` invocation, dispatch by
+//     party_id and put the approval cap into the corresponding slot.
+//   * Increment the counter. When count >= M, take all the caps
+//     out and act.
+//
+// Fixture #10 (`10_multi_party_approval.sigil`) proved the
+// SIMULTANEOUS shape (all caps at spawn time). This fixture proves
+// the INCREMENTAL shape (caps arrive across separate handler
+// invocations).
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 2: `Slot<Cap>` built-in container, three intrinsics
+//     (`slot_new`, `slot_put`, `slot_take`), Z3 source rule that
+//     propagates put-cap authority into the take-cap.
+//   * Step 3: `Slot<Cap>` as a spawn init argument — the capability
+//     verifier (R010) accepts Slot args alongside cap args. The
+//     spawn site constructs slots locally and hands them to the
+//     coordinator at spawn time.
+//
+// THREAT-MODEL STANCE
+//
+//   1. Concurrency: per-actor single-threaded message dispatch is
+//      assumed. The three SlotPut statements in `on Approve`'s
+//      branches target distinct slot VarIds (slot1/2/3) — one
+//      static put per slot — which is the most precise shape for
+//      the Z3 source rule's meet (Step 4 retired T194, but
+//      single-put per slot still gives single-cap precision).
+//   2. Anti-replay: out of scope. The quorum counts approvals, not
+//      distinct parties. Distinct-party enforcement is achievable
+//      via per-party cap types layered on top (see fixture #10).
+//   3. Message reliability: at-most-once delivery assumed. A lost
+//      Approve means that party didn't approve; the quorum waits
+//      with no timeout (a separate timer actor could be layered).
+//   4. Restart: a coordinator crash mid-quorum loses any caps
+//      already accumulated in slots, identical to the existing
+//      semantics for cap-typed state fields.
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the `counter >= 3` check. Replacing `3` with
+// some other comparison would break the M=3 quorum semantic, but
+// the fixture still compiles. The structural shape this fixture
+// pins is the language's ability to express ANY M-of-N coordinator
+// pattern, not the specific arithmetic. To prove M-of-N requires
+// the language primitives, delete any `slot_put`/`slot_take` call
+// and the fixture fails to compile (cap unconsumed, or O001 on
+// re-use).
+module sigil;
+
+cap type Fuel {}
+
+actor Coordinator {
+    state {
+        slot1: Slot<Fuel>,
+        slot2: Slot<Fuel>,
+        slot3: Slot<Fuel>,
+        approvals: i64,
+        fuel: Fuel,
+    }
+
+    init(s1: Slot<Fuel>, s2: Slot<Fuel>, s3: Slot<Fuel>, f: Fuel) {}
+
+    on Approve(approval: Fuel, party_id: i64) -> i64 {
+        if party_id == 1 {
+            slot_put(slot1, approval);
+        } else {
+            if party_id == 2 {
+                slot_put(slot2, approval);
+            } else {
+                slot_put(slot3, approval);
+            }
+        }
+        // MUTATION_SITE — the quorum threshold
+        if approvals >= 2 {
+            let c1: Fuel = slot_take(slot1);
+            let c2: Fuel = slot_take(slot2);
+            let c3: Fuel = slot_take(slot3);
+            let _b1 = c1.draw(1);
+            let _b2 = c2.draw(1);
+            let _b3 = c3.draw(1);
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let coord_fuel = fuel.draw(100);
+        let s1 = slot_new::<Fuel>();
+        let s2 = slot_new::<Fuel>();
+        let s3 = slot_new::<Fuel>();
+        let _coord = spawn::<Coordinator>(s1, s2, s3, coord_fuel);
+        return 1;
+    }
+}

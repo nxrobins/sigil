@@ -1,0 +1,27 @@
+// expect-error: C010
+// A capability HELD in actor state is BORROW-ONLY inside an ordinary handler:
+// `grant(&cap, …)` and `cap.draw(n)` (borrows) work, but any CONSUME — spawn
+// argument, send/ask payload, `.split`, `.restrict`, move, or return — is
+// rejected with C010. Authority is wired once at construction (`init` for a
+// spawned actor, the entry actor's `Start` boot handler) and then frozen for
+// the confluent steady state. Here the ordinary `Tick` handler tries to spawn a
+// Worker with the state `fuel` — a consume of a borrow-only state cap — so C010
+// fires. (Doing the same spawn in `Start` is permitted by the boot carve-out.)
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 { return 0; }
+
+    on Tick() -> i64 {
+        let w = spawn::<Worker>(fuel);   // consume of a borrow-only state cap → C010
+        return 1;
+    }
+}

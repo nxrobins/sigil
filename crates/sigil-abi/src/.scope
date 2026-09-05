@@ -1,0 +1,22 @@
+description: Shared ABI source for compiler/runtime handoff types and host import names
+includes:
+  - crates/sigil-abi/src/
+excludes:
+  - crates/sigil-abi/target/
+context: |
+  This scope is the implementation-level view of the shared ABI crate.
+  Keep the surface minimal: stable import names, runtime type descriptions,
+  actor/handler/module metadata, and tiny helper methods that make the
+  compiler/runtime seam easier to debug.
+
+  Avoid adding compiler semantics or runtime behavior here. This crate should
+  remain a narrow typed boundary between producer and consumer crates.
+related:
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+tags:
+  - abi
+  - src
+  - shared
+  - host

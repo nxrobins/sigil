@@ -1,0 +1,28 @@
+pub const CORPUS_CASE_FLOOR: usize = 384;
+
+pub const REQUIRED_EVIDENCE_TESTS: &[&str] = &[
+    "cv0_render_total_and_deterministic",
+    "cv0_pinned_renders",
+    "cv_shadow_deterministic",
+    "cv5_all_corpora_mem_parity",
+    "cv5_scalar_mem_identity",
+    "cv5_mem_shadow_deterministic",
+    "m1_mem_report_parity",
+    "m1_stdlib_abi_parity",
+    "f1_all_corpora_fuel_parity",
+    "f1_fuel_report_parity",
+    "f1_fuel_shadow_deterministic",
+    "w0_pinned_modules",
+    "w0_oracle_wasm_total_over_cv_corpora",
+    "w1_wasm_shadow_deterministic",
+    "w4_all_corpora_byte_equality",
+    "w4_actor_module_byte_equality",
+    "w4_stdlib_abi_module",
+    "w5_selfhost_execution",
+    "w5_wasm_shadow_deterministic_and_fuel_census",
+    "retired_lane_cases_are_exact_or_poisoned",
+    "st1_bare_variant_execution",
+    "st2_method_execution",
+    "st3_tuple_execution",
+    "air_semantic_evidence_manifest",
+];

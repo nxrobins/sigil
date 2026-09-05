@@ -1,0 +1,23 @@
+module erc20_token;
+
+record MyToken { balanceOf: BoundedMap_u256_u256_64, allowance: BoundedMap2_u256_u256_u256_64, totalSupply: u256, decimals: u256 }
+
+impl MyToken {
+    pub fn new(__fe_sender: u256) -> MyToken {
+        let mut __fe_c = MyToken { balanceOf: BoundedMap_u256_u256_64::new(), allowance: BoundedMap2_u256_u256_u256_64::new(), totalSupply: 0, decimals: 18 };
+        __fe_c.totalSupply = (1000000 * 1000000000000000000);
+        __fe_c.balanceOf.insert(__fe_sender, __fe_c.totalSupply);
+        return __fe_c;
+    }
+
+    pub fn transfer(self: MyToken @Mut, __fe_sender: u256, to: u256, amount: u256) -> bool {
+        trap_if(!((self.balanceOf.get_or(__fe_sender, 0) >= amount)));
+        self.balanceOf.transfer(__fe_sender, to, amount);
+        return true;
+    }
+
+    pub fn approve(self: MyToken @Mut, __fe_sender: u256, spender: u256, amount: u256) -> bool {
+        self.allowance.insert(__fe_sender, spender, amount);
+        return true;
+    }
+}

@@ -1,0 +1,12 @@
+module erc20_emit;
+
+record C { balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn f(self: C @Mut, to: u256, amount: u256) {
+    }
+}

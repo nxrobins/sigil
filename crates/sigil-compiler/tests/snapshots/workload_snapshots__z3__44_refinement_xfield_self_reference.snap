@@ -1,0 +1,5 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: summary
+---
+<PARSE_FAILED: ["T218"]>

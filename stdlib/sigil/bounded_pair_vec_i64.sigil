@@ -1,0 +1,159 @@
+// stdlib::bounded_pair_vec_i64 — BOUNDED, stack-backed vectors of `(i64, i64)`
+// PAIRS (COMPLETENESS Phase 2 — the `zip`/`enumerate` result type). Each element
+// is a 2-tuple stored in PARALLEL arrays (`fst[i]`, `snd[i]`), the same model as
+// `bounded_map` but as an ORDERED sequence (no key-uniqueness). Monomorphized
+// fixed-N records at `_8` / `_64` / `_256`; they differ ONLY in the capacity `N`.
+//
+// Like `bounded_vec_i64`, this family is:
+//   - **Alloc-free**: two fixed `[i64; N]` backings embedded in the record header,
+//     statically fuelled as 2*N*8 bytes; no `alloc()` call, no `Alloc` effect.
+//   - **Construction-SEALED (T258)**: buildable only inside this module (via
+//     `new()`), never via a `BoundedPairVec_i64_i64_8 { count: 99 }` literal in
+//     user code, so the `count <= N` length invariant cannot be forged.
+//   - **Overflow-trapping**: `push` at `count == N` targets `fst[N]`, which trips
+//     the backing array's bounds trap — a write never escapes the fixed backing.
+//
+// `get(i)` returns `Option<(i64, i64)>` (LEN-bounded: cells in `[count, N)` are
+// unreachable). The pair is the spec's `BoundedVec<(T, U)>` element — read it with
+// `let o = pv.get(i); let p = o.unwrap_or((0, 0)); let (a, b) = p;`.
+
+module bounded_pair_vec_i64;
+
+// ── capacity 8 ───────────────────────────────────────────────────────────────
+
+record BoundedPairVec_i64_i64_8 { fst: [i64; 8], snd: [i64; 8], count: i64 }
+
+impl BoundedPairVec_i64_i64_8 {
+    // Empty pair vector — the ONLY public constructor (the record is sealed).
+    pub fn new() -> BoundedPairVec_i64_i64_8 {
+        return BoundedPairVec_i64_i64_8 { fst: [0; 8], snd: [0; 8], count: 0 };
+    }
+
+    pub fn len(self: BoundedPairVec_i64_i64_8) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedPairVec_i64_i64_8) -> i64 {
+        return 8;
+    }
+
+    pub fn is_empty(self: BoundedPairVec_i64_i64_8) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedPairVec_i64_i64_8) -> bool {
+        return self.count == 8;
+    }
+
+    // Append the pair `(a, b)`. When full (`count == 8`) the store target is
+    // `fst[8]`, which trips the backing array's bounds trap.
+    pub fn push(self: BoundedPairVec_i64_i64_8 @Mut, a: i64, b: i64) -> i64 {
+        self.fst[self.count] = a;
+        self.snd[self.count] = b;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Read the pair at `i`, or `None` if out of range. LEN-bounded.
+    pub fn get(self: BoundedPairVec_i64_i64_8, i: i64) -> Option<(i64, i64)> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some((self.fst[i], self.snd[i]));
+    }
+}
+
+// ── capacity 64 ──────────────────────────────────────────────────────────────
+
+record BoundedPairVec_i64_i64_64 { fst: [i64; 64], snd: [i64; 64], count: i64 }
+
+impl BoundedPairVec_i64_i64_64 {
+    pub fn new() -> BoundedPairVec_i64_i64_64 {
+        return BoundedPairVec_i64_i64_64 { fst: [0; 64], snd: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedPairVec_i64_i64_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedPairVec_i64_i64_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedPairVec_i64_i64_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedPairVec_i64_i64_64) -> bool {
+        return self.count == 64;
+    }
+
+    pub fn push(self: BoundedPairVec_i64_i64_64 @Mut, a: i64, b: i64) -> i64 {
+        self.fst[self.count] = a;
+        self.snd[self.count] = b;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn get(self: BoundedPairVec_i64_i64_64, i: i64) -> Option<(i64, i64)> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some((self.fst[i], self.snd[i]));
+    }
+}
+
+// ── capacity 256 ─────────────────────────────────────────────────────────────
+
+record BoundedPairVec_i64_i64_256 { fst: [i64; 256], snd: [i64; 256], count: i64 }
+
+impl BoundedPairVec_i64_i64_256 {
+    pub fn new() -> BoundedPairVec_i64_i64_256 {
+        return BoundedPairVec_i64_i64_256 { fst: [0; 256], snd: [0; 256], count: 0 };
+    }
+
+    pub fn len(self: BoundedPairVec_i64_i64_256) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedPairVec_i64_i64_256) -> i64 {
+        return 256;
+    }
+
+    pub fn is_empty(self: BoundedPairVec_i64_i64_256) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedPairVec_i64_i64_256) -> bool {
+        return self.count == 256;
+    }
+
+    pub fn push(self: BoundedPairVec_i64_i64_256 @Mut, a: i64, b: i64) -> i64 {
+        self.fst[self.count] = a;
+        self.snd[self.count] = b;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn get(self: BoundedPairVec_i64_i64_256, i: i64) -> Option<(i64, i64)> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some((self.fst[i], self.snd[i]));
+    }
+}

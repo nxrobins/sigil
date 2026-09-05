@@ -1,0 +1,9 @@
+module inh_interface_base;
+
+record B { y: u256 }
+
+impl B {
+    pub fn new() -> B {
+        return B { y: 0 };
+    }
+}

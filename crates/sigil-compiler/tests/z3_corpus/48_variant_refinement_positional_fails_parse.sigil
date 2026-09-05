@@ -1,0 +1,38 @@
+// expect-error: T223
+// Z3 corpus #48: axis-1 — Wall 4 Step 6 T223 positional-with-refinement.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// N4-S6 / T223 sub-case 1: a refinement `where` clause is admitted
+// ONLY on a fully-named variant payload. The variant below uses the
+// positional form `Positive(i64)` (no field name) but declares
+// `where x > 0`. The parser rejects with T223 at variant-declaration
+// time — BEFORE any type-check or Z3 work happens.
+//
+// Per A1-S6 the T223 registry hint covers all four sub-cases at a
+// generic level (positional-with-refinement, mixed payload, duplicate
+// field name, zero-payload-with-refinement).
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 6 parser's named/positional disambiguation (N17-S6).
+//   * Step 6 parser's where-clause precondition check on payload form.
+//   * T223 diagnostic code.
+//
+// MUTATION CONTRACT
+//
+// Adding `x:` before the type (`Positive(x: i64) where x > 0`) flips
+// this fixture to the expect-ok side and drops T223. The fixture
+// remains a parse error otherwise.
+module sigil;
+
+enum SignedInt {
+    Positive(i64) where x > 0,  // MUTATION_SITE
+    Zero,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return 1;
+    }
+}

@@ -1,0 +1,228 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::i32_param",
+            export_name: "m__i32_param",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    I32,
+                ),
+            ],
+            ret: I32,
+            locals: [],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "x",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+        AirFunction {
+            name: "m::u32_param",
+            export_name: "m__u32_param",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    U32,
+                ),
+            ],
+            ret: U32,
+            locals: [],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "x",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+        AirFunction {
+            name: "m::i64_param",
+            export_name: "m__i64_param",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    I64,
+                ),
+            ],
+            ret: I64,
+            locals: [],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "x",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+        AirFunction {
+            name: "m::u64_param",
+            export_name: "m__u64_param",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    U64,
+                ),
+            ],
+            ret: U64,
+            locals: [],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "x",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+        AirFunction {
+            name: "m::f64_param",
+            export_name: "m__f64_param",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    F64,
+                ),
+            ],
+            ret: F64,
+            locals: [],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "x",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

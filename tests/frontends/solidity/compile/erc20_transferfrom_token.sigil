@@ -1,0 +1,79 @@
+module erc20_transferfrom_token;
+
+record Token { _balances: BoundedMap_u256_u256_64, _allowances: BoundedMap2_u256_u256_u256_64, _totalSupply: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { _balances: BoundedMap_u256_u256_64::new(), _allowances: BoundedMap2_u256_u256_u256_64::new(), _totalSupply: 0 };
+    }
+
+    pub fn allowance(self: Token, owner: u256, spender: u256) -> u256 {
+        return self._allowances.get_or(owner, spender, 0);
+    }
+
+    pub fn approve(self: Token @Mut, __fe_sender: u256, spender: u256, value: u256) -> bool {
+        let mut owner: u256 = __fe_sender;
+        let mut __fe_inl0_owner: u256 = owner;
+        let mut __fe_inl0_spender: u256 = spender;
+        let mut __fe_inl0_value: u256 = value;
+        let mut __fe_inl0_emitEvent: bool = true;
+        if (__fe_inl0_owner == 0) {
+            trap();
+        }
+        if (__fe_inl0_spender == 0) {
+            trap();
+        }
+        self._allowances.insert(__fe_inl0_owner, __fe_inl0_spender, __fe_inl0_value);
+        return true;
+    }
+
+    pub fn transfer(self: Token @Mut, __fe_sender: u256, to: u256, value: u256) -> bool {
+        let mut owner: u256 = __fe_sender;
+        let mut __fe_inl1_from: u256 = owner;
+        let mut __fe_inl1_to: u256 = to;
+        let mut __fe_inl1_value: u256 = value;
+        if (__fe_inl1_from == 0) {
+            trap();
+        }
+        if (__fe_inl1_to == 0) {
+            trap();
+        }
+        let mut __fe_inl2_from: u256 = __fe_inl1_from;
+        let mut __fe_inl2_to: u256 = __fe_inl1_to;
+        let mut __fe_inl2_value: u256 = __fe_inl1_value;
+        let __fe_ts: u256 = self._balances.erc20_update(self._totalSupply, __fe_inl2_from, __fe_inl2_to, __fe_inl2_value);
+        self._totalSupply = __fe_ts;
+        return true;
+    }
+
+    pub fn transferFrom(self: Token @Mut, __fe_sender: u256, from: u256, to: u256, value: u256) -> bool {
+        let mut spender: u256 = __fe_sender;
+        let mut __fe_inl3_owner: u256 = from;
+        let mut __fe_inl3_spender: u256 = spender;
+        let mut __fe_inl3_value: u256 = value;
+        let mut __fe_inl4_owner: u256 = __fe_inl3_owner;
+        let mut __fe_inl4_spender: u256 = __fe_inl3_spender;
+        let mut __fe_inl6_from: u256 = from;
+        let mut __fe_inl6_to: u256 = to;
+        let mut __fe_inl6_value: u256 = value;
+        if (__fe_inl6_from == 0) {
+            trap();
+        }
+        if (__fe_inl6_to == 0) {
+            trap();
+        }
+        let mut __fe_inl7_from: u256 = __fe_inl6_from;
+        let mut __fe_inl7_to: u256 = __fe_inl6_to;
+        let mut __fe_inl7_value: u256 = __fe_inl6_value;
+        self._allowances.erc20_transfer_from(self._balances, from, __fe_sender, to, value);
+        return true;
+    }
+
+    pub fn mint(self: Token @Mut, account: u256, value: u256) {
+        let mut __fe_inl8_from: u256 = 0;
+        let mut __fe_inl8_to: u256 = account;
+        let mut __fe_inl8_value: u256 = value;
+        let __fe_ts: u256 = self._balances.erc20_update(self._totalSupply, __fe_inl8_from, __fe_inl8_to, __fe_inl8_value);
+        self._totalSupply = __fe_ts;
+    }
+}

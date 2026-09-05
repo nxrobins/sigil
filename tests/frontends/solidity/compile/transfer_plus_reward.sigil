@@ -1,0 +1,16 @@
+module transfer_plus_reward;
+
+record Token { balances: BoundedMap_u256_u256_64, rewardDebt: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new(), rewardDebt: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn transferWithReward(self: Token @Mut, from: u256, to: u256, amt: u256, r: u256) {
+        let mut __fe_rb0: u256 = (self.rewardDebt.get_or(to, 0) + r);
+        self.rewardDebt.reserve1(to);
+        self.balances.transfer(from, to, amt);
+        self.rewardDebt.insert(to, __fe_rb0);
+    }
+}

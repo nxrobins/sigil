@@ -1,0 +1,15 @@
+// Attack: attempt to reassign a capability via the sealed vault membrane
+// expect-error: T043
+module sigil;
+cap type Fuel {}
+cap type Token {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(extra: Token) -> i64 {
+        let mut t: Token = extra;
+        t = extra; // MUTATION_SITE
+        return 1;
+    }
+}

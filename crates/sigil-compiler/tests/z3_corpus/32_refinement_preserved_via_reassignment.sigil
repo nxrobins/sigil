@@ -1,0 +1,42 @@
+// expect-ok
+// Z3 corpus #32: axis-1 — Wall 4 Step 2 refinement preservation through reassignment.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 1 Step 1 allows reassignment of non-cap aggregates. Wall 4
+// Step 2 must preserve refinement-attachment semantics across the
+// reassignment lowering path. When `m = Mirror { copy: idx.value }`
+// is REASSIGNED (not just declared), the same construction-site
+// dispatcher fires, and the same Step 2 match path accepts the
+// symbolic-with-attached-refinement value.
+//
+// Both initial assignment and reassignment use
+// `infer_record_construct_expr` → `check_record_refinements_at_construction`.
+// The dispatcher cannot distinguish them; per V11 the match-path is
+// the same code path.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Step 1's literal-RHS check + Step 2's symbolic-with-attached
+// match path. Wall 1 Step 1's `let mut` aggregate reassignment.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok). Replacing the second `Mirror {...}`
+// construction with `Mirror { copy: 0 - 1 }` would flip the
+// reassignment to a T210 case (Z3 refutes `-1 >= 0`).
+module sigil;
+
+record Index { value: i64 } where value >= 0
+
+record Mirror { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let idx_a: Index = Index { value: 42 };
+        let idx_b: Index = Index { value: 99 };
+        let mut m: Mirror = Mirror { copy: idx_a.value };
+        m = Mirror { copy: idx_b.value };
+        return 1;
+    }
+}

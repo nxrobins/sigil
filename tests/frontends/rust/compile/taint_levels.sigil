@@ -1,0 +1,4 @@
+module taint_levels;
+pub fn combine(a: i64 @Secret, b: i64 @Internal) -> i64 @Secret {
+  return (a + b);
+}

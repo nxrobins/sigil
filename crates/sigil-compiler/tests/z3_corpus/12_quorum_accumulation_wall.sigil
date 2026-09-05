@@ -1,0 +1,58 @@
+// expect-ok
+// Z3 corpus #12: axis-1 expressiveness — non-primitive reassignment.
+//
+// HISTORY
+//
+// Through Step 39 of the post-Phase-3 hardening loop, this fixture was
+// `expect-error`: the Phase-1 type-checker blanket-rejected reassignment
+// of any non-primitive variable with diagnostic T043 ("only primitive
+// types support reassignment in Phase 1"). The rejection was strictly
+// conservative — non-cap aggregates have no soundness concern — but the
+// language couldn't express the M-of-N coordinator pattern, the
+// inter-actor 3-of-3 quorum, or any other shape that wanted to swap a
+// record / enum value over time.
+//
+// Wall 1 Step 1 closed the **narrow** case: a new predicate
+// `type_is_reassignable` permits reassignment for any type that does
+// not transitively own a capability or a borrow. This fixture now
+// compiles cleanly. The MUTATION_SITE has moved (see below).
+//
+// WHAT THIS FIXTURE STILL DOES NOT EXERCISE
+//
+// The original M-of-N quorum pattern uses `Option<Cap>` state fields,
+// which Step 1 still rejects (cap-containing types remain non-
+// reassignable to preserve T183/T184/T186 invariants). Steps 2 and 3
+// of the Wall 1 program add a built-in `Slot<Cap>` linear container
+// and the corresponding fixtures (`17_m_of_n_quorum.sigil`,
+// `18_inter_actor_3_of_3.sigil`).
+//
+// MUTATION CONTRACT
+//
+// The previous MUTATION_SITE (the reassignment line itself) is no
+// longer load-bearing — the fixture compiles whether the reassignment
+// is present or absent. The new MUTATION_SITE is the `mut` keyword
+// on the `let` binding. Deleting it (turning `let mut h` into `let h`)
+// triggers T042 ("cannot assign to immutable variable") rather than
+// T043, so the mutation harness has a meaningful inverse: with `mut`,
+// fixture compiles; without `mut`, it doesn't. This proves the test
+// pins the reassignment code path and not some incidental property
+// of the surrounding match / actor / cap declarations.
+module sigil;
+cap type Fuel {}
+
+enum Holder { Empty, Have(i64) }
+
+fn try_reassign(seed: i64) -> i64 {
+    // MUTATION_SITE — `mut` is load-bearing for this fixture's verdict.
+    let mut h: Holder = Empty;
+    h = Have(seed);
+    return seed;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        return try_reassign(1);
+    }
+}

@@ -1,0 +1,50 @@
+description: MCP server crate that exposes the Sigil compiler and runtime as Model Context Protocol tools for agent-driven workflows
+includes:
+  - crates/sigil-mcp/
+  - Cargo.toml
+excludes:
+  - crates/sigil-mcp/target/
+context: |
+  This crate owns the Model Context Protocol (MCP) server that exposes the
+  Sigil compiler and runtime as JSON-RPC tools so an LLM agent can drive the
+  compile-feedback loop directly. It is the on-ramp for agent harnesses
+  (Claude Code, Claude Desktop, the bench harness) into Sigil.
+
+  Architecture: agent-driven loop. This server exposes verification primitives
+  but contains no LLM access of its own — the calling harness owns iteration.
+  Transport is newline-delimited JSON-RPC 2.0 over stdin/stdout per the MCP
+  stdio transport (no LSP-style Content-Length headers).
+
+  Keep this crate thin: it should compose `sigil-compiler` and `sigil-runtime`
+  rather than duplicate language semantics or runtime internals. New tools
+  belong here if they expose existing compiler/runtime capability over the
+  JSON-RPC envelope; they belong in the underlying crate if they add new
+  language or runtime behavior.
+
+  Current MCP tools:
+  - `sigil_check(source)` — compile-only; returns the diagnostic JSON envelope
+  - `sigil_forge(source, fuel, input, grants, ...)` — compile + ephemeral
+    Wasmtime execution; returns `output_text`/`output_bytes`/`fuel_consumed`
+    on success. Tool modules must export `pub fn tool_main(input_ptr: i64,
+    input_len: i64) -> i64`. Network and filesystem access require explicit
+    `IoGrants`; without grants, FFI returns 403.
+  - `sigil_lookup_error(code)` — registry entry for a diagnostic code
+    (`T###`, `R###`, `O###`, etc.) including hint and doc URL
+  - `sigil_inspect_uses(source)` — parsed `use` declarations per module;
+    used by the bench harness's stdlib-usage check (purely advisory)
+
+  Integration tests under `tests/` spawn the compiled binary and drive it
+  over real stdio so the protocol surface is exercised exactly as an agent
+  harness sees it. Treat that as the boundary contract.
+related:
+  - crates/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-mcp/src/.scope
+tags:
+  - mcp
+  - rust
+  - json-rpc
+  - agent
+  - server

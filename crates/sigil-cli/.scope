@@ -1,0 +1,39 @@
+description: CLI crate that exposes compiler, runtime, ToolForge, and registry workflows
+includes:
+  - crates/sigil-cli/
+  - Cargo.toml
+  - README.md
+excludes:
+  - crates/sigil-cli/target/
+context: |
+  This crate owns command-line entrypoints and user-facing orchestration.
+  It should compose `sigil-compiler`, `sigil-runtime`, and `sigil-registry`
+  rather than duplicate language semantics, shared ABI structs, or runtime internals.
+
+  Keep this crate thin: parse flags, invoke the right crate APIs, and report
+  diagnostics or execution results cleanly.
+
+  Current commands:
+  - default invocation compiles a tiny inline bootstrap module
+  - `check <path>` compiles a source file
+  - `check-inline <source>` compiles inline source and prints rendered diagnostics
+  - `run <path>` compiles a source file, passes the compiler's structured runtime
+    metadata into the runtime bootstrap path, and boots the Wasmtime actor host
+  - `run-inline <source>` does the same for inline source
+  - `forge <path>` or `forge --template <id>` compiles a tool module and runs it
+    in the ephemeral runtime with optional `--fuel`, `--input`, `--fs`, `--net`,
+    and template patching flags
+  - `registry add/search/list` manages reusable tool templates through
+    `sigil-registry`
+related:
+  - crates/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-registry/.scope
+  - crates/sigil-cli/src/.scope
+tags:
+  - cli
+  - rust
+  - commands
+  - toolforge

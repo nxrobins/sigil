@@ -1,0 +1,47 @@
+// expect-error: T183
+//
+// T183 — record field cannot be capability-typed.
+//
+// Before step 25 of the supremum loop (axis 2, "tighter proofs") this
+// source compiled CLEANLY. The Z3 capability authority tracker treats
+// `LoadField(record, "f")` as a default source that yields full
+// authority — so a restricted cap stored in a record and read back out
+// loses its restriction mask. `needs_full(extracted)` then passed the
+// authority sufficiency check at the Call sink because Z3 thought the
+// loaded cap had full authority. This is the aggregate-smuggling
+// vector documented as "Attack 06b" in `tests/attack/KNOWN_GAPS.md`.
+//
+// THE ACCIDENTAL DEFENSE THAT WASN'T
+//
+// KNOWN_GAPS.md previously asserted: "the current parser rejects
+// records declared with cap-typed fields (`record Wrapper { cap: Fuel }`
+// fails at parse). The aggregate smuggling pattern from this section
+// is therefore not reachable from source-level programs today."
+//
+// That claim was WRONG. The parser only rejected the literal field
+// name `cap` because it's a reserved keyword (used in `cap type`).
+// Any other field name — `f`, `inner`, `x` — compiled cleanly,
+// reopening the smuggling channel. Step 25 closes it at the type-check
+// pass by rejecting any record field whose type contains a cap.
+//
+// AFTER STEP 25: T183 fires on the `record Wrapper { f: Fuel }`
+// declaration, regardless of field name. The smuggling attack body
+// (the let/let/let/needs_full chain) is never reached because the
+// record definition itself is rejected first.
+module sigil;
+cap type Fuel { burn, query }
+
+record Wrapper { f: Fuel }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let wrapper = Wrapper { f: restricted };
+        let extracted: Fuel = wrapper.f;
+        needs_full(extracted);
+        return 1;
+    }
+}

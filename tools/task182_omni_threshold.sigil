@@ -1,0 +1,115 @@
+// TASK: omni threshold — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "threshold_path:url". Fetch URL, count words, compare to threshold file.
+// Return "above" or "below".
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw_th: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw_th < 0 {
+        return raw_th;
+    } else {
+    }
+    let th_ptr: i64 @Internal = raw_th / 4294967296;
+    let th_len: i64 @Internal = raw_th - th_ptr * 4294967296;
+
+    let mut threshold: i64 @Internal = 0;
+    let mut ti: i64 @Internal = 0;
+    while ti < th_len {
+        let tb: i64 @Internal = load8(th_ptr + ti);
+        if tb > 47 {
+            if tb < 58 {
+                threshold = threshold * 10 + tb - 48;
+            } else {
+            }
+        } else {
+        }
+        ti = ti + 1;
+    }
+
+    // URL is after sep in input; fetch it (stay in i32 via input_ptr offset)
+    let url_off: i32 @Internal = sep32 + one_i32;
+    let url_len: i32 @Internal = input_len - url_off;
+    let raw_body: i64 @Internal = http_get(input_ptr + url_off, url_len);
+    if raw_body < 0 {
+        return raw_body;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw_body / 4294967296;
+    let body_len: i64 @Internal = raw_body - body_ptr * 4294967296;
+
+    let mut count: i64 @Internal = 0;
+    let mut in_word: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let b2: i64 @Internal = load8(body_ptr + i);
+        let mut is_ws: i64 @Internal = 0;
+        if b2 == 32 {
+            is_ws = 1;
+        } else {
+        }
+        if b2 == 10 {
+            is_ws = 1;
+        } else {
+        }
+        if b2 == 9 {
+            is_ws = 1;
+        } else {
+        }
+        if is_ws == 1 {
+            in_word = 0;
+        } else {
+            if in_word == 0 {
+                count = count + 1;
+                in_word = 1;
+            } else {
+            }
+        }
+        i = i + 1;
+    }
+
+    if count > threshold {
+        let out: i64 @Internal = alloc(5);
+        store8(out, 97);
+        store8(out + 1, 98);
+        store8(out + 2, 111);
+        store8(out + 3, 118);
+        store8(out + 4, 101);
+        return out * 4294967296 + 5;
+    } else {
+        let out: i64 @Internal = alloc(5);
+        store8(out, 98);
+        store8(out + 1, 101);
+        store8(out + 2, 108);
+        store8(out + 3, 111);
+        store8(out + 4, 119);
+        return out * 4294967296 + 5;
+    }
+}

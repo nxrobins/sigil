@@ -1,0 +1,37 @@
+// expect-error: C003
+// Z3 corpus #91: axis-2 — single restrict on a three-facet cap rejects.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A cap type with three facets { burn, query, admin } restricted to a
+// single facet { admin } still lacks full authority. The sink
+// `needs_all` requires all three facets; passing a cap with only
+// {admin} triggers C003.
+//
+// This extends the two-facet fixtures (#1, #82, #77) to a wider cap
+// type. A regression that incorrectly computes the authority bitmask
+// for cap types with more than two facets would be caught here.
+// Specifically, if the bit layout assigned `admin` to a position that
+// happens to overlap with `burn | query` in a buggy encoding, the
+// subsumption check would pass incorrectly.
+//
+// Flow:
+//   fuel (burn | query | admin) → restrict(admin) → admin_only ({admin})
+//   → needs_all(admin_only) → C003 (missing burn, query)
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the sink
+// call. The admin-only cap persists unused for actor lifetime.
+module sigil;
+cap type Fuel { burn, query, admin }
+
+fn needs_all(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let admin_only: Fuel = fuel.restrict(admin);
+        needs_all(admin_only);  // MUTATION_SITE
+        return 1;
+    }
+}

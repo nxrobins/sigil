@@ -1,0 +1,91 @@
+// TASK: fetch url rle — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn append_count(
+    out_ptr: i64 @Internal,
+    out_len_in: i64 @Internal,
+    count: i64 @Internal,
+    scratch_ptr: i64 @Internal,
+) -> i64 @Internal ! {} {
+    if count == 0 {
+        return out_len_in;
+    } else {
+        let mut digits: i64 @Internal = 0;
+        let mut n: i64 @Internal = count;
+
+        while n > 0 {
+            let q: i64 @Internal = n / 10;
+            let digit: i64 @Internal = n - q * 10;
+            store8(scratch_ptr + digits, 48 + digit);
+            digits = digits + 1;
+            n = q;
+        }
+
+        let mut out_len: i64 @Internal = out_len_in;
+        let mut i: i64 @Internal = 0;
+
+        while i < digits {
+            let b: i64 @Internal = load8(scratch_ptr + digits - 1 - i);
+            store8(out_ptr + out_len, b);
+            out_len = out_len + 1;
+            i = i + 1;
+        }
+
+        return out_len;
+    }
+}
+
+fn append_run(
+    out_ptr: i64 @Internal,
+    out_len_in: i64 @Internal,
+    byte: i64 @Internal,
+    count: i64 @Internal,
+    scratch_ptr: i64 @Internal,
+) -> i64 @Internal ! {} {
+    let out_len: i64 @Internal = out_len_in + 1;
+    store8(out_ptr + out_len_in, byte);
+    return append_count(out_ptr, out_len, count, scratch_ptr);
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let body_ptr: i64 @Internal = raw / 4294967296;
+        let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+        let out_ptr: i64 @Internal = alloc(body_len + body_len);
+        let scratch_ptr: i64 @Internal = alloc(20);
+
+        if body_len == 0 {
+            return out_ptr * 4294967296;
+        } else {
+            let mut current: i64 @Internal = load8(body_ptr);
+            let mut count: i64 @Internal = 1;
+            let mut out_len: i64 @Internal = 0;
+            let mut i: i64 @Internal = 1;
+
+            while i < body_len {
+                let b: i64 @Internal = load8(body_ptr + i);
+                if b == current {
+                    count = count + 1;
+                } else {
+                    out_len = append_run(out_ptr, out_len, current, count, scratch_ptr);
+                    current = b;
+                    count = 1;
+                }
+                i = i + 1;
+            }
+
+            out_len = append_run(out_ptr, out_len, current, count, scratch_ptr);
+            return out_ptr * 4294967296 + out_len;
+        }
+    }
+}

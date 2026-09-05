@@ -1,0 +1,8 @@
+// N009: cyclic module dependency.
+module a;
+use sigil::b;
+pub fn fa() -> i64 { return 1; }
+
+module b;
+use sigil::a;
+pub fn fb() -> i64 { return 2; }

@@ -1,0 +1,31 @@
+// expect-error: T210
+// Z3 corpus #79: PR-U3-b2 — wide-BOUND refinement violation over a u256 field.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A wide refinement bound (10^29 > i64::MAX → a RefinementRhs::LiteralWide,
+// admitted only on a u256 field) is discharged at full 256-bit width. The
+// supplied value 5 does NOT satisfy `amount >= 10^29`, so Z3 returns Sat for
+// not(5 >= 10^29) and T210 fires at the construction site.
+//
+// This is the legacy/v2 PARITY witness for the WIDE path (NC-b4 + MI4): both
+// walkers encode the wide bound via the same Int::from_str(u256_to_decimal)
+// chokepoint and render the value/bound via the same shared RefValue/RHS
+// renderer, so the T210 diagnostic is byte-identical.
+//
+// MUTATION CONTRACT
+//
+// Changing `5` to a literal >= 10^29 flips this to the expect-ok side and drops
+// T210. Narrowing the bound below i64::MAX would make it a small Literal bound
+// (not LiteralWide). Changing the field type away from u256 makes the wide bound
+// a T213 reject (a wide bound is admitted only on a u256 field).
+module sigil;
+
+record Floor { amount: u256 } where amount >= 100000000000000000000000000000
+
+entry actor Main {
+    on Tick() -> i64 {
+        let f: Floor = Floor { amount: 5 };  // MUTATION_SITE
+        return 1;
+    }
+}

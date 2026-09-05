@@ -1,0 +1,18 @@
+module lexer_literals;
+
+record Token { supply: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { supply: 0 };
+    }
+
+    pub fn setSupply(self: Token @Mut, a: u256) {
+        trap_if(!((a >= 1000)));
+        self.supply = 2000000000;
+    }
+
+    pub fn maxSupply(self: Token) -> u256 {
+        return 1000000;
+    }
+}

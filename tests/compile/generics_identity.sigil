@@ -1,0 +1,17 @@
+// Test: generic function with turbofish and inference
+module sigil;
+cap type Fuel {}
+
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let a = identity::<i64>(42);
+        let b = identity(10);
+        return a + b;
+    }
+}

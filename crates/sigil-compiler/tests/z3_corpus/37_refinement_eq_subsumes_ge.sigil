@@ -1,0 +1,36 @@
+// expect-ok
+// Z3 corpus #37: axis-1 — Wall 4 Step 3 single-point set subsumes range.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Source has `value == 5`; destination requires `copy >= 0`. The
+// source's set is the singleton `{5}` — trivially a subset of
+// `{x : x >= 0}`. Z3 confirms via `∃x. (x == 5) ∧ ¬(x >= 0)` →
+// Unsat (no such x). Subsumption holds; construction accepted.
+//
+// This exercises a non-Ge/Ge op pair (Eq vs Ge), proving the Z3
+// implication encoding correctly handles cross-op subsumption.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixtures 34-36. The op translation in
+// `check_refinement_subsumption` (lines 320-340 of z3_capability.rs)
+// correctly encodes Eq as `x._eq(&literal)`.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok). Replacing destination's predicate with
+// `where copy >= 10` flips to a T215 case because 5 ∉ {x : x >= 10}.
+module sigil;
+
+record Exact { value: i64 } where value == 5
+
+record NonNeg { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let e: Exact = Exact { value: 5 };
+        let n: NonNeg = NonNeg { copy: e.value };
+        return 1;
+    }
+}

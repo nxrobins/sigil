@@ -1,0 +1,235 @@
+// TASK: difference comma lists — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn write_u32(ptr: i64, value: i64) -> i64 {
+    let q0 = value / 256;
+    let b0 = value - q0 * 256;
+    let q1 = q0 / 256;
+    let b1 = q0 - q1 * 256;
+    let q2 = q1 / 256;
+    let b2 = q1 - q2 * 256;
+    let q3 = q2 / 256;
+    let b3 = q2 - q3 * 256;
+
+    store8(ptr, b0);
+    store8(ptr + 1, b1);
+    store8(ptr + 2, b2);
+    store8(ptr + 3, b3);
+    return 0;
+}
+
+fn read_u32(ptr: i64) -> i64 {
+    let b0 = load8(ptr);
+    let b1 = load8(ptr + 1);
+    let b2 = load8(ptr + 2);
+    let b3 = load8(ptr + 3);
+    return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216;
+}
+
+fn append_segment(out_ptr: i64, out_len_in: i64, src_ptr: i64, start: i64, end: i64) -> i64 {
+    let mut out_len = out_len_in;
+    let mut i = start;
+
+    while i < end {
+        let b = load8(src_ptr + i);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        i = i + 1;
+    }
+
+    return out_len;
+}
+
+fn token_equal(src_ptr: i64, a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> i64 {
+    let a_len = a_end - a_start;
+    let b_len = b_end - b_start;
+
+    if a_len == b_len {
+        let mut same = 1;
+        let mut k = 0;
+
+        while k < a_len {
+            if same == 1 {
+                let a = load8(src_ptr + a_start + k);
+                let b = load8(src_ptr + b_start + k);
+                if a == b {
+                } else {
+                    same = 0;
+                }
+            } else {
+            }
+            k = k + 1;
+        }
+
+        return same;
+    } else {
+        return 0;
+    }
+}
+
+fn count_tokens(src_ptr: i64, start: i64, end: i64) -> i64 {
+    let mut count = 0;
+    let mut in_token = 0;
+    let mut pos = start;
+
+    while pos < end {
+        let b = load8(src_ptr + pos);
+        if b == 44 {
+            in_token = 0;
+        } else {
+            if in_token == 0 {
+                count = count + 1;
+                in_token = 1;
+            } else {
+            }
+        }
+        pos = pos + 1;
+    }
+
+    return count;
+}
+
+fn parse_tokens(src_ptr: i64, start: i64, end: i64, meta_ptr: i64, count: i64) -> i64 {
+    let mut token_start = start;
+    let mut in_token = 0;
+    let mut idx = 0;
+    let mut pos = start;
+
+    while pos < end {
+        let b = load8(src_ptr + pos);
+        if b == 44 {
+            if in_token == 1 {
+                let slot = meta_ptr + idx * 8;
+                write_u32(slot, token_start);
+                write_u32(slot + 4, pos);
+                idx = idx + 1;
+                in_token = 0;
+            } else {
+            }
+        } else {
+            if in_token == 0 {
+                token_start = pos;
+                in_token = 1;
+            } else {
+            }
+        }
+        pos = pos + 1;
+    }
+
+    if in_token == 1 {
+        let slot = meta_ptr + idx * 8;
+        write_u32(slot, token_start);
+        write_u32(slot + 4, end);
+        idx = idx + 1;
+    } else {
+    }
+
+    while idx < count {
+        let slot = meta_ptr + idx * 8;
+        write_u32(slot, end);
+        write_u32(slot + 4, end);
+        idx = idx + 1;
+    }
+
+    return 0;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut split = input_len;
+    let mut pos = 0;
+
+    while pos < input_len {
+        let b = load8(input_ptr + pos);
+        if split == input_len {
+            if b == 10 {
+                split = pos;
+            } else {
+            }
+        } else {
+        }
+        pos = pos + 1;
+    }
+
+    let left_start = 0;
+    let left_end = split;
+    let mut right_start = input_len;
+    let right_end = input_len;
+
+    if split < input_len {
+        right_start = split + 1;
+    } else {
+    }
+
+    let left_count = count_tokens(input_ptr, left_start, left_end);
+    let right_count = count_tokens(input_ptr, right_start, right_end);
+    let left_meta = alloc(left_count * 8);
+    let right_meta = alloc(right_count * 8);
+    parse_tokens(input_ptr, left_start, left_end, left_meta, left_count);
+    parse_tokens(input_ptr, right_start, right_end, right_meta, right_count);
+
+    let out_ptr = alloc(input_len);
+    let mut out_len = 0;
+    let mut wrote_any = 0;
+    let mut left_idx = 0;
+
+    while left_idx < left_count {
+        let left_slot = left_meta + left_idx * 8;
+        let left_token_start = read_u32(left_slot);
+        let left_token_end = read_u32(left_slot + 4);
+        let mut seen_before = 0;
+        let mut prev = 0;
+
+        while prev < left_idx {
+            if seen_before == 0 {
+                let prev_slot = left_meta + prev * 8;
+                let prev_start = read_u32(prev_slot);
+                let prev_end = read_u32(prev_slot + 4);
+                if token_equal(input_ptr, left_token_start, left_token_end, prev_start, prev_end) == 1 {
+                    seen_before = 1;
+                } else {
+                }
+            } else {
+            }
+            prev = prev + 1;
+        }
+
+        if seen_before == 0 {
+            let mut found = 0;
+            let mut right_idx = 0;
+
+            while right_idx < right_count {
+                if found == 0 {
+                    let right_slot = right_meta + right_idx * 8;
+                    let right_token_start = read_u32(right_slot);
+                    let right_token_end = read_u32(right_slot + 4);
+                    if token_equal(input_ptr, left_token_start, left_token_end, right_token_start, right_token_end) == 1 {
+                        found = 1;
+                    } else {
+                    }
+                } else {
+                }
+                right_idx = right_idx + 1;
+            }
+
+            if found == 0 {
+                if wrote_any == 1 {
+                    store8(out_ptr + out_len, 44);
+                    out_len = out_len + 1;
+                } else {
+                }
+                out_len = append_segment(out_ptr, out_len, input_ptr, left_token_start, left_token_end);
+                wrote_any = 1;
+            } else {
+            }
+        } else {
+        }
+
+        left_idx = left_idx + 1;
+    }
+
+    return out_ptr * 4294967296 + out_len;
+}

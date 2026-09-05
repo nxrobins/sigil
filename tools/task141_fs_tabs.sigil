@@ -1,0 +1,39 @@
+// TASK: fs tabs — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read a file, convert tabs to 4 spaces.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Worst case each tab becomes 4 spaces
+    let out: i64 @Internal = alloc(file_len * 4);
+    let mut out_len: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < file_len {
+        let b: i64 @Internal = load8(file_ptr + i);
+        if b == 9 {
+            store8(out + out_len, 32);
+            store8(out + out_len + 1, 32);
+            store8(out + out_len + 2, 32);
+            store8(out + out_len + 3, 32);
+            out_len = out_len + 4;
+        } else {
+            store8(out + out_len, b);
+            out_len = out_len + 1;
+        }
+        i = i + 1;
+    }
+    return out * 4294967296 + out_len;
+}

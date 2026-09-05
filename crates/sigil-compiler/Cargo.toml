@@ -1,0 +1,119 @@
+[package]
+name = "sigil-compiler"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["solver", "json"]
+# The Z3 cache (z3_cache.rs) also needs sha2 + lru; pulled in under
+# the solver feature so a no-solver build doesn't compile the cache.
+solver = ["z3", "dep:lru", "dep:tempfile"]
+json = ["dep:serde", "dep:serde_json"]
+# Phase 5a-1.6 / I21 / AP17: typed trace events for cross-module
+# dispatch decisions, use-scope construction, cycle detection. Default-
+# off; engineer enables via `cargo build --features trace`. Runtime
+# overhead when disabled is bounded by a `tracing` macro check
+# (essentially a const-folded false).
+trace = ["dep:tracing"]
+
+[dependencies]
+sigil-abi = { workspace = true }
+sigil-formal-bridge = { workspace = true }
+wasm-encoder = "0.246.2"
+semver = "1"
+z3 = { version = "0.12", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
+# SHA-256 for verification certificate fingerprints. Gated behind the
+# `json` feature because the certificate module itself is `cfg(feature =
+# "json")`-gated — no cost on no-default-features builds.
+sha2 = "0.10"
+# LRU container for the Z3 query result cache.
+# Bounded at 100k entries to prevent unbounded growth on pathological
+# inputs. Gated on the solver feature alongside z3 itself.
+lru = { version = "0.18.2", optional = true }
+# Atomic cross-platform rename for the L2 disk cache. Uses
+# `NamedTempFile::persist()` which dispatches to `MoveFileExW`
+# (Windows) or `rename(2)` (POSIX). Gated on the solver feature
+# alongside the rest of the cache machinery.
+tempfile = { version = "3", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Safe descriptor-relative package traversal. Each directory component is
+# opened once with no-follow semantics so a concurrently rebound pathname
+# cannot redirect manifest, lockfile, or source reads outside the package.
+rustix = { version = "1.1", features = ["fs"] }
+
+[dev-dependencies]
+wasmparser = "0.246.2"
+serde_json = "1"
+# Trace smoke test needs to subscribe to events.
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# Integration tests (cache_determinism.rs) need tempdir creation.
+# `tempfile` is also pulled in via the `solver` feature for the L2
+# cache's atomic rename — but Cargo doesn't treat feature-gated
+# `[dependencies]` as visible from integration-test crates the same
+# way `[dev-dependencies]` are. Declared here unconditionally so the
+# test compiles regardless of feature flags exercised in CI.
+tempfile = "3"
+# The parity manifest (tests/parity_manifest.rs) hashes fixture sources and
+# emitted artifacts. sha2 is also a feature-gated [dependencies] entry above;
+# declared here unconditionally for the same reason as tempfile.
+sha2 = "0.10"
+# Four-Pillar Testing Infrastructure: shared parse macros + fixture
+# loaders + pipeline helpers + snapshot helpers. sigil-test-utils
+# itself depends on sigil-compiler; Cargo permits this as a dev-dep
+# edge because dev-deps are excluded from non-test builds.
+sigil-test-utils = { workspace = true }
+proptest = { workspace = true }
+# PR 2: insta for the snap_typecheck / snap_air / snap_wat golden
+# snapshot tests. wasmprinter is pulled in transitively via
+# sigil-test-utils for the WAT renderer; declared here only to make
+# the dependency explicit.
+insta = { workspace = true }
+
+# Solver-only integration tests. Each of these is a whole-file
+# `#![cfg(feature = "solver")]` binary, so in the default
+# (--no-default-features) CI lane it would otherwise compile AND link to an
+# EMPTY test binary (zero tests). `required-features` tells Cargo to skip
+# building them entirely unless `solver` is on — removing 9 dead link units
+# from the no-solver `test`/`checks` lanes with ZERO coverage change (the
+# tests don't exist without the feature). They build and run normally in the
+# `solver` job (`cargo test --features solver`). The `#![cfg(feature =
+# "solver")]` file attrs are left in place as belt-and-braces; this stanza
+# just stops the empty binaries from being built in the first place.
+#
+# The INVERSE gate is inexpressible: tests/parity_manifest.rs is
+# cfg(not(solver)) and Cargo has no "excluded-features", so that file
+# deliberately has NO stanza here and links one empty binary in the
+# solver lane instead.
+[[test]]
+name = "z3_corpus"
+required-features = ["solver"]
+
+[[test]]
+name = "z3_fragment_guard_canaries"
+required-features = ["solver"]
+
+[[test]]
+name = "workload_snapshots"
+required-features = ["solver"]
+
+[[test]]
+name = "air_cap_arm_coverage"
+required-features = ["solver"]
+
+[[test]]
+name = "air_cap_rejection_soundness"
+required-features = ["solver"]
+
+[[test]]
+name = "diagnostic_determinism"
+required-features = ["solver"]
+
+[[test]]
+name = "cache_determinism"
+required-features = ["solver"]

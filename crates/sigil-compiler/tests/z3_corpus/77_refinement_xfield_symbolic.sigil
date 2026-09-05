@@ -1,0 +1,35 @@
+// expect-error: T216
+// Z3 corpus #77: axis-1 — Wall 4 Step 4 cross-field refinement with a
+// SYMBOLIC side at construction (conservative reject).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `Range` carries the cross-field refinement `where lo <= hi`. The
+// construction supplies `lo` from a variable (`lo_val`), not an integer
+// literal. Wall 4 Step 4 only discharges the literal-literal case via
+// Z3's 2-variable query; when at least one side is symbolic, the
+// predicate cannot be discharged and the verifier REJECTS conservatively
+// with T216 ("supply both fields as integer literals, or drop the
+// cross-field clause"). This is fail-CLOSED: an unverifiable cross-field
+// constraint is a compile error, never a silent accept.
+//
+// THE LANGUAGE PRIMITIVE THIS GUARDS
+//
+// T216 is emitted without Z3 as a static collector rejection. This corpus
+// witness prevents symbolic cross-field obligations from becoming silent accepts.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the offending construction; the record
+// decl and the `let lo_val` stay. Compiles.
+module sigil;
+
+record Range { lo: i64, hi: i64 } where lo <= hi
+
+entry actor Main {
+    on Tick() -> i64 {
+        let lo_val: i64 = 3;
+        let r: Range = Range { lo: lo_val, hi: 5 };  // MUTATION_SITE
+        return 1;
+    }
+}

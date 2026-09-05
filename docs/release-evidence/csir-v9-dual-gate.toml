@@ -1,0 +1,234 @@
+# This is a pending template, not a tagged release or a green CI record.
+# `--template` checks that it makes no completion claim. Actual measured
+# evidence belongs in a separate retained bundle validated with `--tagged`.
+# The historical v8 record remains unchanged and independently meaningful.
+evidence_version = 1
+model_version = 9
+certificate_schema = 9
+phase = "dual-gate-integration"
+state = "pending"
+retirement_eligible = false
+unresolved_risks = ["SR-013", "SR-017"]
+repository = "pending"
+tag = "pending"
+commit = "pending"
+lean_toolchain = "leanprover/lean4:v4.32.0-rc1"
+rust_toolchain = "pending"
+
+[mandatory_gates]
+semantic_v9 = true
+historical_v8 = true
+obligations_v6 = true
+rust_taint = true
+rust_ownership = true
+z3_air_capability = true
+
+# The release reviewer must approve a concrete memory budget separately;
+# the validator checks the measured peak against it, not its suitability.
+[limits]
+peak_memory_bytes = "pending"
+
+[results]
+corpus_total = "pending"
+accepted_corpus_regressions = "pending"
+unexplained_disagreements = "pending"
+approved_policy_rejections = "pending"
+median_verifier_ms = "pending"
+p95_verifier_ms = "pending"
+initialization_ms = "pending"
+peak_memory_bytes = "pending"
+million_record_count = "pending"
+selfhost_trio_seconds = "pending"
+
+# Each check needs measured cases, exact subject commit, an exact CI job URL,
+# and a retained nonempty artifact with its SHA-256. They may share a job/log
+# only when that job actually ran every named check. `executed` must be true
+# for a complete record: skipped, cancelled, or build-only lanes do not count.
+[checks.workspace_solver_off]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.workspace_solver_on]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.linux_runtime]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.macos_arm64]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.macos_x86_64]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.windows_msvc]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.cli]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.mcp]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.serve]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.packages]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.foreign_frontends]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.corpus]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.lean_proofs]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.lean_dependency_audit]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.native_decoder_diagnostics]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.occurrence_mutants]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.constructor_inventory]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.claim_signatures]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.public_independent_lengths]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.secret_ct_preserved]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"
+
+[checks.performance]
+status = "pending"
+executed = false
+cases = "pending"
+commit = "pending"
+run_url = "pending"
+artifact = "pending"
+sha256 = "pending"

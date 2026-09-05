@@ -1,0 +1,17 @@
+module cap_unchecked_gate;
+
+cap type C_Deploy { mint_owner }
+cap type C_Owner mintable_by C_Deploy { all }
+
+record C { balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new(__fe_deploy: &C_Deploy) -> (C, C_Owner) {
+        let __fe_c = C { balances: BoundedMap_u256_u256_64::new() };
+        return (__fe_c, mint C_Owner for __fe_c);
+    }
+
+    pub fn credit(self: C @Mut, __fe_owner: &C_Owner, a: u256, amt: u256) {
+        self.balances.insert(a, (self.balances.get_or(a, 0) + amt));
+    }
+}

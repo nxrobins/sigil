@@ -1,0 +1,55 @@
+// Integration test: arrays + for-in + mutable variables + function calls
+// Exercises: array literals, bounds-checked indexing, for-in desugaring,
+// let mut + assignment, recursive function calls, and arithmetic.
+module sigil;
+cap type Fuel {}
+
+fn abs(x: i64) -> i64 {
+    if x < 0 {
+        return 0 - x;
+    } else {
+        return x;
+    }
+}
+
+fn max(a: i64, b: i64) -> i64 {
+    if a > b {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n;
+    } else {
+        return fib(n - 1) + fib(n - 2);
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        // Array + for-in accumulation
+        let data = [10, 20, 30, 40, 50];
+        let mut total: i64 = 0;
+        for x in data {
+            total = total + x;
+        }
+
+        // Math functions with if/else
+        let neg = abs(0 - 42);
+        let big = max(total, neg);
+
+        // Recursive function
+        let f = fib(6);
+
+        // Array indexing (bounds-checked)
+        let second = data[1];
+
+        // Combine everything
+        return big + f + second;
+    }
+}

@@ -1,0 +1,66 @@
+// TASK: fibonacci — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn parse_decimal(input_ptr: i64, input_len: i64) -> i64 {
+    let mut n = 0;
+    let mut i = 0;
+
+    while i < input_len {
+        let b = load8(input_ptr + i);
+        n = n * 10 + b - 48;
+        i = i + 1;
+    }
+
+    return n;
+}
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out_ptr = alloc(1);
+        store8(out_ptr, 48);
+        return out_ptr * 4294967296 + 1;
+    } else {
+        let scratch_ptr = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+
+        while n > 0 {
+            let q = n / 10;
+            let digit = n - q * 10;
+            store8(scratch_ptr + digits, 48 + digit);
+            digits = digits + 1;
+            n = q;
+        }
+
+        let out_ptr = alloc(digits);
+        let mut i = 0;
+
+        while i < digits {
+            let b = load8(scratch_ptr + digits - 1 - i);
+            store8(out_ptr + i, b);
+            i = i + 1;
+        }
+
+        return out_ptr * 4294967296 + digits;
+    }
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let n = parse_decimal(input_ptr, input_len);
+    let mut a = 0;
+    let mut b = 1;
+    let mut i = 0;
+
+    while i < n {
+        let next = a + b;
+        a = b;
+        b = next;
+        i = i + 1;
+    }
+
+    return render_decimal(a);
+}

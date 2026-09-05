@@ -1,0 +1,45 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": ">=0.1.0"
+  },
+  "declared": {
+    "determinism": "pure",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "tests/fixtures/packages/neutral-boundaries/OBLIGATIONS.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "helper::internal_echo(value:Internal)->Internal",
+      "helper::public_echo(value:Public)->Public",
+      "helper::secret_echo(value:Secret)->Secret"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Neutral label-preserving helper fixture.",
+  "evidence": {
+    "api_card_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "api_contract_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "charter_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "evidence_manifest_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "CC0-1.0",
+  "maturity": "contracted",
+  "modules": [
+    "helper"
+  ],
+  "name": "helper",
+  "namespace": "test",
+  "version": "1.0.0"
+}

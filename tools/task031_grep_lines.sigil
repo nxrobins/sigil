@@ -1,0 +1,150 @@
+// TASK: grep lines — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn append_segment(
+    out_ptr: i64 @Internal,
+    out_len_in: i64 @Internal,
+    file_ptr: i64 @Internal,
+    start: i64 @Internal,
+    end: i64 @Internal,
+) -> i64 @Internal ! {} {
+    let mut out_len: i64 @Internal = out_len_in;
+    let mut i: i64 @Internal = start;
+
+    while i < end {
+        let b: i64 @Internal = load8(file_ptr + i);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        i = i + 1;
+    }
+
+    return out_len;
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let raw: i64 @Internal = fs_read(input_ptr, split);
+
+        if raw < 0 {
+            return raw;
+        } else {
+            let pat_src: i32 @Internal = input_ptr + split + one;
+            let mut pat_scan: i32 @Internal = pat_src;
+            let mut pat_len: i64 @Internal = 0;
+
+            while pat_scan < input_ptr + input_len {
+                pat_len = pat_len + 1;
+                pat_scan = pat_scan + one;
+            }
+
+            let pat_ptr: i64 @Internal = alloc(pat_len);
+            let mut pat_copy_scan: i32 @Internal = pat_src;
+            let mut pat_copy_len: i64 @Internal = 0;
+
+            while pat_copy_scan < input_ptr + input_len {
+                let b: i64 @Internal = load8(pat_copy_scan);
+                store8(pat_ptr + pat_copy_len, b);
+                pat_copy_len = pat_copy_len + 1;
+                pat_copy_scan = pat_copy_scan + one;
+            }
+
+            let file_ptr: i64 @Internal = raw / 4294967296;
+            let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+            let out_ptr: i64 @Internal = alloc(file_len);
+            let mut out_len: i64 @Internal = 0;
+            let mut line_start: i64 @Internal = 0;
+            let mut line_matched: i64 @Internal = 0;
+            let mut matched_count: i64 @Internal = 0;
+            let mut first_pat: i64 @Internal = 0;
+            let mut b: i64 @Internal = 0;
+            let mut cur_pat: i64 @Internal = 0;
+            let mut i: i64 @Internal = 0;
+
+            if pat_len == 0 {
+                line_matched = 1;
+            } else {
+                first_pat = load8(pat_ptr);
+            }
+
+            while i < file_len {
+                b = load8(file_ptr + i);
+
+                if b == 10 {
+                    if line_matched == 1 {
+                        out_len = append_segment(out_ptr, out_len, file_ptr, line_start, i + 1);
+                    } else {
+                    }
+                    line_start = i + 1;
+                    if pat_len == 0 {
+                        line_matched = 1;
+                    } else {
+                        line_matched = 0;
+                    }
+                    matched_count = 0;
+                } else {
+                    if pat_len == 0 {
+                    } else {
+                        if line_matched == 0 {
+                            cur_pat = load8(pat_ptr + matched_count);
+                            if b == cur_pat {
+                                matched_count = matched_count + 1;
+                                if matched_count == pat_len {
+                                    line_matched = 1;
+                                } else {
+                                }
+                            } else {
+                                if b == first_pat {
+                                    matched_count = 1;
+                                    if pat_len == 1 {
+                                        line_matched = 1;
+                                    } else {
+                                    }
+                                } else {
+                                    matched_count = 0;
+                                }
+                            }
+                        } else {
+                        }
+                    }
+                }
+
+                i = i + 1;
+            }
+
+            if line_start < file_len {
+                if line_matched == 1 {
+                    out_len = append_segment(out_ptr, out_len, file_ptr, line_start, file_len);
+                } else {
+                }
+            } else {
+            }
+
+            return out_ptr * 4294967296 + out_len;
+        }
+    }
+}

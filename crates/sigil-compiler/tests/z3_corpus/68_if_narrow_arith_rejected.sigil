@@ -1,0 +1,41 @@
+// expect-error: T211
+// Z3 corpus #68: axis-1 — Wall 4 Step 10 unrecognized condition shape.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The recognizer (`extract_narrowing_predicate`) is structural and
+// conservative. It matches `<bare-ident> RELOP <int-literal>` (and
+// the reversed form), but NOT `<arith-expr> RELOP <int-literal>`. So
+// `if input + 1 > 0` does NOT narrow `input` — the recognizer sees
+// `Binary(Add, ...)` on the LHS, returns None, and check_if pushes
+// no frame.
+//
+// Inside the then-arm, the bare `input` parameter has no preserved
+// refinement. The call to `need_positive(input)` fires T211 (Step 7's
+// symbolic-no-refinement path, Case 3 of the call-site dispatcher).
+//
+// This proves the conservative recognizer doesn't accidentally accept
+// arithmetic predicates as direct narrowings. Future Step 9 (combinators)
+// or a hypothetical SMT-based predicate analyzer could relax this; v1
+// of Step 10 is structural only (N3-W4S10 + N7-W4S10).
+//
+// MUTATION CONTRACT
+//
+// Removing the `+ 1` produces a recognized shape `input > 0` —
+// flipping the fixture to expect-ok (fixture 58's pattern).
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input + 1 > 0 {
+            let _val: i64 = need_positive(input);  // MUTATION_SITE
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}

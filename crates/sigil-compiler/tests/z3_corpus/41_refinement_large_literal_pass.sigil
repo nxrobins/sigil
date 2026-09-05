@@ -1,0 +1,25 @@
+// expect-ok
+// Z3 corpus #41: axis-1 — refinement with large literal in LIA range.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The Z3 LIA fragment correctly handles large positive literals. The
+// function requires `where x > 1000000` and receives `999999999`.
+// This pushes the QF_LIA solver's numeric range beyond the small
+// constants used in all other fixtures (which use values < 1000).
+//
+// An implementation that accidentally truncated literals to 32-bit
+// before Z3 assertion would misbehave on values > 2^31. While i64
+// overflow is unlikely for values this small, this fixture pins that
+// the LIA encoding uses full 64-bit integer representation.
+module sigil;
+
+fn need_large(x: i64) where x > 1000000 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Start() -> i64 {
+        return need_large(999999999);
+    }
+}

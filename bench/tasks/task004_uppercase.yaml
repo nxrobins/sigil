@@ -1,0 +1,23 @@
+id: task004_uppercase
+source_path: tools/task004_uppercase.sigil
+difficulty: basic
+description: |
+  Write a Sigil tool that ASCII-uppercases its input: each lowercase letter
+  (a-z, byte values 97-122) becomes the corresponding uppercase letter (A-Z,
+  byte values 65-90). All other bytes pass through unchanged. Return the
+  packed `(out_ptr * 4294967296 + len)` of the transformed buffer.
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }"
+required_attrs: []
+required_effects: ["Alloc"]
+required_grants: {}
+fuel_budget: 200000
+inputs:
+  - name: empty
+    value: ""
+  - name: lower
+    value: hello
+  - name: mixed
+    value: "MixedCase 123!"
+  - name: already_upper
+    value: ALREADY
+expected_output_strategy: capture_from_reference

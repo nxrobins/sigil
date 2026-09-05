@@ -1,0 +1,33 @@
+// expect-error: T254
+// Z3 corpus #76: DEF-2a region-escape probe (the both-orders NC-R5 lock).
+//
+// A value heap-allocated inside a `region {}` block cannot escape to a longer-lived
+// sink: `reject ⟺ birth_depth(value) > scope_depth(sink)`. The region's memory is
+// reclaimed at block exit, so the escaping reference would dangle (T254).
+//
+// `sink` is called TWICE: once safely with an outer (function-lifetime) value, and once
+// — the MUTATION_SITE — with a region-born value. Only the second is the escape.
+// Deleting the MUTATION_SITE line leaves `sink` still used (so the program is otherwise
+// well-formed) and the region merely constructs + discards `p`, which compiles cleanly.
+//
+// Because the z3 corpus runs every fixture FORWARD and in REVERSE, this fixture also
+// proves the region birth-depth state (`region_locals` / `current_region_depth`) does
+// not leak across compilations — the NC-R5 cross-compilation guarantee.
+#[ring(outer)]
+module ext;
+
+record Point { x: i64, y: i64 }
+
+fn sink(p: Point) -> i64 {
+    return p.x;
+}
+
+fn leaky() -> i64 ! { Alloc } {
+    let outer: Point = Point { x: 9, y: 9 };
+    let _safe: i64 = sink(outer);
+    region scratch(64) {
+        let p: Point = Point { x: 1, y: 2 };
+        let _leak: i64 = sink(p); // MUTATION_SITE
+    };
+    return 0;
+}

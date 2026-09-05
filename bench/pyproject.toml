@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigil-bench"
+version = "0.1.0"
+description = "AutoForge benchmark harness — measures LLM ability to regenerate Sigil tools through the sigil-mcp loop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Sigil contributors" }]
+dependencies = [
+    "anthropic>=0.40,<1.0",
+    "pydantic>=2.6,<3.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.100",
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "shellcheck-py>=0.10",
+    "tomli>=2.0; python_version < '3.11'",
+]
+# The agentic convergence harness (sigil_bench.agentic) talks to OpenAI-compatible
+# providers (OpenAI, OpenRouter, Nebius, xAI, Azure, Mistral, Moonshot) via the
+# `openai` SDK. Imported lazily, so only needed when running non-Anthropic models.
+agentic = [
+    "openai>=1.40",
+]
+
+[project.scripts]
+sigil-bench = "sigil_bench.cli:main"
+sigil-agentic = "sigil_bench.agentic.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sigil_bench = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -W error::pytest.PytestCollectionWarning"
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["fixtures"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+# Pin first-party packages explicitly. Without this, ruff INFERS them from the
+# invocation: `ruff check bench` (what CI runs) treats `bench.*` as third-party
+# and wants it grouped with pytest, while `ruff check . --config
+# bench/pyproject.toml` treats it as first-party and wants a separate block —
+# so the two commands demanded contradictory import order and could never both
+# be clean. Naming them here makes the classification invocation-independent.
+[tool.ruff.lint.isort]
+known-first-party = ["bench", "sigil_bench"]

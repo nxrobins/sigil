@@ -1,0 +1,60 @@
+// stdlib::bounded_set_str — a BOUNDED, stack-backed set of `str` (COMPLETENESS
+// Phase 4): the allowlist/tag shape. Same recipe as `bounded_set_i64` with the
+// str deltas — `[""; 16]` backing, CONTENT equality via `str_bytes_eq` (NEVER the
+// pointer `==`). `insert(elem) -> bool` is idempotent (false if already present);
+// a NEW element into a full set force-traps via `elems[16]`. `str_bytes_eq`
+// (stdlib::strings) is co-injected. No Option (membership/insert return bool).
+
+module bounded_set_str;
+
+record BoundedSet_str_16 { elems: [str; 16], count: i64 }
+
+impl BoundedSet_str_16 {
+    pub fn new() -> BoundedSet_str_16 {
+        return BoundedSet_str_16 { elems: [""; 16], count: 0 };
+    }
+
+    pub fn len(self: BoundedSet_str_16) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedSet_str_16) -> i64 {
+        return 16;
+    }
+
+    pub fn is_empty(self: BoundedSet_str_16) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedSet_str_16) -> bool {
+        return self.count == 16;
+    }
+
+    pub fn insert(self: BoundedSet_str_16 @Mut, elem: str) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ei: str = self.elems[i];
+            if ei.bytes_eq(elem) {
+                return false;
+            } else {
+            }
+            i = i + 1;
+        }
+        self.elems[self.count] = elem;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn contains(self: BoundedSet_str_16, elem: str) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            let ei: str = self.elems[i];
+            if ei.bytes_eq(elem) {
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}

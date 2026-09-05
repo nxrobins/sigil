@@ -1,0 +1,44 @@
+// expect-error: C003
+// Z3 corpus #94: axis-2 — two draws from state, one restricted, one not.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Two caps drawn from the same state cap have INDEPENDENT authority.
+// Drawing twice, restricting only the FIRST draw, and passing the
+// RESTRICTED draw to a full-authority sink triggers C003 — while the
+// second draw remains at full authority.
+//
+// This fixture is the negative complement to fixture #84 (sibling draw
+// independent — which tests the POSITIVE case, using the unrestricted
+// sibling). Together they form a pair:
+//   #84: use unrestricted sibling → OK
+//   #94: use restricted sibling → C003
+//
+// The test verifies that the Z3 authority model is truly per-variable:
+// restricting `a` does not affect `b`, even though both were drawn from
+// the same source. And conversely, the existence of an unrestricted
+// sibling `b` does not "lift" the restriction on `a`.
+//
+// Flow:
+//   fuel (full) → draw(10) → a (full) → restrict(burn) → a_restricted ({burn})
+//   fuel (full) → draw(10) → b (full)
+//   needs_full(a_restricted) → C003 (a carries only {burn})
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the sink
+// call on the restricted cap. Both caps persist unused.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let a: Fuel = fuel.draw(10);
+        let a_restricted: Fuel = a.restrict(burn);
+        let b: Fuel = fuel.draw(10);
+        needs_full(a_restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

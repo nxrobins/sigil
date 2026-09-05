@@ -1,0 +1,29 @@
+// expect-error: T219
+// Z3 corpus #45: Wall 4 Step 4 non-i64 cross-field RHS → T219.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// V60 (T219): a cross-field refinement `value <= flag` is admitted only when BOTH
+// the LHS and RHS fields are `Type::I64`. `value` is i64 (passes the T212 LHS
+// gate); the RHS `flag` is `bool`, so the cross-field RHS fails the T219 shape
+// check.
+//
+// As of the Phase-2 refinement quarantine this shape check fires at DECLARATION
+// (`validate_refinement_shapes_at_decls`), reading only the declared clause + the
+// declared field types — no construction is required to trip it.
+//
+// MUTATION CONTRACT
+//
+// Deleting the `where` clause (MUTATION_SITE) leaves a plain bool-field record and
+// its construction, which compile cleanly.
+module sigil;
+
+record Mixed { value: i64, flag: bool }
+    where value <= flag  // MUTATION_SITE
+
+entry actor Main {
+    on Tick() -> i64 {
+        let m: Mixed = Mixed { value: 5, flag: true };
+        return 1;
+    }
+}

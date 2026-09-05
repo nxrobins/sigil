@@ -1,0 +1,43 @@
+module uintn_token;
+
+fn __fe_add_checked(a: u256, b: u256, bound: u256) -> u256 { let r = (a + b); trap_if(r >= bound); return r; }
+
+fn __fe_mul_checked(a: u256, b: u256, bound: u256) -> u256 { let r = (a * b); trap_if(r >= bound); return r; }
+
+record Packed { lo: u256, hi: u256 }
+
+record UToken { dec: u256, supply: u256, slot: Packed }
+
+impl UToken {
+    pub fn new() -> UToken {
+        return UToken { dec: 0, supply: 0, slot: Packed { lo: 0, hi: 0 } };
+    }
+
+    pub fn decimals(self: UToken) -> u256 {
+        return self.dec;
+    }
+
+    pub fn setDecimals(self: UToken @Mut, d: u256) {
+        self.dec = d;
+    }
+
+    pub fn mint(self: UToken @Mut, a: u256) {
+        self.supply = __fe_add_checked(self.supply, a, 340282366920938463463374607431768211456);
+    }
+
+    pub fn scale(self: UToken @Mut, k: u256) {
+        self.supply = __fe_mul_checked(self.supply, k, 340282366920938463463374607431768211456);
+    }
+
+    pub fn widened(self: UToken) -> u256 {
+        return self.supply;
+    }
+
+    pub fn below(self: UToken, lim: u256) -> bool {
+        return (self.supply < lim);
+    }
+
+    pub fn bumpLo(self: UToken @Mut, d: u256) {
+        self.slot.lo = __fe_add_checked(self.slot.lo, d, 340282366920938463463374607431768211456);
+    }
+}

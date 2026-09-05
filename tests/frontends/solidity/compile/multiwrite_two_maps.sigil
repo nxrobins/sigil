@@ -1,0 +1,18 @@
+module multiwrite_two_maps;
+
+record C { a: BoundedMap_u256_u256_64, b: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { a: BoundedMap_u256_u256_64::new(), b: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn f(self: C @Mut, k: u256, x: u256) {
+        let mut __fe_rb0: u256 = x;
+        let mut __fe_rb1: u256 = x;
+        self.a.reserve1(k);
+        self.b.reserve1(k);
+        self.a.insert(k, __fe_rb0);
+        self.b.insert(k, __fe_rb1);
+    }
+}

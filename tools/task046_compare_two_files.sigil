@@ -1,0 +1,102 @@
+// TASK: compare two files — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn render_bool(value: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    if value == 1 {
+        let out_ptr: i64 @Internal = alloc(4);
+        store8(out_ptr, 116);
+        store8(out_ptr + 1, 114);
+        store8(out_ptr + 2, 117);
+        store8(out_ptr + 3, 101);
+        return out_ptr * 4294967296 + 4;
+    } else {
+        let out_ptr: i64 @Internal = alloc(5);
+        store8(out_ptr, 102);
+        store8(out_ptr + 1, 97);
+        store8(out_ptr + 2, 108);
+        store8(out_ptr + 3, 115);
+        store8(out_ptr + 4, 101);
+        return out_ptr * 4294967296 + 5;
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split2 = input_len;
+    let mut split1 = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if b == 58 {
+            if split2 == input_len {
+                split2 = scan - one;
+            } else {
+                if split1 == input_len {
+                    split1 = scan - one;
+                } else {
+                }
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    let mut delim = split1;
+    if delim == input_len {
+        delim = split2;
+    } else {
+    }
+
+    if delim == input_len {
+        return 0 - 400;
+    } else {
+        let raw_a: i64 @Internal = fs_read(input_ptr, delim);
+
+        if raw_a < 0 {
+            return raw_a;
+        } else {
+            let path_b_ptr: i32 @Internal = input_ptr + delim + one;
+            let path_b_len: i32 @Internal = input_len - delim - one;
+            let raw_b: i64 @Internal = fs_read(path_b_ptr, path_b_len);
+
+            if raw_b < 0 {
+                return raw_b;
+            } else {
+                let a_ptr: i64 @Internal = raw_a / 4294967296;
+                let a_len: i64 @Internal = raw_a - a_ptr * 4294967296;
+                let b_ptr: i64 @Internal = raw_b / 4294967296;
+                let b_len: i64 @Internal = raw_b - b_ptr * 4294967296;
+
+                if a_len == b_len {
+                    let mut same: i64 @Internal = 1;
+                    let mut i: i64 @Internal = 0;
+
+                    while i < a_len {
+                        if same == 1 {
+                            let a_byte: i64 @Internal = load8(a_ptr + i);
+                            let b_byte: i64 @Internal = load8(b_ptr + i);
+                            if a_byte == b_byte {
+                            } else {
+                                same = 0;
+                            }
+                        } else {
+                        }
+                        i = i + 1;
+                    }
+
+                    return render_bool(same);
+                } else {
+                    return render_bool(0);
+                }
+            }
+        }
+    }
+}

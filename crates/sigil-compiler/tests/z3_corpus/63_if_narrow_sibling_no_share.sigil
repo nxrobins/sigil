@@ -1,0 +1,42 @@
+// expect-error: T211
+// Z3 corpus #63: axis-1 — Wall 4 Step 10 sibling ifs don't share narrowing.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Sequential ifs at the same scope do NOT share narrowing frames.
+// `if cond_a { ... } if cond_b { ... }` — after the first if's body
+// returns and its frame is popped, the second if sees no inherited
+// narrowing from the first. This proves the pop discipline (one pop
+// per push per branch) is correct, and that frames are scoped to
+// their enclosing if's lifetime.
+//
+// The second if's body calls `need_positive(input)` but the second
+// if's condition `cond_b > 0` doesn't narrow `input` (it narrows
+// `cond_b`). So inside the second if's then-arm, `input` is bare
+// — T211 fires.
+//
+// MUTATION CONTRACT
+//
+// Replacing the second condition's variable with `input > 0` would
+// narrow input properly and flip to expect-ok.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64, cond_b: i64) -> i64 {
+        if input > 0 {
+            let _val_a: i64 = input;
+        } else {
+            let _other_a: i64 = 0;
+        }
+        if cond_b > 0 {
+            let _val_b: i64 = need_positive(input);  // MUTATION_SITE
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}

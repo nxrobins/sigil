@@ -1,0 +1,1153 @@
+// stdlib `json` module — pure-Sigil JSON codec (v2).
+//
+// Inner-ring (no FFI), so callable from inner-ring tools. Only `Alloc`
+// effect required, and only on the extraction/encoding paths; the
+// walkers (`validate`, `array_len`) allocate nothing.
+//
+// Determinism per I3: every function is deterministic — same input
+// bytes always produce the same output bytes (or same error code).
+// No grants required.
+//
+// ── v2 scope ───────────────────────────────────────────────────────────
+// Parse side (strict RFC 8259 grammar):
+//   - string values with full escape decoding: \" \\ \/ \b \f \n \r \t
+//     and \uXXXX including surrogate pairs (decoded to UTF-8). Raw
+//     control bytes (< 0x20) inside strings are rejected.
+//   - numbers: -? (0 | [1-9][0-9]*) frac? exp?. Leading zeros, bare
+//     '-', '1.', '.5', '1e' are malformed.
+//   - literals `true` / `false` / `null` verified byte-exactly.
+//   - nested objects/arrays: extracted as the RAW balanced JSON slice,
+//     so callers recurse by feeding the slice back into `parse_field`
+//     / `parse_index`.
+//   - object keys are matched AFTER escape decoding: {"a\nb": 1} is
+//     found by the 3-byte key a,0x0A,b.
+// Encode side:
+//   - `escape_string` produces a quoted JSON string with mandatory
+//     escapes (exact-size, two-pass).
+//
+// ── Bounded work (I7) ──────────────────────────────────────────────────
+// Every scan loop is driven by a monotone index bounded by the input
+// length; `skip_value` additionally carries an explicit step budget of
+// end - start + 2 iterations (each iteration consumes at least one
+// byte, so the budget is structurally sufficient).
+//   - field/element walks are capped at 10,000 entries      → -429
+//   - container nesting is capped at 63 levels              → -430
+// The 63-level cap is what lets the skipper track container kinds in a
+// single i64 bit-stack (push = *2+k, pop = /2) with no allocation and
+// no variable-distance shifts.
+//
+// ── Return conventions ─────────────────────────────────────────────────
+// Success: packed `ptr << 32 | len` to freshly allocated bytes:
+//   - string value: decoded body, quotes stripped
+//   - number / true / false / null: the literal ASCII characters
+//   - object / array value: the raw balanced JSON slice, byte-exact
+//     from the input (interior whitespace preserved)
+// Errors (negative):
+//   -400  malformed JSON (bad escape, lone surrogate, raw control
+//         byte in string, bad number grammar, unbalanced containers,
+//         truncated input, trailing garbage in `validate`)
+//   -404  field / index not found
+//   -429  more than 10,000 fields or elements in one container walk
+//   -430  nesting deeper than 63 levels
+// (-415 "unsupported value kind" is retired as of v2 — nested values
+// are supported. The code is reserved and will not be reused.)
+//
+// ── Taint: polymorphic (`@Flow`) ───────────────────────────────────────
+// Every parameter and return here is `@Flow`, so the label of what comes
+// out is the label of what went in: parse a `@Public` document and the
+// field is `@Public`; parse an `@Internal` HTTP response and the field is
+// `@Internal`; parse `@Secret` bytes and the field is `@Secret`. The
+// codec neither refuses classified input nor launders it.
+//
+// This is NOT a declassification — no label is ever lowered. The compiler
+// checks each of these bodies once per admissible label (@Public,
+// @Internal, @Secret), so a body that leaked a `@Flow` value into a
+// `@Public` sink would be rejected at the `@Internal` instantiation.
+// `@SecretCT` is excluded: constant-time discipline constrains the code
+// itself, and these scanners branch on their input by construction — pass
+// `@SecretCT` bytes here and the call is rejected (T030), which is the
+// honest answer rather than a false CT guarantee.
+module json;
+
+effect Alloc;
+
+// Skip ASCII whitespace (space, tab, CR, LF) starting at `i_in`.
+// Returns the index of the first non-whitespace byte or `end` if none.
+fn skip_ws(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = i_in;
+    while i < end {
+        let b: i64 = load8(input_ptr + i);
+        match b {
+            32 => { i += 1; },
+            9 => { i += 1; },
+            10 => { i += 1; },
+            13 => { i += 1; },
+            _ => { return i; },
+        }
+    }
+    return i;
+}
+
+// Compare `len` bytes at absolute pointers `a_ptr` / `b_ptr`.
+// Returns 1 if equal, 0 otherwise.
+fn bytes_eq(a_ptr: i64 @Flow, b_ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = 0;
+    while i < len {
+        let av: i64 = load8(a_ptr + i);
+        let bv: i64 = load8(b_ptr + i);
+        if av == bv {
+            i += 1;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Decode one ASCII hex digit to its value 0..15, or -1.
+fn hex_nibble(c: i64 @Flow) -> i64 @Flow {
+    match c {
+        0x30..=0x39 => { return c - 0x30; },
+        0x41..=0x46 => { return c - 0x37; },
+        0x61..=0x66 => { return c - 0x57; },
+        _ => { return -1; },
+    }
+}
+
+// Read 4 hex digits at `i` and return the code unit 0..0xFFFF, or -1
+// if out of bounds / not hex. (Helper convention: -1, callers map to
+// -400.)
+fn read_hex4(input_ptr: i64 @Flow, i: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    if i + 4 > end {
+        return -1;
+    } else {
+    }
+    let n0: i64 = hex_nibble(load8(input_ptr + i));
+    let n1: i64 = hex_nibble(load8(input_ptr + i + 1));
+    let n2: i64 = hex_nibble(load8(input_ptr + i + 2));
+    let n3: i64 = hex_nibble(load8(input_ptr + i + 3));
+    if n0 < 0 {
+        return -1;
+    } else {
+    }
+    if n1 < 0 {
+        return -1;
+    } else {
+    }
+    if n2 < 0 {
+        return -1;
+    } else {
+    }
+    if n3 < 0 {
+        return -1;
+    } else {
+    }
+    return n0 * 4096 + n1 * 256 + n2 * 16 + n3;
+}
+
+// Skip past a JSON string starting at the opening `"` at `i_in`,
+// validating the full escape grammar (including surrogate pairing).
+// Returns the index AFTER the closing `"`, or -400 on any malformed
+// or truncated input.
+//
+// Validation here is what lets `decode_string` run without re-checking:
+// every string it decodes has passed this scanner.
+fn skip_string(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = i_in;
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 34 {
+            i += 1;
+        } else {
+            return -400;
+        }
+    }
+    while i < end {
+        let b: i64 = load8(input_ptr + i);
+        if b == 34 {
+            return i + 1;
+        } else {
+        }
+        if b == 92 {
+            i += 1;
+            if i >= end {
+                return -400;
+            } else {
+            }
+            let e: i64 = load8(input_ptr + i);
+            match e {
+                34 => { i += 1; },
+                92 => { i += 1; },
+                47 => { i += 1; },
+                98 => { i += 1; },
+                102 => { i += 1; },
+                110 => { i += 1; },
+                114 => { i += 1; },
+                116 => { i += 1; },
+                117 => {
+                    i += 1;
+                    let u: i64 = read_hex4(input_ptr, i, end);
+                    if u < 0 {
+                        return -400;
+                    } else {
+                    }
+                    i += 4;
+                    match u {
+                        0xD800..=0xDBFF => {
+                            // High surrogate: the NEXT sequence must be
+                            // \uDC00..\uDFFF.
+                            if i + 6 > end {
+                                return -400;
+                            } else {
+                            }
+                            if load8(input_ptr + i) == 92 {
+                            } else {
+                                return -400;
+                            }
+                            if load8(input_ptr + i + 1) == 117 {
+                            } else {
+                                return -400;
+                            }
+                            let u2: i64 = read_hex4(input_ptr, i + 2, end);
+                            match u2 {
+                                0xDC00..=0xDFFF => { i += 6; },
+                                _ => { return -400; },
+                            }
+                        },
+                        0xDC00..=0xDFFF => {
+                            // Lone low surrogate.
+                            return -400;
+                        },
+                        _ => {},
+                    }
+                },
+                _ => { return -400; },
+            }
+        } else {
+            if b < 32 {
+                // Raw control byte inside a string (RFC 8259 §7).
+                return -400;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    return -400;
+}
+
+// Skip past a JSON number at `i_in`, enforcing the strict RFC 8259
+// grammar: -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?.
+// Returns the index of the first byte AFTER the number, or -400.
+fn skip_number(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = i_in;
+    if i < end {
+        if load8(input_ptr + i) == 45 {
+            i += 1;
+        } else {
+        }
+    } else {
+        return -400;
+    }
+    // Integer part.
+    if i >= end {
+        return -400;
+    } else {
+    }
+    let first: i64 = load8(input_ptr + i);
+    match first {
+        48 => {
+            i += 1;
+            // "0" must not be followed by another digit.
+            if i < end {
+                match load8(input_ptr + i) {
+                    48..=57 => { return -400; },
+                    _ => {},
+                }
+            } else {
+            }
+        },
+        49..=57 => {
+            i += 1;
+            while i < end {
+                match load8(input_ptr + i) {
+                    48..=57 => { i += 1; },
+                    _ => { break; },
+                }
+            }
+        },
+        _ => { return -400; },
+    }
+    // Fraction part.
+    if i < end {
+        if load8(input_ptr + i) == 46 {
+            i += 1;
+            let mut frac_digits: i64 = 0;
+            while i < end {
+                match load8(input_ptr + i) {
+                    48..=57 => { i += 1; frac_digits += 1; },
+                    _ => { break; },
+                }
+            }
+            if frac_digits == 0 {
+                return -400;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    // Exponent part.
+    if i < end {
+        let eb: i64 = load8(input_ptr + i);
+        let mut has_exp: i64 = 0;
+        if eb == 101 {
+            has_exp = 1;
+        } else {
+            if eb == 69 {
+                has_exp = 1;
+            } else {
+            }
+        }
+        if has_exp == 1 {
+            i += 1;
+            if i < end {
+                let sb: i64 = load8(input_ptr + i);
+                if sb == 43 {
+                    i += 1;
+                } else {
+                    if sb == 45 {
+                        i += 1;
+                    } else {
+                    }
+                }
+            } else {
+            }
+            let mut exp_digits: i64 = 0;
+            while i < end {
+                match load8(input_ptr + i) {
+                    48..=57 => { i += 1; exp_digits += 1; },
+                    _ => { break; },
+                }
+            }
+            if exp_digits == 0 {
+                return -400;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    return i;
+}
+
+// Skip past `true` / `false` / `null` at `i_in`, verifying every byte.
+// Returns the index AFTER the literal, or -400.
+fn skip_literal(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let b: i64 = load8(input_ptr + i_in);
+    if b == 116 {
+        if i_in + 4 > end {
+            return -400;
+        } else {
+        }
+        if load8(input_ptr + i_in + 1) == 114 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 2) == 117 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 3) == 101 {
+        } else {
+            return -400;
+        }
+        return i_in + 4;
+    } else {
+    }
+    if b == 102 {
+        if i_in + 5 > end {
+            return -400;
+        } else {
+        }
+        if load8(input_ptr + i_in + 1) == 97 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 2) == 108 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 3) == 115 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 4) == 101 {
+        } else {
+            return -400;
+        }
+        return i_in + 5;
+    } else {
+    }
+    if b == 110 {
+        if i_in + 4 > end {
+            return -400;
+        } else {
+        }
+        if load8(input_ptr + i_in + 1) == 117 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 2) == 108 {
+        } else {
+            return -400;
+        }
+        if load8(input_ptr + i_in + 3) == 108 {
+        } else {
+            return -400;
+        }
+        return i_in + 4;
+    } else {
+    }
+    return -400;
+}
+
+// Consume `"key" ws : ws` starting at `i_in` (leading ws allowed) and
+// return the index of the value's first byte, or -400.
+fn skip_key_colon(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = skip_ws(input_ptr, i_in, end);
+    let close: i64 = skip_string(input_ptr, i, end);
+    if close < 0 {
+        return close;
+    } else {
+        i = close;
+    }
+    i = skip_ws(input_ptr, i, end);
+    if i >= end {
+        return -400;
+    } else {
+    }
+    if load8(input_ptr + i) == 58 {
+        i += 1;
+    } else {
+        return -400;
+    }
+    return skip_ws(input_ptr, i, end);
+}
+
+// Skip one complete JSON value (any kind, arbitrarily nested) starting
+// at `i_in` (caller has skipped leading ws). Returns the index AFTER
+// the value, -400 on malformed input, -430 on nesting deeper than 63.
+//
+// Iterative — no recursion, so adversarial nesting cannot grow the
+// wasm call stack. Container kinds live in the `kinds` i64 bit-stack
+// (bit = 1 for object); `depth <= 63` keeps push/pop exact.
+fn skip_value(input_ptr: i64 @Flow, i_in: i64 @Flow, end: i64 @Flow) -> i64 @Flow {
+    let mut i: i64 = i_in;
+    let mut depth: i64 = 0;
+    let mut kinds: i64 = 0;
+    // mode 0: positioned at a value's first byte (ws already skipped).
+    // mode 1: positioned just after a completed value.
+    let mut mode: i64 = 0;
+    // Each iteration consumes at least one input byte, so this budget
+    // can only be exhausted by an internal bug; the guard keeps the
+    // loop structurally bounded either way.
+    let budget: i64 = end - i_in + 2;
+    let mut step: i64 = 0;
+    while step < budget {
+        step += 1;
+        if mode == 0 {
+            if i >= end {
+                return -400;
+            } else {
+            }
+            let b: i64 = load8(input_ptr + i);
+            if b == 34 {
+                let r: i64 = skip_string(input_ptr, i, end);
+                if r < 0 {
+                    return r;
+                } else {
+                    i = r;
+                }
+                mode = 1;
+            } else {
+                if b == 123 {
+                    depth += 1;
+                    if depth > 63 {
+                        return -430;
+                    } else {
+                    }
+                    kinds = kinds * 2 + 1;
+                    i += 1;
+                    i = skip_ws(input_ptr, i, end);
+                    if i >= end {
+                        return -400;
+                    } else {
+                    }
+                    if load8(input_ptr + i) == 125 {
+                        i += 1;
+                        depth -= 1;
+                        kinds = kinds / 2;
+                        mode = 1;
+                    } else {
+                        let k: i64 = skip_key_colon(input_ptr, i, end);
+                        if k < 0 {
+                            return k;
+                        } else {
+                            i = k;
+                        }
+                        mode = 0;
+                    }
+                } else {
+                    if b == 91 {
+                        depth += 1;
+                        if depth > 63 {
+                            return -430;
+                        } else {
+                        }
+                        kinds = kinds * 2;
+                        i += 1;
+                        i = skip_ws(input_ptr, i, end);
+                        if i >= end {
+                            return -400;
+                        } else {
+                        }
+                        if load8(input_ptr + i) == 93 {
+                            i += 1;
+                            depth -= 1;
+                            kinds = kinds / 2;
+                            mode = 1;
+                        } else {
+                            mode = 0;
+                        }
+                    } else {
+                        match b {
+                            116 => {
+                                let r: i64 = skip_literal(input_ptr, i, end);
+                                if r < 0 {
+                                    return r;
+                                } else {
+                                    i = r;
+                                }
+                                mode = 1;
+                            },
+                            102 => {
+                                let r: i64 = skip_literal(input_ptr, i, end);
+                                if r < 0 {
+                                    return r;
+                                } else {
+                                    i = r;
+                                }
+                                mode = 1;
+                            },
+                            110 => {
+                                let r: i64 = skip_literal(input_ptr, i, end);
+                                if r < 0 {
+                                    return r;
+                                } else {
+                                    i = r;
+                                }
+                                mode = 1;
+                            },
+                            45 => {
+                                let r: i64 = skip_number(input_ptr, i, end);
+                                if r < 0 {
+                                    return r;
+                                } else {
+                                    i = r;
+                                }
+                                mode = 1;
+                            },
+                            48..=57 => {
+                                let r: i64 = skip_number(input_ptr, i, end);
+                                if r < 0 {
+                                    return r;
+                                } else {
+                                    i = r;
+                                }
+                                mode = 1;
+                            },
+                            _ => { return -400; },
+                        }
+                    }
+                }
+            }
+        } else {
+            if depth == 0 {
+                return i;
+            } else {
+            }
+            i = skip_ws(input_ptr, i, end);
+            if i >= end {
+                return -400;
+            } else {
+            }
+            let b: i64 = load8(input_ptr + i);
+            let top_is_obj: i64 = kinds % 2;
+            if b == 44 {
+                i += 1;
+                if top_is_obj == 1 {
+                    let k: i64 = skip_key_colon(input_ptr, i, end);
+                    if k < 0 {
+                        return k;
+                    } else {
+                        i = k;
+                    }
+                } else {
+                    i = skip_ws(input_ptr, i, end);
+                }
+                mode = 0;
+            } else {
+                if b == 125 {
+                    if top_is_obj == 1 {
+                        i += 1;
+                        depth -= 1;
+                        kinds = kinds / 2;
+                    } else {
+                        return -400;
+                    }
+                } else {
+                    if b == 93 {
+                        if top_is_obj == 0 {
+                            i += 1;
+                            depth -= 1;
+                            kinds = kinds / 2;
+                        } else {
+                            return -400;
+                        }
+                    } else {
+                        return -400;
+                    }
+                }
+            }
+        }
+    }
+    return -400;
+}
+
+// Decode the body of a VALIDATED string (bounds exclude the quotes)
+// into fresh bytes: escapes decoded, \uXXXX (and surrogate pairs)
+// encoded as UTF-8. Returns packed `ptr << 32 | len`.
+//
+// `skip_string` must have accepted this range; decode still fails
+// closed (-400) on anything unexpected rather than emitting garbage.
+fn decode_string(input_ptr: i64 @Flow, body_start: i64 @Flow, body_end: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let out_ptr: i64 = alloc(body_end - body_start);
+    let mut o: i64 = 0;
+    let mut i: i64 = body_start;
+    while i < body_end {
+        let b: i64 = load8(input_ptr + i);
+        if b == 92 {
+            let e: i64 = load8(input_ptr + i + 1);
+            match e {
+                34 => { store8(out_ptr + o, 34); o += 1; i += 2; },
+                92 => { store8(out_ptr + o, 92); o += 1; i += 2; },
+                47 => { store8(out_ptr + o, 47); o += 1; i += 2; },
+                98 => { store8(out_ptr + o, 8); o += 1; i += 2; },
+                102 => { store8(out_ptr + o, 12); o += 1; i += 2; },
+                110 => { store8(out_ptr + o, 10); o += 1; i += 2; },
+                114 => { store8(out_ptr + o, 13); o += 1; i += 2; },
+                116 => { store8(out_ptr + o, 9); o += 1; i += 2; },
+                117 => {
+                    let u: i64 = read_hex4(input_ptr, i + 2, body_end);
+                    if u < 0 {
+                        return -400;
+                    } else {
+                    }
+                    i += 6;
+                    let mut cp: i64 = u;
+                    match u {
+                        0xD800..=0xDBFF => {
+                            // Validated surrogate pair: \uXXXX follows.
+                            let u2: i64 = read_hex4(input_ptr, i + 2, body_end);
+                            if u2 < 0 {
+                                return -400;
+                            } else {
+                            }
+                            cp = 65536 + (u - 0xD800) * 1024 + (u2 - 0xDC00);
+                            i += 6;
+                        },
+                        _ => {},
+                    }
+                    if cp < 128 {
+                        store8(out_ptr + o, cp);
+                        o += 1;
+                    } else {
+                        if cp < 2048 {
+                            store8(out_ptr + o, 0xC0 | (cp >> 6));
+                            store8(out_ptr + o + 1, 0x80 | (cp & 0x3F));
+                            o += 2;
+                        } else {
+                            if cp < 65536 {
+                                store8(out_ptr + o, 0xE0 | (cp >> 12));
+                                store8(out_ptr + o + 1, 0x80 | ((cp >> 6) & 0x3F));
+                                store8(out_ptr + o + 2, 0x80 | (cp & 0x3F));
+                                o += 3;
+                            } else {
+                                store8(out_ptr + o, 0xF0 | (cp >> 18));
+                                store8(out_ptr + o + 1, 0x80 | ((cp >> 12) & 0x3F));
+                                store8(out_ptr + o + 2, 0x80 | ((cp >> 6) & 0x3F));
+                                store8(out_ptr + o + 3, 0x80 | (cp & 0x3F));
+                                o += 4;
+                            }
+                        }
+                    }
+                },
+                _ => { return -400; },
+            }
+        } else {
+            store8(out_ptr + o, b);
+            o += 1;
+            i += 1;
+        }
+    }
+    return out_ptr << 32 | o;
+}
+
+// Compare a raw key body (bounds exclude quotes) against the caller's
+// literal key bytes, decoding escapes when present. Returns 1 on
+// match, 0 on mismatch, negative on malformed input.
+fn key_matches(
+    input_ptr: i64 @Flow,
+    body_start: i64 @Flow,
+    body_end: i64 @Flow,
+    key_ptr: i64 @Flow,
+    key_len: i64 @Flow
+) -> i64 @Flow ! { Alloc } {
+    let mut has_esc: i64 = 0;
+    let mut i: i64 = body_start;
+    while i < body_end {
+        if load8(input_ptr + i) == 92 {
+            has_esc = 1;
+            i = body_end;
+        } else {
+            i += 1;
+        }
+    }
+    if has_esc == 0 {
+        if body_end - body_start == key_len {
+            return bytes_eq(input_ptr + body_start, key_ptr, key_len);
+        } else {
+            return 0;
+        }
+    } else {
+        let packed: i64 = decode_string(input_ptr, body_start, body_end);
+        if packed < 0 {
+            return packed;
+        } else {
+        }
+        let dec_ptr: i64 = packed >> 32;
+        let dec_len: i64 = packed & 0xFFFFFFFF;
+        if dec_len == key_len {
+            return bytes_eq(dec_ptr, key_ptr, key_len);
+        } else {
+            return 0;
+        }
+    }
+}
+
+// Extract the value starting at `value_start` (ws already skipped):
+// strings are escape-decoded; everything else (numbers, literals,
+// nested objects/arrays) is returned as the raw byte slice. Returns
+// packed `ptr << 32 | len` or a negative error.
+fn extract_value(input_ptr: i64 @Flow, value_start: i64 @Flow, end: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    if value_start >= end {
+        return -400;
+    } else {
+    }
+    if load8(input_ptr + value_start) == 34 {
+        let close: i64 = skip_string(input_ptr, value_start, end);
+        if close < 0 {
+            return close;
+        } else {
+        }
+        return decode_string(input_ptr, value_start + 1, close - 1);
+    } else {
+    }
+    let after: i64 = skip_value(input_ptr, value_start, end);
+    if after < 0 {
+        return after;
+    } else {
+    }
+    let len: i64 = after - value_start;
+    let out_ptr: i64 = alloc(len);
+    let mut k: i64 = 0;
+    while k < len {
+        store8(out_ptr + k, load8(input_ptr + value_start + k));
+        k += 1;
+    }
+    return out_ptr << 32 | len;
+}
+
+// Find the named field in the top-level object and return its value
+// per the extraction rules above. Keys are compared after escape
+// decoding. See the module header for codes.
+pub fn parse_field(
+    input_ptr: i64 @Flow,
+    input_len: i64 @Flow,
+    key_ptr: i64 @Flow,
+    key_len: i64 @Flow
+) -> i64 @Flow ! { Alloc } {
+    let max_fields: i64 = 10000;
+    let end: i64 = input_len;
+    let mut i: i64 = skip_ws(input_ptr, 0, end);
+
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 123 {
+            i += 1;
+        } else {
+            return -400;
+        }
+    }
+
+    i = skip_ws(input_ptr, i, end);
+    if i >= end {
+        return -400;
+    } else {
+        // Empty object. Only legal here — after a comma a key is
+        // required, so `{"a": 1,}` is malformed, not "not found".
+        if load8(input_ptr + i) == 125 {
+            return -404;
+        } else {
+        }
+    }
+
+    let mut field_count: i64 = 0;
+
+    while i < end {
+        let key_start: i64 = i;
+        let key_close: i64 = skip_string(input_ptr, i, end);
+        if key_close < 0 {
+            return key_close;
+        } else {
+            i = key_close;
+        }
+
+        i = skip_ws(input_ptr, i, end);
+        if i >= end {
+            return -400;
+        } else {
+            if load8(input_ptr + i) == 58 {
+                i += 1;
+            } else {
+                return -400;
+            }
+        }
+        i = skip_ws(input_ptr, i, end);
+        let value_start: i64 = i;
+
+        let m: i64 = key_matches(input_ptr, key_start + 1, key_close - 1, key_ptr, key_len);
+        if m < 0 {
+            return m;
+        } else {
+        }
+        if m == 1 {
+            return extract_value(input_ptr, value_start, end);
+        } else {
+        }
+
+        let after: i64 = skip_value(input_ptr, value_start, end);
+        if after < 0 {
+            return after;
+        } else {
+            i = after;
+        }
+
+        field_count += 1;
+        if field_count > max_fields {
+            return -429;
+        } else {
+        }
+
+        i = skip_ws(input_ptr, i, end);
+        if i >= end {
+            return -400;
+        } else {
+            let sep: i64 = load8(input_ptr + i);
+            if sep == 44 {
+                i += 1;
+                i = skip_ws(input_ptr, i, end);
+            } else {
+                if sep == 125 {
+                    return -404;
+                } else {
+                    return -400;
+                }
+            }
+        }
+    }
+
+    return -400;
+}
+
+// Return element `index` (0-based) of the top-level array, per the
+// extraction rules above. -404 when the index is out of range.
+pub fn parse_index(input_ptr: i64 @Flow, input_len: i64 @Flow, index: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    if index < 0 {
+        return -404;
+    } else {
+    }
+    let max_elems: i64 = 10000;
+    let end: i64 = input_len;
+    let mut i: i64 = skip_ws(input_ptr, 0, end);
+
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 91 {
+            i += 1;
+        } else {
+            return -400;
+        }
+    }
+
+    i = skip_ws(input_ptr, i, end);
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 93 {
+            return -404;
+        } else {
+        }
+    }
+
+    let mut count: i64 = 0;
+
+    while i < end {
+        if count == index {
+            return extract_value(input_ptr, i, end);
+        } else {
+        }
+
+        let after: i64 = skip_value(input_ptr, i, end);
+        if after < 0 {
+            return after;
+        } else {
+            i = after;
+        }
+
+        count += 1;
+        if count > max_elems {
+            return -429;
+        } else {
+        }
+
+        i = skip_ws(input_ptr, i, end);
+        if i >= end {
+            return -400;
+        } else {
+            let sep: i64 = load8(input_ptr + i);
+            if sep == 44 {
+                i += 1;
+                i = skip_ws(input_ptr, i, end);
+            } else {
+                if sep == 93 {
+                    return -404;
+                } else {
+                    return -400;
+                }
+            }
+        }
+    }
+
+    return -400;
+}
+
+// Count the elements of the top-level array (validating each as it
+// goes). Trailing bytes after the closing `]` are NOT checked — use
+// `validate` for whole-document strictness. Allocation-free.
+pub fn array_len(input_ptr: i64 @Flow, input_len: i64 @Flow) -> i64 @Flow {
+    let max_elems: i64 = 10000;
+    let end: i64 = input_len;
+    let mut i: i64 = skip_ws(input_ptr, 0, end);
+
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 91 {
+            i += 1;
+        } else {
+            return -400;
+        }
+    }
+
+    i = skip_ws(input_ptr, i, end);
+    if i >= end {
+        return -400;
+    } else {
+        if load8(input_ptr + i) == 93 {
+            return 0;
+        } else {
+        }
+    }
+
+    let mut count: i64 = 0;
+
+    while i < end {
+        let after: i64 = skip_value(input_ptr, i, end);
+        if after < 0 {
+            return after;
+        } else {
+            i = after;
+        }
+
+        count += 1;
+        if count > max_elems {
+            return -429;
+        } else {
+        }
+
+        i = skip_ws(input_ptr, i, end);
+        if i >= end {
+            return -400;
+        } else {
+            let sep: i64 = load8(input_ptr + i);
+            if sep == 44 {
+                i += 1;
+                i = skip_ws(input_ptr, i, end);
+            } else {
+                if sep == 93 {
+                    return count;
+                } else {
+                    return -400;
+                }
+            }
+        }
+    }
+
+    return -400;
+}
+
+// Strict whole-document check: exactly one JSON value (any kind) plus
+// optional surrounding whitespace. Returns 0 when valid; -400 / -430
+// otherwise. Allocation-free.
+pub fn validate(input_ptr: i64 @Flow, input_len: i64 @Flow) -> i64 @Flow {
+    let end: i64 = input_len;
+    let mut i: i64 = skip_ws(input_ptr, 0, end);
+    if i >= end {
+        return -400;
+    } else {
+    }
+    let after: i64 = skip_value(input_ptr, i, end);
+    if after < 0 {
+        return after;
+    } else {
+    }
+    i = skip_ws(input_ptr, after, end);
+    if i == end {
+        return 0;
+    } else {
+        return -400;
+    }
+}
+
+// Encode arbitrary bytes as a quoted JSON string: `"` and `\` are
+// escaped, control bytes become \b \t \n \f \r or \u00XX, everything
+// else passes through (UTF-8 transparent). Exact-size two-pass.
+// Returns packed `ptr << 32 | len` INCLUDING the surrounding quotes.
+pub fn escape_string(input_ptr: i64 @Flow, input_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    // Pass 1: measure.
+    let mut total: i64 = 2;
+    let mut i: i64 = 0;
+    while i < input_len {
+        let b: i64 = load8(input_ptr + i);
+        if b == 34 {
+            total += 2;
+        } else {
+            if b == 92 {
+                total += 2;
+            } else {
+                if b < 32 {
+                    match b {
+                        8 => { total += 2; },
+                        9 => { total += 2; },
+                        10 => { total += 2; },
+                        12 => { total += 2; },
+                        13 => { total += 2; },
+                        _ => { total += 6; },
+                    }
+                } else {
+                    total += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Pass 2: emit.
+    let out_ptr: i64 = alloc(total);
+    store8(out_ptr, 34);
+    let mut o: i64 = 1;
+    i = 0;
+    while i < input_len {
+        let b: i64 = load8(input_ptr + i);
+        if b == 34 {
+            store8(out_ptr + o, 92);
+            store8(out_ptr + o + 1, 34);
+            o += 2;
+        } else {
+            if b == 92 {
+                store8(out_ptr + o, 92);
+                store8(out_ptr + o + 1, 92);
+                o += 2;
+            } else {
+                if b < 32 {
+                    match b {
+                        8 => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 98);
+                            o += 2;
+                        },
+                        9 => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 116);
+                            o += 2;
+                        },
+                        10 => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 110);
+                            o += 2;
+                        },
+                        12 => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 102);
+                            o += 2;
+                        },
+                        13 => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 114);
+                            o += 2;
+                        },
+                        _ => {
+                            store8(out_ptr + o, 92);
+                            store8(out_ptr + o + 1, 117);
+                            store8(out_ptr + o + 2, 48);
+                            store8(out_ptr + o + 3, 48);
+                            let hi: i64 = b >> 4;
+                            let lo: i64 = b & 0xF;
+                            if hi < 10 {
+                                store8(out_ptr + o + 4, 0x30 + hi);
+                            } else {
+                                store8(out_ptr + o + 4, 0x57 + hi);
+                            }
+                            if lo < 10 {
+                                store8(out_ptr + o + 5, 0x30 + lo);
+                            } else {
+                                store8(out_ptr + o + 5, 0x57 + lo);
+                            }
+                            o += 6;
+                        },
+                    }
+                } else {
+                    store8(out_ptr + o, b);
+                    o += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    store8(out_ptr + o, 34);
+    return out_ptr << 32 | total;
+}

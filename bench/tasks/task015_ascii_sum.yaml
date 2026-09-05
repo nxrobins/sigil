@@ -1,0 +1,23 @@
+id: task015_ascii_sum
+source_path: tools/task015_ascii_sum.sigil
+difficulty: basic
+description: |
+  Write a Sigil tool that sums the byte values of all input bytes and
+  returns the total as an ASCII-decimal string. Empty input sums to 0.
+  For example "A" (byte 65) returns "65"; "abc" returns "294". Return the
+  packed `(out_ptr * 4294967296 + len)` of the decimal-string buffer.
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }"
+required_attrs: []
+required_effects: ["Alloc"]
+required_grants: {}
+fuel_budget: 200000
+inputs:
+  - name: empty
+    value: ""
+  - name: single
+    value: A
+  - name: abc
+    value: abc
+  - name: hello
+    value: hello
+expected_output_strategy: capture_from_reference

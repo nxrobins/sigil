@@ -1,0 +1,46 @@
+// TASK: edge closures — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+        while n > 0 {
+            let q = n / 10;
+            let d = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out = alloc(digits);
+        let mut i = 0;
+        while i < digits {
+            let b = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+// Simulated mapping function: square each digit once. Sigil's surface syntax
+// for passing closures as parameters is limited; we use a helper instead.
+fn square(x: i64) -> i64 {
+    return x * x;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let b: i64 = load8(input_ptr);
+    let n: i64 = b - 48;
+    let result: i64 = square(n);
+    return render_decimal(result);
+}

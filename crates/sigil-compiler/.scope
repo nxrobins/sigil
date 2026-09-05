@@ -1,0 +1,53 @@
+description: Compiler crate for the Sigil Phase 2 analysis pipeline and Wasm backend
+includes:
+  - crates/sigil-compiler/
+  - Cargo.toml
+excludes:
+  - crates/sigil-compiler/target/
+context: |
+  This crate owns the compiler pipeline for Sigil source:
+  parser, name resolution, type checking and monomorphization, ring/effect/taint
+  analysis, AIR lowering, capability and ownership verification, memory/fuel
+  lowering, and Wasm generation.
+
+  Keep runtime host concerns out of this crate. The compiler should produce
+  artifacts and diagnostics; execution belongs in `sigil-runtime`.
+  Shared runtime-facing metadata belongs in `sigil-abi`.
+
+  Current implemented surface:
+  - module parsing supports `#[ring(...)]`, `#[trusted]`, top-level `use`,
+    `const`, `fn`, `actor`, `cap type`, `record`, `enum`, `effect`, and
+    `extern "C"` declarations
+  - expressions and statements cover fallible flow (`Ok`, `Err`, `?`), `if`,
+    `while`, `for .. in`, `match`, closures, region blocks, grants,
+    declassification, and actor messaging
+  - type checking handles generics with eager monomorphization, record/enum/array
+    types, closure capture analysis, actor/handler typing, and runtime-ABI
+    restrictions for message payloads
+  - ring, effect, and taint passes run as first-class compiler checks after
+    type checking
+  - AIR lowering carries explicit control flow, bump allocation, capability
+    restrict/split ops, message serialization metadata, and stable actor/handler
+    ids for runtime calls
+  - capability and ownership verification perform bounded checks over AIR for
+    forged caps, invalid spawn capability flow, duplicate linear use, and
+    use-after-move
+  - Wasm emission supports the host ABI surface for `fuel_decrement`, `send`,
+    `ask`, `spawn`, `alloc`, `cap_restrict`, `cap_split`, and `fuel_exhausted`
+  - outer-ring code can emit a reduced-import Wasm module, and tool modules can
+    be compiled through `compile_tool` for ephemeral execution
+
+  Use `crates/sigil-compiler/src/.scope` for implementation-local edits once the
+  crate boundary is clear.
+related:
+  - crates/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-cli/.scope
+  - crates/sigil-compiler/src/.scope
+tags:
+  - compiler
+  - rust
+  - wasm
+  - z3
+  - phase2

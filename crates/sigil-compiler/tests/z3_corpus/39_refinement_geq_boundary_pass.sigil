@@ -1,0 +1,27 @@
+// expect-ok
+// Z3 corpus #39: axis-1 — refinement with >= accepts boundary value.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A function requiring `where x >= 0` accepts the literal `0`. This
+// is the non-strict inequality counterpart to fixture #53 (which tests
+// `where x > 0` rejecting `0`). Together they pin the strict vs
+// non-strict distinction in the Z3 assertion layer.
+//
+// Existing parameter refinement fixtures (52-57) all use `>` (strict).
+// This fixture adds coverage for `>=` (non-strict), ensuring the LIA
+// assertion correctly encodes `>=` rather than accidentally using `>`.
+//
+// An implementation that used `>` instead of `>=` would reject this
+// fixture incorrectly.
+module sigil;
+
+fn accept_non_negative(x: i64) where x >= 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Start() -> i64 {
+        return accept_non_negative(0);
+    }
+}

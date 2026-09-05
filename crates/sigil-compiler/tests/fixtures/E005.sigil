@@ -1,0 +1,10 @@
+// E005 — `perform E.op(..)` names an operation the effect does not declare.
+module sigil;
+
+effect Reader {
+    fn get() -> i64;
+}
+
+fn f() -> i64 {
+    return perform Reader.missing();
+}

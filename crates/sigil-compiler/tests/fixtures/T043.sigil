@@ -1,0 +1,23 @@
+// expect-error: T043
+//
+// T043 — reassignment forbidden because the value owns a capability
+// (linear) or a borrow (scope-tied).
+//
+// Before Wall 1 Step 1, T043 fired on *any* non-primitive reassignment
+// (records, enums, arrays, str, ActorRef were all rejected). After
+// Step 1, T043 fires only when the type transitively owns a linear or
+// scope-tied resource. The most direct trigger is reassigning a
+// capability-typed variable.
+//
+// MUTATION_SITE: line 19. Removing the second `f = ...` line eliminates
+// the reassignment; the fixture then compiles cleanly (T043 doesn't
+// fire) — proving this test pins the cap-reassignment code path.
+module main;
+
+cap type Fuel { burn }
+
+fn boot(seed: Fuel) -> i64 {
+    let mut f: Fuel = seed;
+    f = seed;  // MUTATION_SITE — reassigning a cap-typed variable fires T043
+    return 0;
+}

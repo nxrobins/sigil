@@ -1,0 +1,20 @@
+// Allocate a buffer, populate it, then sum the values.
+// Exercises Alloc effect declaration and use.
+// 03_json_sum pair — SIGIL side.
+module sum;
+
+pub fn sum_n(n: i64) -> i64 ! { Alloc } {
+    let buf: i64 = alloc(n * 8);
+    let mut i: i64 = 0;
+    while i < n {
+        store8(buf + i * 8, i + 1);
+        i = i + 1;
+    }
+    let mut total: i64 = 0;
+    let mut j: i64 = 0;
+    while j < n {
+        total = total + load8(buf + j * 8);
+        j = j + 1;
+    }
+    return total;
+}

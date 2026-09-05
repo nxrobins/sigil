@@ -1,0 +1,7 @@
+struct Point { x: i64, y: i64 }
+pub fn dist_sq(p: Point) -> i64 {
+    return p.x * p.x + p.y * p.y;
+}
+pub fn make(a: i64, b: i64) -> Point {
+    return Point { y: b, x: a };
+}

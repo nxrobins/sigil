@@ -1,0 +1,38 @@
+# The Rust toolchain is PINNED, not floating.
+#
+# Why: on 2026-08-23 the `checks` and `solver` lanes -- two of the six required
+# status checks -- went red with ZERO Rust files changed on this branch. rustc
+# 1.98.0 had been released five days earlier, `dtolnay/rust-toolchain` resolves
+# to whatever `stable` is that morning, and 1.98.0 shipped a new lint
+# (clippy::chunks_exact_to_as_chunks) that fires under the `-D warnings` those
+# lanes enforce. A toolchain release is not a change to this repository and must
+# not be able to red its required checks.
+#
+# The version here is a MEASUREMENT, not a preference: 1.98.0 is green on the
+# committed tree as of 28fea7a4, which fixed that lint's one site
+# (crates/sigil-runtime/src/runtime.rs). Verified directly at this pin:
+# `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`
+# exits 0.
+#
+# rustup reads this file for every cargo and rustc invocation, so CI and local
+# development agree by construction -- there is no second place to update and
+# therefore nothing to drift. The `# stable` comments beside the SHA-pinned
+# `dtolnay/rust-toolchain` steps in .github/workflows/ci.yml name that action's
+# own default; THIS file decides the version actually used.
+#
+# To upgrade: bump `channel`, run the gate, and land the bump together with any
+# lint fixes the new release demands -- in one commit, so the reason the version
+# moved is legible in a single diff. That is the whole point of pinning: a
+# compiler upgrade becomes a reviewable decision instead of a morning surprise.
+#
+# `targets` IS LOAD-BEARING, and is the pin's one sharp edge. The portability
+# lane cross-builds x86_64-apple-darwin, and its `dtolnay/rust-toolchain` step
+# adds that target to the toolchain IT installs -- `stable`. This file then
+# redirects every cargo invocation to the pinned channel, which would NOT have
+# the target, and the cross-build fails with the release binary that lane exists
+# to prove. Naming the target here keeps one source of truth: the file that
+# decides the version also decides what that version can build.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-apple-darwin"]

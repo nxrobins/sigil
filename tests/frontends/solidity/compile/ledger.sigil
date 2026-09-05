@@ -1,0 +1,17 @@
+module ledger;
+
+record Ledger { balances: BoundedMap_u256_u256_64, total: u256 }
+
+impl Ledger {
+    pub fn new() -> Ledger {
+        return Ledger { balances: BoundedMap_u256_u256_64::new(), total: 0 };
+    }
+
+    pub fn balanceOf(self: Ledger, who: u256) -> u256 {
+        return self.balances.get_or(who, 0);
+    }
+
+    pub fn mint(self: Ledger @Mut, to: u256, amount: u256) {
+        self.balances.insert(to, (self.balances.get_or(to, 0) + amount));
+    }
+}

@@ -1,0 +1,42 @@
+// DEMONSTRATES: Slot<T> linear-cap aggregation. SIGIL's Slot<T> built-in is a
+// single-cell holder for caps; slot_put(s, c) inserts a cap, slot_take(s)
+// consumes the slot and returns the cap with Z3-propagated authority. The
+// pattern is the building block for M-of-N quorum, asynchronous cap arrival,
+// and grant aggregation.
+//
+// This is an ACTOR-ENTRY demo, not a tool: Slot<T> aggregation with linear
+// caps is inherently actor-world (caps, handlers, persistent state), so the
+// demonstrator is the `entry actor Main` itself — its state holds the
+// Slot<Fuel>, `on Stash` shows the put pattern, `on Drain` shows take. A tool
+// (`pub fn tool_main`, the ephemeral forge) could not run this: the forge has
+// no actors, so its send/spawn/cap machinery traps (RTC-NOOP slice 1) and the
+// compiler rejects an actor in a tool project (M011, RTC-NOOP slice 2).
+// INPUT: implicit; an entry actor has no tool_main entry.
+// OUTPUT: i64 from each handler (1 on success).
+// EFFECTS: actor-internal.
+// SEE ALSO: tools/spawn_send_demo.sigil for the actor-entry spawn shape;
+// tests/z3_corpus/17_m_of_n_quorum.sigil for the M-of-N pattern,
+// tests/z3_corpus/12_quorum_accumulation_wall.sigil for the wall fixture.
+
+module tool;
+
+cap type Fuel {}
+
+// Demonstrator: an entry actor whose state aggregates a cap via Slot<Fuel>.
+// The `on Stash` handler shows the put pattern; `on Drain` shows take.
+entry actor Main {
+    state {
+        bucket: Slot<Fuel>,
+    }
+
+    on Stash(c: Fuel) -> i64 {
+        slot_put(bucket, c);
+        return 1;
+    }
+
+    on Drain() -> i64 {
+        let recovered: Fuel = slot_take(bucket);
+        let _burned = recovered.draw(1);
+        return 1;
+    }
+}

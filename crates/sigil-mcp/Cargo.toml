@@ -1,0 +1,22 @@
+[package]
+name = "sigil-mcp"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sigil-mcp"
+path = "src/main.rs"
+
+[features]
+# Enable the full Z3-backed verification path. OFF by default (no z3 in the TCB);
+# a release build should enable it so compiled/executed programs are checked
+# with the solver rather than structurally only. Requires z3 dev headers.
+solver = ["sigil-compiler/solver", "sigil-runtime/solver"]
+
+[dependencies]
+anyhow = { workspace = true }
+sigil-compiler = { path = "../sigil-compiler", default-features = false, features = ["json"] }
+sigil-runtime = { path = "../sigil-runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

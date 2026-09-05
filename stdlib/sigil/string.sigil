@@ -1,0 +1,364 @@
+// stdlib::string — the public OWNED string-CONSTRUCTION module (PR S2).
+//
+// SEPARATE from the borrowing `strings.sigil` (note the singular name): the
+// functions here ALLOCATE fresh content bytes, whereas `strings.sigil`'s readers
+// only ever return views into existing bytes. Keeping them apart means a program
+// that only borrows (`.find` / `.substr` / `.split_on`) never gains the owned-
+// construction code — the module is injected ONLY when an owned builder
+// (`.concat(` …) is actually used (ET-5 byte-identity).
+//
+// An owned `str` is the SAME `str` type as a literal or a borrowed view — only
+// the PROVENANCE differs (fresh heap bytes vs static / borrowed). Each builder
+// reads its inputs via the bounds-checked `byte_at`, writes into a fresh `alloc`
+// buffer via `store8`, and wraps the buffer as a `str` via the stdlib-private
+// `str_from_raw` forge (T257 keeps that forge in THIS module). Every builder
+// allocates EXACTLY ONCE from a provably-non-negative total (alloc'd ≡ len ≡
+// written — ET-4), and RETURNS A FRESH value (never an input param), so the
+// default-frozen escape gate (T253) is satisfied with no `@Mut` needed.
+//
+// Confidentiality rides the call boundary, not the bytes: a call's result taint
+// is `lub(callee_ret, args)`, so `str_concat(@SecretCT a, _)` returns `@SecretCT`
+// automatically (no laundering — the retracted ET-3).
+
+module string;
+
+/// `a.concat(b)` — a fresh `str` holding `a`'s bytes immediately followed by
+/// `b`'s. Allocates `a.len() + b.len()` bytes once, copies `a` then `b`, and
+/// wraps the buffer. An empty operand contributes zero bytes (its copy loop runs
+/// zero times), so `a.concat("")` is a fresh copy of `a` and `"".concat(b)` a
+/// fresh copy of `b` — both correct with no special-case fast path (which would
+/// otherwise risk returning a frozen input and tripping T253).
+pub fn str_concat(a: str, b: str) -> str ! { Alloc } {
+    let alen: i64 = a.len();
+    let blen: i64 = b.len();
+    let total: i64 = alen + blen;
+    let buf: i64 = alloc(total);
+    let mut i: i64 = 0;
+    while i < alen {
+        store8(buf + i, a.byte_at(i));
+        i = i + 1;
+    }
+    let mut j: i64 = 0;
+    while j < blen {
+        store8(buf + alen + j, b.byte_at(j));
+        j = j + 1;
+    }
+    return str_from_raw(buf, total);
+}
+
+/// `sep.join(pieces)` — a fresh `str` joining every element of `pieces` with
+/// `sep` between adjacent elements. Allocates EXACTLY once from a provably
+/// non-negative total: the sum of the piece lengths plus `(n - 1) * sep.len()`
+/// separators, where the `(n - 1)` term is GUARDED by `n > 0` so the empty
+/// vector (n=0) never underflows (ET-4). `join` of zero pieces is `""`; of one
+/// piece, a fresh COPY of that piece (never the input itself → no T253).
+pub fn str_join(sep: str, pieces: Vec<str>) -> str ! { Alloc } {
+    let n: i64 = pieces.len();
+    let slen: i64 = sep.len();
+    let mut total: i64 = 0;
+    let mut i: i64 = 0;
+    while i < n {
+        let p: str = pieces.get(i);
+        total = total + p.len();
+        i = i + 1;
+    }
+    if n > 0 {
+        total = total + (n - 1) * slen;
+    } else {
+    }
+    let buf: i64 = alloc(total);
+    let mut w: i64 = 0;
+    let mut k: i64 = 0;
+    while k < n {
+        if k > 0 {
+            let mut s: i64 = 0;
+            while s < slen {
+                store8(buf + w, sep.byte_at(s));
+                w = w + 1;
+                s = s + 1;
+            }
+        } else {
+        }
+        let piece: str = pieces.get(k);
+        let plen: i64 = piece.len();
+        let mut q: i64 = 0;
+        while q < plen {
+            store8(buf + w, piece.byte_at(q));
+            w = w + 1;
+            q = q + 1;
+        }
+        k = k + 1;
+    }
+    return str_from_raw(buf, total);
+}
+
+/// `n.itoa()` — a fresh decimal `str` for the i64 `n`. Handles `0`, negatives,
+/// and `i64::MIN` (whose magnitude is not representable as a positive i64): all
+/// digit math runs in NEGATIVE space (the working magnitude `m` is kept <= 0),
+/// so nothing is ever negated and no overflow can occur. Allocates exactly once
+/// — the digit count, plus one for a leading '-'.
+pub fn str_itoa(n: i64) -> str ! { Alloc } {
+    if n == 0 {
+        let z: i64 = alloc(1);
+        store8(z, 48);
+        return str_from_raw(z, 1);
+    } else {
+    }
+    let neg: bool = n < 0;
+    // Keep the magnitude in NEGATIVE space so i64::MIN stays representable.
+    let mut m: i64 = n;
+    if n > 0 {
+        m = 0 - n;
+    } else {
+    }
+    // Count digits (m <= -1 here, so the loop runs at least once).
+    let mut digits: i64 = 0;
+    let mut c: i64 = m;
+    while c < 0 {
+        digits = digits + 1;
+        c = c / 10;
+    }
+    let mut total: i64 = digits;
+    if neg {
+        total = total + 1;
+    } else {
+    }
+    let buf: i64 = alloc(total);
+    if neg {
+        store8(buf, 45);
+    } else {
+    }
+    // Fill digits right-to-left. `d % 10` is <= 0 (truncated division keeps the
+    // dividend's sign), so the ASCII digit is `48 - (d % 10)`.
+    let mut w: i64 = total - 1;
+    let mut d: i64 = m;
+    while d < 0 {
+        let digit: i64 = 0 - (d % 10);
+        store8(buf + w, 48 + digit);
+        w = w - 1;
+        d = d / 10;
+    }
+    return str_from_raw(buf, total);
+}
+
+/// PR-E3b — the canonical `bool` → `str` rendering used by f-string interpolation
+/// (`f"ok={b}"`). `if` is statement-only in SIGIL, so this is a two-arm return, not
+/// an inline expression. Returns a static string literal (no allocation).
+pub fn str_of_bool(b: bool) -> str {
+    if b {
+        return "true";
+    } else {
+        return "false";
+    }
+}
+
+/// PRIVATE — the full RFC 3629 / Unicode Table 3-7 UTF-8 well-formedness DFA over
+/// `s`. Returns the byte index of the first invalid sequence, or `s.len()` if every
+/// byte belongs to a valid codepoint. The SINGLE source of truth for both
+/// `str_from_bytes` (valid iff the prefix reaches `len`) and `str_valid_up_to` (the
+/// offset itself) — so the rail can never disagree with the floor. Every iteration
+/// strictly advances `i` (by 1/2/3/4) or sets `i = n` to stop, so the scan runs at
+/// most `n` iterations and always terminates (ET-3). A `i + needed <= n` truncation
+/// guard precedes every continuation read, so `byte_at` only ever touches `[0, n)`
+/// (ET-5). `byte_at` returns an unsigned 0..255, which the range tests below assume.
+fn utf8_valid_prefix(s: str) -> i64 {
+    let n: i64 = s.len();
+    let mut i: i64 = 0;
+    let mut bad: i64 = 0 - 1;
+    while i < n {
+        let b0: i64 = s.byte_at(i);
+        if b0 < 0x80 {
+            // 1-byte ASCII 0x00..0x7F.
+            i = i + 1;
+        } else {
+            if b0 < 0xC2 {
+                // 0x80..0xBF orphan continuation, or 0xC0/0xC1 overlong lead.
+                bad = i;
+                i = n;
+            } else {
+                if b0 < 0xE0 {
+                    // 2-byte: lead 0xC2..0xDF + one continuation.
+                    if i + 2 > n {
+                        bad = i;
+                        i = n;
+                    } else {
+                        let c1: i64 = s.byte_at(i + 1);
+                        if (c1 & 0xC0) != 0x80 {
+                            bad = i;
+                            i = n;
+                        } else {
+                            i = i + 2;
+                        }
+                    }
+                } else {
+                    if b0 < 0xF0 {
+                        // 3-byte: lead 0xE0..0xEF + two continuations. The second
+                        // byte's bound is lead-dependent: 0xE0 -> 0xA0..0xBF (reject
+                        // overlong), 0xED -> 0x80..0x9F (reject surrogate).
+                        if i + 3 > n {
+                            bad = i;
+                            i = n;
+                        } else {
+                            let c1: i64 = s.byte_at(i + 1);
+                            let c2: i64 = s.byte_at(i + 2);
+                            let mut lo: i64 = 0x80;
+                            let mut hi: i64 = 0xBF;
+                            if b0 == 0xE0 {
+                                lo = 0xA0;
+                            } else {
+                            }
+                            if b0 == 0xED {
+                                hi = 0x9F;
+                            } else {
+                            }
+                            if c1 < lo {
+                                bad = i;
+                                i = n;
+                            } else {
+                                if c1 > hi {
+                                    bad = i;
+                                    i = n;
+                                } else {
+                                    if (c2 & 0xC0) != 0x80 {
+                                        bad = i;
+                                        i = n;
+                                    } else {
+                                        i = i + 3;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        if b0 < 0xF5 {
+                            // 4-byte: lead 0xF0..0xF4 + three continuations. Second
+                            // byte: 0xF0 -> 0x90..0xBF (reject overlong), 0xF4 ->
+                            // 0x80..0x8F (reject > U+10FFFF).
+                            if i + 4 > n {
+                                bad = i;
+                                i = n;
+                            } else {
+                                let c1: i64 = s.byte_at(i + 1);
+                                let c2: i64 = s.byte_at(i + 2);
+                                let c3: i64 = s.byte_at(i + 3);
+                                let mut lo: i64 = 0x80;
+                                let mut hi: i64 = 0xBF;
+                                if b0 == 0xF0 {
+                                    lo = 0x90;
+                                } else {
+                                }
+                                if b0 == 0xF4 {
+                                    hi = 0x8F;
+                                } else {
+                                }
+                                if c1 < lo {
+                                    bad = i;
+                                    i = n;
+                                } else {
+                                    if c1 > hi {
+                                        bad = i;
+                                        i = n;
+                                    } else {
+                                        if (c2 & 0xC0) != 0x80 {
+                                            bad = i;
+                                            i = n;
+                                        } else {
+                                            if (c3 & 0xC0) != 0x80 {
+                                                bad = i;
+                                                i = n;
+                                            } else {
+                                                i = i + 4;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // 0xF5..0xFF: never a valid lead.
+                            bad = i;
+                            i = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if bad < 0 {
+        return n;
+    } else {
+        return bad;
+    }
+}
+
+/// `ptr.from_bytes(len)` — validate the raw bytes `[ptr, ptr+len)` as UTF-8 and, on
+/// success, return an OWNED `str`: a fresh-`alloc`'d COPY of the bytes, NEVER a view
+/// aliasing the untrusted input (ET-1). `None` if the bytes are not valid UTF-8.
+/// A negative `len` is rejected BEFORE any forge (ET-4); empty (`len == 0`) is
+/// `Some("")`. The forged `view` is validation-scaffolding — it is never returned.
+/// This is the safe, validating counterpart to the unsafe `str_from_raw`: it extends
+/// the "every `str` is valid UTF-8" invariant to bytes from outside the type system.
+pub fn str_from_bytes(ptr: i64, len: i64) -> Option<str> ! { Alloc } {
+    if len < 0 {
+        return None;
+    } else {
+    }
+    let view: str = str_from_raw(ptr, len);
+    if utf8_valid_prefix(view) == len {
+        let buf: i64 = alloc(len);
+        let mut i: i64 = 0;
+        while i < len {
+            store8(buf + i, view.byte_at(i));
+            i = i + 1;
+        }
+        return Some(str_from_raw(buf, len));
+    } else {
+        return None;
+    }
+}
+
+/// `ptr.valid_up_to(len)` — the count of leading valid UTF-8 bytes in
+/// `[ptr, ptr+len)`: `== len` iff the whole range is valid, else the byte offset of
+/// the first invalid sequence (Rust's `Utf8Error::valid_up_to`). The RAIL to
+/// `from_bytes`'s floor — same DFA core, so they agree by construction. A negative
+/// `len` is `0`. Returns an `i64` offset and never a `str`, so no forge escapes.
+pub fn str_valid_up_to(ptr: i64, len: i64) -> i64 ! { Alloc } {
+    if len < 0 {
+        return 0;
+    } else {
+    }
+    let view: str = str_from_raw(ptr, len);
+    return utf8_valid_prefix(view);
+}
+
+/// UNSIGNED i→a: the `u64` counterpart of `str_itoa`. Works in POSITIVE space
+/// (u64 has no sign), using unsigned u64 div/mod (PR-A's codegen fix makes
+/// `/`/`%`/`>` on u64 correct above 2^63). `u64.to_string()` routes here, since
+/// a u64 ≥ 2^63 cannot widen to i64. `n == 0` → "0".
+pub fn str_utoa_u64(n: u64) -> str ! { Alloc } {
+    let zero: u64 = 0;
+    if n == zero {
+        let z: i64 = alloc(1);
+        store8(z, 48);
+        return str_from_raw(z, 1);
+    } else {
+    }
+    let ten: u64 = 10;
+    // Count digits.
+    let mut digits: i64 = 0;
+    let mut c: u64 = n;
+    while c > zero {
+        digits = digits + 1;
+        c = c / ten;
+    }
+    let buf: i64 = alloc(digits);
+    // Fill right-to-left.
+    let mut w: i64 = digits - 1;
+    let mut d: u64 = n;
+    while d > zero {
+        let rem: u64 = d % ten;
+        let digit: i64 = rem.as_i64();
+        store8(buf + w, 48 + digit);
+        w = w - 1;
+        d = d / ten;
+    }
+    return str_from_raw(buf, digits);
+}

@@ -1,0 +1,96 @@
+---
+source: crates/sigil-compiler/tests/snap_typecheck.rs
+expression: "&typed"
+---
+TypedProgram {
+    modules: [
+        TypedModule {
+            def_id: DefId(
+                0,
+            ),
+            name: "m",
+            ring: Inner,
+            trusted: false,
+            span: Span {
+                start: 0,
+                end: 54,
+                source: SourceId(
+                    4294967295,
+                ),
+            },
+            functions: [
+                TypedFunction {
+                    name: "m::always_abort",
+                    export_name: "m__always_abort",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [],
+                    captures: [],
+                    ret: I64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Expr(
+                                TypedExprStmt {
+                                    expr: TypedExpr {
+                                        ty: Never,
+                                        kind: Intrinsic(
+                                            TypedIntrinsicExpr {
+                                                kind: Trap,
+                                                args: [],
+                                            },
+                                        ),
+                                        span: Span {
+                                            start: 45,
+                                            end: 51,
+                                            source: SourceId(
+                                                4294967295,
+                                            ),
+                                        },
+                                        refinement: None,
+                                    },
+                                    span: Span {
+                                        start: 45,
+                                        end: 52,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 39,
+                            end: 54,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 10,
+                        end: 54,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+            ],
+        },
+    ],
+    records: {},
+    enums: {},
+    effect_registry: EffectRegistry {
+        effects: {
+            "FFI": 0,
+            "Unsafe": 1,
+        },
+        next_id: 2,
+    },
+    effect_ops: {},
+}

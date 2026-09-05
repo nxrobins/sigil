@@ -1,0 +1,66 @@
+// TASK: omni concat files — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "pathA:pathB". Concatenate their contents.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw_a: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw_a < 0 {
+        return raw_a;
+    } else {
+    }
+    let path_b_off: i32 @Internal = sep32 + one_i32;
+    let path_b_len: i32 @Internal = input_len - path_b_off;
+    let raw_b: i64 @Internal = fs_read(input_ptr + path_b_off, path_b_len);
+    if raw_b < 0 {
+        return raw_b;
+    } else {
+    }
+
+    let a_ptr: i64 @Internal = raw_a / 4294967296;
+    let a_len: i64 @Internal = raw_a - a_ptr * 4294967296;
+    let b_ptr: i64 @Internal = raw_b / 4294967296;
+    let b_len: i64 @Internal = raw_b - b_ptr * 4294967296;
+
+    let out: i64 @Internal = alloc(a_len + b_len);
+    let mut i: i64 @Internal = 0;
+    while i < a_len {
+        let bb: i64 @Internal = load8(a_ptr + i);
+        store8(out + i, bb);
+        i = i + 1;
+    }
+    let mut j: i64 @Internal = 0;
+    while j < b_len {
+        let bb2: i64 @Internal = load8(b_ptr + j);
+        store8(out + a_len + j, bb2);
+        j = j + 1;
+    }
+    let total: i64 @Internal = a_len + b_len;
+    return out * 4294967296 + total;
+}

@@ -1,0 +1,96 @@
+// TASK: log timestamps — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn append_segment(
+    out_ptr: i64 @Internal,
+    out_len_in: i64 @Internal,
+    file_ptr: i64 @Internal,
+    start: i64 @Internal,
+    end: i64 @Internal,
+) -> i64 @Internal ! {} {
+    let mut out_len: i64 @Internal = out_len_in;
+    let mut i: i64 @Internal = start;
+
+    while i < end {
+        let b: i64 @Internal = load8(file_ptr + i);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        i = i + 1;
+    }
+
+    return out_len;
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let file_ptr: i64 @Internal = raw / 4294967296;
+        let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+        let out_ptr: i64 @Internal = alloc(file_len);
+        let mut out_len: i64 @Internal = 0;
+        let mut line_start: i64 @Internal = 0;
+        let mut token_end: i64 @Internal = 0;
+        let mut saw_space: i64 @Internal = 0;
+        let mut wrote_any: i64 @Internal = 0;
+        let mut i: i64 @Internal = 0;
+
+        while i < file_len {
+            let b: i64 @Internal = load8(file_ptr + i);
+
+            if b == 10 {
+                if wrote_any == 1 {
+                    store8(out_ptr + out_len, 10);
+                    out_len = out_len + 1;
+                } else {
+                }
+
+                if saw_space == 1 {
+                    out_len = append_segment(out_ptr, out_len, file_ptr, line_start, token_end);
+                } else {
+                    out_len = append_segment(out_ptr, out_len, file_ptr, line_start, i);
+                }
+                wrote_any = 1;
+                line_start = i + 1;
+                token_end = i + 1;
+                saw_space = 0;
+            } else {
+                if saw_space == 0 {
+                    if b == 32 {
+                        token_end = i;
+                        saw_space = 1;
+                    } else {
+                    }
+                } else {
+                }
+            }
+
+            i = i + 1;
+        }
+
+        if line_start < file_len {
+            if wrote_any == 1 {
+                store8(out_ptr + out_len, 10);
+                out_len = out_len + 1;
+            } else {
+            }
+
+            if saw_space == 1 {
+                out_len = append_segment(out_ptr, out_len, file_ptr, line_start, token_end);
+            } else {
+                out_len = append_segment(out_ptr, out_len, file_ptr, line_start, file_len);
+            }
+        } else {
+        }
+
+        return out_ptr * 4294967296 + out_len;
+    }
+}

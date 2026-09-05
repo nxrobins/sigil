@@ -1,0 +1,9 @@
+module nested_struct;
+record Inner { v: i64 }
+record Outer { inner: Inner, tag: bool }
+pub fn get_v(o: Outer) -> i64 {
+  return o.inner.v;
+}
+pub fn wrap(n: i64) -> Outer {
+  return Outer { inner: Inner { v: n }, tag: true };
+}

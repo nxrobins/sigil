@@ -1,0 +1,27 @@
+// expect-error: T127
+// A closure is lambda-lifted to a top-level function whose ABI carries an `__env`
+// pointer, NOT the actor's state pointer — so an actor state field is unreachable
+// inside a closure body. Capturing the state cap `fuel` into the closure is
+// rejected fail-closed (T127). This also closes the closure laundering channel:
+// a closure that captured a state cap and consumed it (here `spawn::<Worker>(fuel)`)
+// would otherwise bypass the borrow-only C010 check. To use a state capability
+// non-consumingly, borrow it with `grant(&fuel, fn(r: &Fuel) -> … { … })` — whose
+// closure receives a `&Fuel` PARAMETER rather than capturing the field.
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 { return 0; }
+
+    on Tick() -> i64 {
+        let leak = fn() -> i64 { let w = spawn::<Worker>(fuel); return 0; };
+        return 0;
+    }
+}

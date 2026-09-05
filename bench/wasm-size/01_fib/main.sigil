@@ -1,0 +1,11 @@
+// Pure recursive fibonacci. No caps. No effects.
+// 01_fib pair — SIGIL side.
+module fib;
+
+pub fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n;
+    } else {
+        return fib(n - 1) + fib(n - 2);
+    }
+}

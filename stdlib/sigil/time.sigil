@@ -1,0 +1,23 @@
+// Phase 5a-3: stdlib `time` module — wall-clock access.
+//
+// Tools that `use sigil::time;` MUST declare `#[ring(outer)] #[trusted]`
+// (per R004) and supply a `TimeGrant::Wall` in their grants — without
+// it, `now_ms` returns -403.
+//
+// PER I18: `time::now_ms` is WALL CLOCK ONLY and may DECREASE on NTP
+// correction or manual clock change. Stdlib must not assume monotonicity.
+// A separate `monotonic_ms` is reserved for future expansion when the
+// runtime supports a monotonic clock grant.
+#[ring(outer)] #[trusted] module time;
+
+extern "C" fn time_now() -> i64 ! { FFI, Unsafe };
+
+// Unix epoch milliseconds. Returns the raw timestamp on success, or
+// -403 if the caller doesn't hold `TimeGrant::Wall`.
+//
+// NOTE: this is a raw integer return, NOT a packed pointer. Tools that
+// want to format the timestamp as a string for output should pair it
+// with a render helper (e.g. crypto::hex_encode-style decimal renderer).
+pub fn now_ms() -> i64 @Internal ! { FFI, Unsafe } {
+    return time_now();
+}

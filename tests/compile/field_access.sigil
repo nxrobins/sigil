@@ -1,0 +1,19 @@
+// Test: record construction and field access
+module sigil;
+cap type Fuel {}
+
+record Point { x: i64, y: i64 }
+
+fn distance_squared(p: Point) -> i64 {
+    return p.x * p.x + p.y * p.y;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let p = Point { x: 3, y: 4 };
+        let d = distance_squared(p);
+        return d;
+    }
+}

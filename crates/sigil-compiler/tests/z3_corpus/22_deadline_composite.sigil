@@ -1,0 +1,66 @@
+// expect-ok
+// Z3 corpus #22: axis-1 — deadline-typed caps, Stage 3 closure composite.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 2's three-stage deadline-typed cap rollout is closed. This
+// fixture exercises the full composition of every primitive shipped
+// across the stages:
+//
+//   Stage 1 (parametric grammar + covariant subtyping):
+//     * `cap type Approval(deadline_ms: i64) {}` declares a parametric
+//       cap whose type identity carries an `i64` value.
+//     * Subtyping is covariant: a cap with a longer deadline is
+//       acceptable wherever a shorter-lived one is required
+//       (`Approval(2030) <: Approval(2025)`).
+//
+//   Stage 2 (build-deadline + restrict_deadline):
+//     * `cap.restrict_deadline(D')` narrows a parametric cap's
+//       declared deadline. The output type is `Cap(name, D')`; the
+//       source cap is consumed (linear move). Extension fires T200.
+//     * `--build-deadline <N>` rejects any literal `Cap(D)` at a
+//       type position where `D < N` (T199).
+//
+//   Stage 3 (closes the narrowing escape hatch):
+//     * `restrict_deadline(D')` now also enforces `D' >= BUILD_NOW`
+//       when `--build-deadline` is set. The method-call literal is
+//       checked alongside type-position literals.
+//
+// THE COMPOSITE SHAPE
+//
+// `Main` holds a cap of type `Approval(2030)`. The handler:
+//   1. Narrows the deadline via `.restrict_deadline(2026)` to obtain
+//      a fresh `Approval(2026)` cap (the original is consumed).
+//   2. Passes the narrowed cap to a sink that accepts `Approval(2025)`.
+//      Covariant subtyping: `2026 >= 2025`, so the call is accepted.
+//
+// Two stages of narrowing (state's 2030 → 2026 via restrict_deadline →
+// 2025 via covariant subtyping at the sink) all type-check cleanly.
+// Stage 3's escape-hatch close is a no-op here because no
+// `--build-deadline` is supplied at corpus compile time; it would
+// fire only if the user passed `--build-deadline 2027` (since
+// `restrict_deadline(2026)` would then be `< BUILD_NOW`).
+//
+// MUTATION CONTRACT
+//
+// Not applicable. This is an `expect-ok` fixture — positive evidence
+// of expressiveness. Removing any line would break compilation, not
+// flip a verdict.
+module sigil;
+
+cap type Approval(deadline_ms: i64) {}
+
+fn settle_before_2025(c: Approval(2025)) -> i64 {
+    return 1;
+}
+
+entry actor Main {
+    state { authority: Approval(2030) }
+
+    on Start() -> i64 {
+        let narrowed = authority.restrict_deadline(2026);
+        // narrowed: Approval(2026). Sink takes Approval(2025).
+        // Covariance: 2026 >= 2025 → OK.
+        return settle_before_2025(narrowed);
+    }
+}

@@ -1,0 +1,14 @@
+// All arms have guards — no unguarded catchall
+// expect-error: T088
+module sigil;
+cap type Fuel {}
+
+fn classify(n: i64) -> i64 {
+    match n { x if x > 0 => { return 1; }, x if x < 0 => { return 0 - 1; } } // MUTATION_SITE
+    return 0;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 { return classify(5); }
+}

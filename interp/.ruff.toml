@@ -1,0 +1,18 @@
+# Explicit lint config for `interp/`.
+#
+# WHY THIS FILE EXISTS. Ruff discovers configuration by walking up from each file. There is no
+# pyproject at the repo root, so `interp/` was picking up whatever ruff's defaults happened to be
+# for the invocation — and CI runs `ruff check bench interp` while a developer is more likely to
+# run `ruff check interp`. `bench/pyproject.toml` already carries a comment recording the same
+# hazard from the other direction: ruff INFERS things from the invocation, and two invocations can
+# demand contradictory results. Stating the rules here makes them invocation-independent.
+#
+# The selection is a SUPERSET of bench's, chosen after a version-skew incident: ruff 0.15 locally
+# reported this tree clean while ruff 0.16 in CI flagged I001, RUF100, RUF012 and SIM102. Pinning
+# a broad, explicit set means the answer no longer depends on which ruff a machine happens to
+# have, and the stricter rules are ones this package should satisfy anyway.
+
+target-version = "py310"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "RUF", "SIM", "B", "UP"]

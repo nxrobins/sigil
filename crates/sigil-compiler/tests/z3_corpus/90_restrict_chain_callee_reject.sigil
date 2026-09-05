@@ -1,0 +1,38 @@
+// expect-error: C003
+// Z3 corpus #90: axis-2 — restriction persists through nested callee chains.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A restricted cap passed through a two-deep function call chain
+// retains its restriction at the final sink. The flow:
+//   fuel (full) → restrict(burn) → restricted (burn only)
+//   → relay(restricted) → needs_full(f) → C003
+//
+// The `relay` function simply forwards its argument to `needs_full`.
+// An implementation bug might lose the restriction across function
+// boundaries (e.g., function parameters starting fresh at full
+// authority). This fixture pins that the Z3 authority assertion
+// `auth(param) == auth(arg)` propagates transitively through
+// callee chains of arbitrary depth.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// call chain's entry point. The restricted cap persists unused for
+// actor lifetime, and verification passes.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+fn relay(f: Fuel) -> i64 {
+    return needs_full(f);
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        relay(restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

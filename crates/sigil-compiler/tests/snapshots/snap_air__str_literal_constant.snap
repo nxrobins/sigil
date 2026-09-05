@@ -1,0 +1,124 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::greet",
+            export_name: "m__greet",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [],
+            ret: Ptr,
+            locals: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    Ptr,
+                ),
+                (
+                    VarId(
+                        1,
+                    ),
+                    U32,
+                ),
+                (
+                    VarId(
+                        2,
+                    ),
+                    U32,
+                ),
+            ],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+                VarId(
+                    1,
+                ): Copy,
+                VarId(
+                    2,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "v0",
+                VarId(
+                    1,
+                ): "__str_data_ptr",
+                VarId(
+                    2,
+                ): "__str_len",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [
+                        FuelDecrement {
+                            amount: 1,
+                        },
+                        BumpAlloc {
+                            dst: VarId(
+                                0,
+                            ),
+                            size_bytes: 8,
+                            align: 4,
+                            persistent: false,
+                        },
+                        Assign {
+                            dst: VarId(
+                                1,
+                            ),
+                            val: StrLit(
+                                "hello",
+                            ),
+                        },
+                        StoreField {
+                            base_ptr: VarId(
+                                0,
+                            ),
+                            offset: 0,
+                            val: VarId(
+                                1,
+                            ),
+                            ty: U32,
+                        },
+                        Assign {
+                            dst: VarId(
+                                2,
+                            ),
+                            val: IntLit(
+                                5,
+                            ),
+                        },
+                        StoreField {
+                            base_ptr: VarId(
+                                0,
+                            ),
+                            offset: 4,
+                            val: VarId(
+                                2,
+                            ),
+                            ty: U32,
+                        },
+                    ],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

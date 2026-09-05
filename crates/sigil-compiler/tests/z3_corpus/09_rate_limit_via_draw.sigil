@@ -1,0 +1,43 @@
+// expect-ok
+// Z3 corpus #9: axis-1 advance — rate-limit pattern expressible via `.draw()`.
+//
+// Step 9 documented the wall (`08_rate_limit_inexpressible.sigil`): the
+// rate-limit pattern was structurally unwritable because `cap.split(amount)`
+// consumes the parent on the first call, leaving no remainder for the
+// second draw.
+//
+// Step 10 introduces `cap.draw(amount)` — the smallest missing primitive
+// identified in step 9's design analysis. Semantically identical to
+// `.split()` for type-check, AIR codegen, and Z3 conservation, but the
+// ownership checker does NOT mark the source as moved. Parent stays alive
+// and can be drawn from again.
+//
+// This fixture is the positive evidence that step 9's acceptance
+// criterion #1 is met: two sequential `fuel.draw(1)` operations compile
+// cleanly. Combined with fixture #8 STILL being rejected (criterion #2:
+// `.split()` keeps its consuming semantics), the pair locks in axis-1
+// progress without weakening the safety guarantees on the original
+// `.split()` operator.
+//
+// Acceptance criterion #4 (tokei runtime LOC unchanged): satisfied by
+// reusing the existing `cap_split` host import in wasm.rs codegen. The
+// runtime never observes the difference; it allocates a child cap with
+// the requested amount either way. The split-vs-draw distinction is
+// purely a compile-time fiction enforced by ownership.rs.
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Tick() -> i64 {
+        let _w1 = spawn::<Worker>(fuel.draw(1));
+        let _w2 = spawn::<Worker>(fuel.draw(1));
+        return 1;
+    }
+}

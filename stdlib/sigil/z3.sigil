@@ -1,0 +1,39 @@
+// Self-hosting Cap<Z3>: stdlib `z3` module — drive the SMT solver across
+// the WASM boundary. This is the uniquely-SIGIL self-hosting dependency: a
+// SIGIL-written compiler discharges refinement/capability obligations by
+// handing Z3 an SMT-LIB2 query and reading back sat/unsat.
+//
+// Tools that `use sigil::z3;` MUST declare `#[ring(outer)] #[trusted]` on
+// their own module — `compile_tool` selects ONE wasm by `tool_main`'s ring,
+// and FFI-backed stdlib lives in the outer ring (per R004 / G2).
+//
+// Grant required:
+//   - `z3::check` → a `Z3Grant` in the runtime's `IoGrants.z3`.
+// Without the grant the underlying shim returns -403 (packed as a negative
+// i64) WITHOUT constructing a solver or parsing the query (fail-closed).
+//
+// The query is an SMT-LIB2 string in guest memory (`query_ptr`/`query_len`).
+// Return contract (i64):
+//    1   sat        — the asserted constraints are satisfiable
+//    0   unsat      — the asserted constraints are unsatisfiable
+//  -400  malformed  — non-UTF8, interior NUL byte, or zero parsed assertions
+//  -403  grant denied
+//  -408  unknown    — rlimit exhausted / undecidable fragment
+//  -413  query too large (> 1 MiB)
+//
+// SOUNDNESS: a non-{sat,unsat} outcome is NEVER reported as 0 or 1 — "don't
+// know" is never "proven". The verdict is deterministic under a pinned
+// rlimit, so Z3-using tools may use `expected_output_strategy:
+// capture_from_reference` (unlike `time`/`random`).
+#[ring(outer)] #[trusted] module z3;
+
+effect Z3Solve;
+
+extern "C" fn z3_check(query_ptr: i32, query_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Check the satisfiability of an SMT-LIB2 query. Returns sat(1) / unsat(0),
+// or a negative code per the module-header return contract. Never reports a
+// non-{sat,unsat} outcome as a verdict.
+pub fn check(query_ptr: i32, query_len: i32) -> i64 @Internal ! { Z3Solve, FFI, Unsafe } {
+    return z3_check(query_ptr, query_len);
+}

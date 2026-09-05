@@ -1,0 +1,20 @@
+// MANUAL: reverse intrinsic — manual verification fixture.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let out_ptr = alloc(input_len);
+    let mut i = 0;
+
+    while i < input_len {
+        let src = input_ptr + input_len - 1 - i;
+        let b = load8(src);
+        store8(out_ptr + i, b);
+        i = i + 1;
+    }
+
+    return out_ptr * 4294967296 + input_len;
+}

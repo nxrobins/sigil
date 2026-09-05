@@ -1,0 +1,19 @@
+// DEMONSTRATES: cap type declaration. SIGIL supports user-defined capability
+// types as unforgeable references with linear ownership. This program declares
+// `ApiKey` at module scope — the declaration is the demonstration; tool_main
+// itself does not consume the cap (since tool_main's runtime contract takes
+// only i64 input_ptr/input_len). The pattern: declare cap types at module
+// scope, then pass them as actor init args or function parameters elsewhere.
+// INPUT: input_ptr (i64), input_len (i64). Echoed back as a packed result.
+// OUTPUT: i64 packed (len << 32) | ptr.
+// EFFECTS: ! { Alloc }
+// SEE ALSO: tests/cve_corpus/06_cve_2014_6271_shellshock_safe.sigil for an
+// actor that takes an ApiKey-style cap as an init parameter.
+
+module tool;
+
+cap type ApiKey {}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    return (input_len * 4294967296) + input_ptr;
+}

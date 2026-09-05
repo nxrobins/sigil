@@ -1,0 +1,13 @@
+// R001 (bug-hunt F005): an owned cap hidden in a TUPLE parameter must not
+// expect-error: R001
+// evade the outer-ring ownership ban. The `is_owned_cap` walker recurses
+// through tuple elements; a missing arm would let `(Fuel, i64)` slip past.
+#[ring(outer)]
+module ext;
+cap type Fuel {}
+fn bad(p: (Fuel, i64)) -> i64 { return 0; } // MUTATION_SITE
+
+// The mutant (marked line deleted) must still be a valid outer-ring module.
+fn benign() -> i64 {
+    return 0;
+}

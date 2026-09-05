@@ -1,0 +1,55 @@
+// TASK: file hexdump — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn hex_digit(n: i64 @Internal) -> i64 @Internal ! {} {
+    if n < 10 {
+        return 48 + n;
+    } else {
+        return 87 + n;
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let file_ptr: i64 @Internal = raw / 4294967296;
+        let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+        if file_len == 0 {
+            return 0;
+        } else {
+            let out_len: i64 @Internal = file_len * 3 - 1;
+            let out_ptr: i64 @Internal = alloc(out_len);
+            let mut i: i64 @Internal = 0;
+            let mut out_i: i64 @Internal = 0;
+
+            while i < file_len {
+                let b: i64 @Internal = load8(file_ptr + i);
+                let hi: i64 @Internal = b / 16;
+                let lo: i64 @Internal = b - hi * 16;
+                store8(out_ptr + out_i, hex_digit(hi));
+                store8(out_ptr + out_i + 1, hex_digit(lo));
+                out_i = out_i + 2;
+
+                if i + 1 < file_len {
+                    store8(out_ptr + out_i, 32);
+                    out_i = out_i + 1;
+                } else {
+                }
+
+                i = i + 1;
+            }
+
+            return out_ptr * 4294967296 + out_len;
+        }
+    }
+}

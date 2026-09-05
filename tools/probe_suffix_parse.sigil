@@ -1,0 +1,45 @@
+// PROBE: suffix parse — compiler/runtime scaffolding, not a pattern example.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    let pat_ptr = input_ptr + split + one;
+    let mut pat_scan = pat_ptr;
+    let mut pat_len = 0;
+
+    while pat_scan < input_ptr + input_len {
+        pat_len = pat_len + 1;
+        pat_scan = pat_scan + one;
+    }
+
+    let out_ptr = alloc(pat_len);
+    let mut out_len = 0;
+    let mut cur = pat_ptr;
+
+    while cur < input_ptr + input_len {
+        let b = load8(cur);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        cur = cur + one;
+    }
+
+    return out_ptr * 4294967296 + out_len;
+}

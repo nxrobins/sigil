@@ -1,0 +1,11 @@
+enum Color { Red, Green, Blue }
+pub fn code(c: Color) -> i64 {
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+pub fn first() -> Color {
+    Color::Red
+}

@@ -1,0 +1,44 @@
+// expect-error: T185
+//
+// T185 — cap type declares too many authorities (>32).
+//
+// Before step 31 of the supremum loop (axis 2, "tighter proofs")
+// the compiler silently accepted any number of authorities on a
+// cap type. The Z3 capability layer encodes authority masks as
+// 32-bit bitvectors (QF_BV theory). For a cap type with 33+
+// authorities, the bit-shift in `full_mask` would overflow:
+// `1u32 << 32` is implementation-defined; on x86 the shift
+// instruction masks the count modulo 32, so:
+//
+//   - authority #33 (bit index 32) collapses onto bit 0
+//   - authority #34 (bit index 33) collapses onto bit 1
+//   - etc.
+//
+// The corrupted mask would make Z3 compute the wrong
+// required-authority set: a function declared to require ALL
+// authorities would actually require only the lower-numbered
+// ones, and a `.restrict(authority33)` call would silently
+// narrow to `.restrict(authority1)` — a false-negative soundness
+// gap waiting to be exploited.
+//
+// Step 31 closes the bound at the cap type declaration site.
+// The bound (32) is set by the SMT theory (QF_BV<32>); if a
+// future iteration adopts a wider BV (BV<64>) the bound can
+// rise accordingly.
+//
+// AFTER STEP 31: T185 fires on the cap-type declaration. The
+// downstream `state { fuel: Mega }` and any usage is never
+// reached because the declaration is rejected first.
+module sigil;
+
+cap type Mega {
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9,
+    a10, a11, a12, a13, a14, a15, a16, a17, a18, a19,
+    a20, a21, a22, a23, a24, a25, a26, a27, a28, a29,
+    a30, a31, a32, a33, a34
+}
+
+entry actor Main {
+    state { fuel: Mega }
+    on Start() -> i64 { return 1; }
+}

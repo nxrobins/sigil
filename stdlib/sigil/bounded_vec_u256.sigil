@@ -1,0 +1,86 @@
+// stdlib::bounded_vec_u256 — a BOUNDED, stack-backed vector of `u256`:
+// `BoundedVec_u256_64`. Same recipe as `bounded_vec_i64` (a fixed `[u256; 64]`
+// backing + a `count` live-prefix, sealed, Alloc-free, full+OOB force-traps), with
+// the element type widened to `u256`. Its sole consumer is the Solidity frontend's
+// AIRDROP fold (SOL-COLLECTIONS Rung C): the `recipients`/`amounts` parallel arrays
+// passed to `BoundedMap_u256_u256_64::batch_transfer`. Capacity 64 matches the map
+// (an airdrop to > 64 DISTINCT recipients traps at the 65th key regardless, and the
+// 64-slot backing also caps the number of legs).
+//
+// Why no `cap Alloc`: the `[u256; 64]` backing lives in the record header — a
+// BOUNDED region the fuel system accounts for statically (64*32 bytes), no `alloc()`
+// call. Overflow is a RUNTIME TRAP (a `push` at `count == 64` writes `data[64]`,
+// tripping the backing array's own `idx >= 64` bounds trap), never a heap grow.
+// Integrity: the record is construction-SEALED (T258) — buildable ONLY here via
+// `new()`, never a `BoundedVec_u256_64 { count: 99 }` literal, so the `count <= 64`
+// invariant + the sealed length (the trustworthy loop bound `batch_transfer` needs)
+// cannot be forged. Reference semantics like every SIGIL record (a `u32` data
+// pointer in the compact header). `Option` is co-injected for `get`; `u256.sigil`
+// for the `u256` element.
+
+module bounded_vec_u256;
+
+record BoundedVec_u256_64 { data: [u256; 64], count: i64 }
+
+impl BoundedVec_u256_64 {
+    // Empty bounded vector — the ONLY public constructor (the record is sealed).
+    pub fn new() -> BoundedVec_u256_64 {
+        return BoundedVec_u256_64 { data: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedVec_u256_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedVec_u256_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedVec_u256_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedVec_u256_64) -> bool {
+        return self.count == 64;
+    }
+
+    // Append `val`, returning the new length. When full (`count == 64`) the store
+    // target is `self.data[64]`, which trips the backing array's bounds trap — a
+    // bounded resource can't overflow its fixed backing.
+    pub fn push(self: BoundedVec_u256_64 @Mut, val: u256) -> i64 {
+        self.data[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Read element `i`, or `None` if out of range. LEN-bounded: cells in
+    // `[count, 64)` (zero-initialized) are unreachable.
+    pub fn get(self: BoundedVec_u256_64, i: i64) -> Option<u256> {
+        if i < 0 {
+            return None;
+        } else {
+        }
+        if i >= self.count {
+            return None;
+        } else {
+        }
+        return Some(self.data[i]);
+    }
+
+    // TRAPPING read of the live cell at `i` — the value fetch `batch_transfer` uses
+    // when iterating a recipients/amounts vector by a runtime counter. An out-of-range
+    // `i` (`i < 0 || i >= count`) ABORTS via `trap()` rather than reading the
+    // `[count, 64)` capacity tail; the caller guarantees `0 <= i < count` (its loop
+    // bound is `count`), so the trap is a fail-closed backstop, never a live path.
+    pub fn at(self: BoundedVec_u256_64, i: i64) -> u256 {
+        if i < 0 {
+            trap();
+        } else {
+            if i >= self.count {
+                trap();
+            } else {
+            }
+        }
+        return self.data[i];
+    }
+}

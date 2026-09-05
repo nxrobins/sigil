@@ -1,0 +1,16 @@
+// Attack: unbounded recursion with no base case exhausts fuel
+// expect-runtime: FuelExhausted
+module sigil;
+cap type Fuel {}
+
+fn spin(n: i64) -> i64 {
+    return spin(n + 1);
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        return spin(0);
+    }
+}

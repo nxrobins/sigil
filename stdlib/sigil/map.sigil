@@ -1,0 +1,319 @@
+// Growable generic hash map `Map<K: Hash + Eq, V>` — the trait Wall's capstone.
+// Any key type that satisfies `Hash` + `Eq` works: the primitives `str` / `i64` /
+// `bool` (built-in impls) and any user `record`/`enum` that provides `hash`/`eq`
+// (structural satisfaction). `str` keys give the compiler's old symbol table /
+// interner (`name -> symbol-id`); `i64` keys give a dense integer map; record
+// keys give arbitrary keyed maps — all through `key.hash()` / `stored.eq(key)`.
+//
+// Open addressing with linear probing. THREE parallel `Vec<i64>` slot arrays (all
+// length == `slots`) hold per-slot bookkeeping; the keys and values live in two
+// DENSE append-only logs (`keys`/`vals`, length == `count`) indexed indirectly
+// through `vidx`. A slot's key is `keys.get(vidx[slot])`; equality is
+// `that_key.eq(query)` via the `Eq` impl (so collisions resolve correctly for any
+// key type — no byte arena).
+//
+//   flags:   0 = EMPTY, 1 = OCCUPIED        (2 = DELETED reserved; no remove v1)
+//   hashes:  cached `key.hash()` per slot    (fast-reject + rehash without re-hash)
+//   vidx:    slot -> index into the dense `keys`/`vals` logs
+//   keys:    DENSE, append-only keys; `keys.len() == count`
+//   vals:    DENSE, append-only values; `vals.len() == count`
+//   count:   live (OCCUPIED) entries        slots: slot count (POWER OF TWO)
+//
+// (`flags`/`slots` rather than `state`/`cap` because `state` and `cap` are reserved
+// SIGIL keywords — the same reason `vec.sigil` uses `count`/`slots` not `len`/`cap`.)
+//
+// Dense keys+values + `vidx`: a key/value pair is `push`ed once per NEW key (never
+// on overwrite, never on grow), so `grow` rehashes only the three small i64 arrays
+// — `keys`/`vals` are never touched and no placeholder K/V is ever fabricated.
+//
+// `slots` is always a power of two so the home slot is `hash & (slots - 1)` — a
+// bitwise mask, sign-agnostic, always in `[0, slots)`. (`%` / `I64RemS` on a
+// negative hash would give a NEGATIVE remainder → out of range, so modulo is
+// design-forbidden; `key.hash()` is frequently negative.)
+//
+// Records are heap pointers with reference semantics, so a method mutates the
+// single shared header in place — all holders observe the update (like `Vec`). The
+// map uses only PUBLIC `Vec` methods plus the `key.hash()` / `stored.eq(key)` trait
+// methods (built-in for primitives via `traits.sigil`, structural for user types),
+// so it adds no entry to the `vec_quarantine` allowlist.
+//
+// Ambient: `Map<` / `Map::` injects this file + its transitive deps `vec` (the slot
+// arrays + dense logs), `option` (`get` returns `Option<V>`), and `traits` (the
+// `Hash`/`Eq` contracts + the built-in primitive impls).
+
+module map;
+
+// Smallest power of two `c` with `c*7 >= n*10` (load factor 0.7) and `c >= 8`.
+// Because `7 * 2^k` is never a multiple of 10 while `n*10` always is, the result
+// satisfies `c*7 > n*10` STRICTLY (CF-D7) — `n` inserts never trigger a grow.
+fn map_slots_for(n: i64) -> i64 {
+    let need: i64 = n * 10;
+    let mut c: i64 = 8;
+    while c * 7 < need {
+        c = c * 2;
+    }
+    return c;
+}
+
+
+record Map<K: Hash + Eq, V> {
+    flags: Vec<i64>,
+    hashes: Vec<i64>,
+    vidx: Vec<i64>,
+    keys: Vec<K>,
+    vals: Vec<V>,
+    count: i64,
+    slots: i64
+}
+
+impl Map<K, V> {
+    // Empty map; allocates nothing until the first `insert`. The key/value types
+    // come from the binding's annotation: `let m: Map<str, i64> = Map::new();`.
+    pub fn new() -> Map<K, V> {
+        return Map {
+            flags: Vec::new(),
+            hashes: Vec::new(),
+            vidx: Vec::new(),
+            keys: Vec::new(),
+            vals: Vec::new(),
+            count: 0,
+            slots: 0
+        };
+    }
+
+    // Regions (DEF-2b, LD-7): an empty map ASSOCIATED with the region `r` (symmetric with
+    // `Vec::in_region`). v1 has a single global bump allocator and `Map` carries no arena
+    // field of its own (its backing `Vec`s do), so `r` is INERT here — consumed only for the
+    // type-level region the result lives in. Starts empty like `new()`; the backing tables
+    // grow on the global heap and are reclaimed by the ENCLOSING lexical region (AG-2b-7).
+    pub fn in_region(r: Region) -> Map<K, V> {
+        return Map {
+            flags: Vec::new(),
+            hashes: Vec::new(),
+            vidx: Vec::new(),
+            keys: Vec::new(),
+            vals: Vec::new(),
+            count: 0,
+            slots: 0
+        };
+    }
+
+    // Pre-size the bucket table for ~`n` entries without a later rehash. The three
+    // `i64` slot arrays are filled to the chosen power-of-two slot count; `keys`
+    // and `vals` (dense) stay lazy (filled by `insert`) since there is no K/V to
+    // seed them with here.
+    pub fn with_capacity(n: i64) -> Map<K, V> ! { Alloc } {
+        let c: i64 = map_slots_for(n);
+        // Fill loops are INLINE (concrete `Vec<i64>` locals, return-position
+        // record literal): an assoc fn's mono body cannot re-substitute
+        // generic local annotations, and bare `Vec::new()` field inits only
+        // infer K/V from the return type. Allocation stays in THIS body, so
+        // the state-backed mono coloring reaches it.
+        let f: Vec<i64> = Vec::with_capacity(c);
+        let mut i: i64 = 0;
+        while i < c {
+            let p: i64 = f.push(0);
+            i = i + 1;
+        }
+        let h: Vec<i64> = Vec::with_capacity(c);
+        let mut j: i64 = 0;
+        while j < c {
+            let q: i64 = h.push(0);
+            j = j + 1;
+        }
+        let vi: Vec<i64> = Vec::with_capacity(c);
+        let mut k: i64 = 0;
+        while k < c {
+            let r: i64 = vi.push(0);
+            k = k + 1;
+        }
+        return Map {
+            flags: f,
+            hashes: h,
+            vidx: vi,
+            keys: Vec::new(),
+            vals: Vec::new(),
+            count: 0,
+            slots: c
+        };
+    }
+
+    pub fn len(self: Map<K, V> @ReadOnly) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: Map<K, V> @ReadOnly) -> i64 {
+        return self.slots;
+    }
+
+    pub fn is_empty(self: Map<K, V> @ReadOnly) -> bool {
+        return self.count == 0;
+    }
+
+    // Allocate the three i64 slot arrays to the starting power of two (8) on the
+    // first insert into a cold map. `slots` is only ever set to a power of two.
+    fn ensure_buckets(self: Map<K, V> @Mut) -> i64 ! { Alloc } {
+        if self.slots == 0 {
+            self.flags = self.filled(8);
+            self.hashes = self.filled(8);
+            self.vidx = self.filled(8);
+            self.slots = 8;
+        } else {
+        }
+        return self.slots;
+    }
+
+    // A `Vec<i64>` of length exactly `n`, every cell 0 — `with_capacity(n)`
+    // then exactly `n` pushes ⇒ `len == n` with ZERO reallocs, so every slot
+    // is a legal `set(slot, …)` target. A METHOD (not a free fn) on purpose:
+    // a state-rooted Map call is persisted by monomorph coloring, which can
+    // clone generic-impl methods per instance but not shared free fns — every
+    // allocation reachable from `insert` must live in colorable code.
+    fn filled(self: Map<K, V> @ReadOnly, n: i64) -> Vec<i64> ! { Alloc } {
+        let v: Vec<i64> = Vec::with_capacity(n);
+        let mut i: i64 = 0;
+        while i < n {
+            let p: i64 = v.push(0);
+            i = i + 1;
+        }
+        return v;
+    }
+
+    // True iff slot `s` holds `key`: compares the slot's stored key (dense, via
+    // `vidx`) against `key` through the `Eq` impl. Only called for OCCUPIED slots,
+    // so `vidx[s]` is a valid dense index.
+    fn key_eq(self: Map<K, V> @ReadOnly, s: i64, key: K) -> bool {
+        let stored = self.keys.get(self.vidx.get(s));
+        return stored.eq(key);
+    }
+
+    // Linear probe from the home slot `h & (slots-1)`; return the first EMPTY slot
+    // OR the OCCUPIED slot matching `key`. Precondition `slots > 0`. A `steps`
+    // counter trips the guaranteed `Vec::new().get(0)` trap rather than spinning if
+    // the table is ever full (unreachable — load capped at 0.7).
+    fn find_slot(self: Map<K, V> @ReadOnly, key: K, h: i64) -> i64 {
+        let mask: i64 = self.slots - 1;
+        let mut s: i64 = h & mask;
+        let mut steps: i64 = 0;
+        while steps < self.slots {
+            if self.flags.get(s) == 0 {
+                return s;
+            } else {
+            }
+            if self.hashes.get(s) == h {
+                if self.key_eq(s, key) {
+                    return s;
+                } else {
+                }
+            } else {
+            }
+            s = (s + 1) & mask;
+            steps = steps + 1;
+        }
+        let g: Vec<i64> = Vec::new();
+        let z: i64 = g.get(0);
+        return z;
+    }
+
+    // Double `slots` and re-home every OCCUPIED slot via its cached hash. The three
+    // i64 arrays are rebuilt together; `keys`/`vals` are UNTOUCHED (dense, stable
+    // indices). Rehash uses the cached `hashes` (no key re-hash).
+    fn grow(self: Map<K, V> @Mut) -> i64 ! { Alloc } {
+        let newslots: i64 = self.slots * 2;
+        let nf: Vec<i64> = self.filled(newslots);
+        let nh: Vec<i64> = self.filled(newslots);
+        let nvi: Vec<i64> = self.filled(newslots);
+        let newmask: i64 = newslots - 1;
+        let mut old: i64 = 0;
+        while old < self.slots {
+            if self.flags.get(old) == 1 {
+                let hh: i64 = self.hashes.get(old);
+                let mut s: i64 = hh & newmask;
+                while nf.get(s) == 1 {
+                    s = (s + 1) & newmask;
+                }
+                nf.set(s, 1);
+                nh.set(s, hh);
+                nvi.set(s, self.vidx.get(old));
+            } else {
+            }
+            old = old + 1;
+        }
+        self.flags = nf;
+        self.hashes = nh;
+        self.vidx = nvi;
+        self.slots = newslots;
+        return newslots;
+    }
+
+    // Insert `key -> val`, or overwrite the value if `key` is present. Returns the
+    // new live-entry count. The FOUND branch updates only the value. Exactly one
+    // `keys.push` + one `vals.push` per NEW key, with `vi` captured BEFORE the
+    // pushes (so `keys[vi]`/`vals[vi]` line up with `vidx[s] = vi`).
+    pub fn insert(self: Map<K, V> @Mut, key: K, val: V) -> i64 ! { Alloc } {
+        self.ensure_buckets();
+        let h: i64 = key.hash();
+        let mut s: i64 = self.find_slot(key, h);
+        if self.flags.get(s) == 1 {
+            self.vals.set(self.vidx.get(s), val);
+            return self.count;
+        } else {
+        }
+        if (self.count + 1) * 10 >= self.slots * 7 {
+            self.grow();
+            s = self.find_slot(key, h);
+        } else {
+        }
+        let vi: i64 = self.vals.len();
+        self.keys.push(key);
+        self.vals.push(val);
+        self.flags.set(s, 1);
+        self.hashes.set(s, h);
+        self.vidx.set(s, vi);
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Primary read: `Some(value)` if present, else `None`. A cold map (count == 0)
+    // short-circuits before any probe (never indexes a length-0 array). Reads carry
+    // no `Alloc` effect.
+    pub fn get(self: Map<K, V> @ReadOnly, key: K) -> Option<V> {
+        if self.count == 0 {
+            return None;
+        } else {
+        }
+        let h: i64 = key.hash();
+        let s: i64 = self.find_slot(key, h);
+        if self.flags.get(s) == 1 {
+            return Some(self.vals.get(self.vidx.get(s)));
+        } else {
+            return None;
+        }
+    }
+
+    // Total convenience read: the value if present, else `default`.
+    pub fn get_or(self: Map<K, V> @ReadOnly, key: K, default: V) -> V {
+        if self.count == 0 {
+            return default;
+        } else {
+        }
+        let h: i64 = key.hash();
+        let s: i64 = self.find_slot(key, h);
+        if self.flags.get(s) == 1 {
+            return self.vals.get(self.vidx.get(s));
+        } else {
+            return default;
+        }
+    }
+
+    // Presence test.
+    pub fn contains(self: Map<K, V> @ReadOnly, key: K) -> bool {
+        if self.count == 0 {
+            return false;
+        } else {
+        }
+        let h: i64 = key.hash();
+        let s: i64 = self.find_slot(key, h);
+        return self.flags.get(s) == 1;
+    }
+}

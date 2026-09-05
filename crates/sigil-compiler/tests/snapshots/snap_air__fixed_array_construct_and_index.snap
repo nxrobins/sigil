@@ -1,0 +1,100 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::third",
+            export_name: "m__third",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    Ptr,
+                ),
+            ],
+            ret: I64,
+            locals: [
+                (
+                    VarId(
+                        1,
+                    ),
+                    I64,
+                ),
+                (
+                    VarId(
+                        2,
+                    ),
+                    I64,
+                ),
+            ],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+                VarId(
+                    1,
+                ): Copy,
+                VarId(
+                    2,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "a",
+                VarId(
+                    1,
+                ): "v1",
+                VarId(
+                    2,
+                ): "v2",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                2,
+                            ),
+                            val: IntLit(
+                                2,
+                            ),
+                        },
+                        LoadDynamic {
+                            dst: VarId(
+                                1,
+                            ),
+                            base_ptr: VarId(
+                                0,
+                            ),
+                            index: VarId(
+                                2,
+                            ),
+                            elem_size: 8,
+                            ty: I64,
+                            offset: 4,
+                        },
+                    ],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                1,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

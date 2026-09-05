@@ -1,0 +1,68 @@
+// TASK: interleave strings — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut split = input_len;
+    let mut i = 0;
+
+    while i < input_len {
+        let b = load8(input_ptr + i);
+        if split == input_len {
+            if b == 10 {
+                split = i;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+
+    let left_len = split;
+    let mut right_start = input_len;
+    if split < input_len {
+        right_start = split + 1;
+    } else {
+        right_start = input_len;
+    }
+    let right_len = input_len - right_start;
+    let out_ptr = alloc(left_len + right_len);
+    let mut out_len = 0;
+    let mut min_len = left_len;
+
+    if right_len < min_len {
+        min_len = right_len;
+    } else {
+    }
+
+    let mut i2 = 0;
+    while i2 < min_len {
+        let left_b = load8(input_ptr + i2);
+        let right_b = load8(input_ptr + right_start + i2);
+        store8(out_ptr + out_len, left_b);
+        out_len = out_len + 1;
+        store8(out_ptr + out_len, right_b);
+        out_len = out_len + 1;
+        i2 = i2 + 1;
+    }
+
+    while i2 < left_len {
+        let left_b = load8(input_ptr + i2);
+        store8(out_ptr + out_len, left_b);
+        out_len = out_len + 1;
+        i2 = i2 + 1;
+    }
+
+    let mut right_i = min_len;
+    while right_i < right_len {
+        let right_b = load8(input_ptr + right_start + right_i);
+        store8(out_ptr + out_len, right_b);
+        out_len = out_len + 1;
+        right_i = right_i + 1;
+    }
+
+    return out_ptr * 4294967296 + out_len;
+}

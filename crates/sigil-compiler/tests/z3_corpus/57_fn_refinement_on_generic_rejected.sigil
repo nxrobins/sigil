@@ -1,0 +1,29 @@
+// expect-error: T226
+// Z3 corpus #57: axis-1 — Wall 4 Step 7 generic refinement rejected.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Per anti-goal MC-S7-C and constraint N12-S7, Step 7 explicitly rejects
+// refinement on generic functions: the Option-B sidecar mechanism does
+// not propagate through monomorphization (apply_subst only touches
+// `Type`, not refinement metadata). Generic functions with refinements
+// fire T226 at parse time.
+//
+// The function `validate<T>` declares a type parameter T AND a
+// refinement clause on its param. The parser's T226 emit-and-clear
+// (N23-S7) fires the diagnostic and clears the refinement slots in
+// the same code path — never one without the other.
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the entire single-line generic-fn declaration.
+// Removing the line leaves the entry actor alone, which compiles.
+module sigil;
+
+fn validate<T>(x: i64) where x > 0 -> bool { return true; }  // MUTATION_SITE
+
+entry actor Main {
+    on Tick() -> i64 {
+        return 1;
+    }
+}

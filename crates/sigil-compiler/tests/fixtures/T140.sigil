@@ -1,0 +1,23 @@
+// expect-error: T140
+//
+// T140 — array literal element type mismatch.
+//
+// Before step 28 of the supremum loop (axis 4, "better errors") the
+// T140 message was a bare type-mismatch report:
+//
+//   "array element 1 has type `f64`, expected `i64`"
+//
+// Informative but not actionable — the user had to figure out how
+// to cast or which element to change. Step 28 adds the copyable cast
+// template inline AND lists the alternative (change element 0's
+// type to match) in the same message. The registry hint enumerates
+// a third path: annotate the binding type explicitly.
+module sigil;
+cap type Fuel {}
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let xs = [1, 2.5, 3];
+        return 1;
+    }
+}

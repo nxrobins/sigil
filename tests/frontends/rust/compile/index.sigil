@@ -1,0 +1,8 @@
+module index;
+record Index { value: i64 } where value >= 0
+pub fn get(i: Index) -> i64 {
+  return i.value;
+}
+pub fn zero() -> Index {
+  return Index { value: 0 };
+}

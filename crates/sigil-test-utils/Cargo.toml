@@ -1,0 +1,36 @@
+[package]
+name = "sigil-test-utils"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Shared testing infrastructure for the SIGIL workspace. Lives as a
+# regular library crate (NOT dev-only) because:
+#   * Declarative macros (`parse_program!`, `parse_expr!`, `parse_type!`)
+#     need to be exported via `#[macro_export]` so downstream tests can
+#     reach them through `use sigil_test_utils::parse_expr;`.
+#   * `MockWasmInstance` (PR 4) and fixture loaders are consumed from
+#     integration tests in other crates.
+#
+# Consumers pull this in via `[dev-dependencies]`. Production binaries
+# never depend on it.
+#
+# Module ownership:
+#   * src/parse.rs       — Pillar 1 (sub-tree parsing macros)
+#   * src/fixtures.rs    — fixture-corpus loaders for cve / attack / z3
+#   * src/snapshot.rs    — Pillar 2 (insta wrappers + canonical formatters)
+#   * src/mock_wasm.rs   — Pillar 4 (mock WASM FFI for proptest fuzzers)
+
+[dependencies]
+sigil-compiler = { path = "../sigil-compiler", default-features = false, features = ["json"] }
+# insta and wasmprinter are pulled in as regular deps (not dev-deps)
+# because sigil-test-utils is itself a dev-dep of other crates — it
+# never appears in a production build. Keeping these as regular deps
+# lets consumers say `sigil-test-utils = { workspace = true }` without
+# also declaring insta + wasmprinter separately.
+insta = { workspace = true }
+wasmprinter = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

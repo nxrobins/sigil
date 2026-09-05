@@ -1,0 +1,57 @@
+// expect-error: T195
+// Z3 corpus #20: axis-1 — deadline-typed cap subtype mismatch.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 2 Stage 1 added parametric (deadline-typed) cap types with a
+// **covariant** subtyping rule: `Approval(D_a) <: Approval(D_b)` iff
+// `D_a >= D_b`. A cap whose declared deadline is earlier than the
+// target site requires cannot satisfy that site. This fixture
+// exercises the reject direction:
+//
+//   * Caller holds `c: Approval(2025)`.
+//   * Target sink `use_before_2030` requires `Approval(2030)`.
+//   * Subtype check: `2025 >= 2030` is false → T195 fires.
+//
+// Without the subtype check (e.g., if the type-checker compared
+// only the cap NAME and ignored the deadline parameter), this
+// program would compile cleanly — a silent authority smuggle past
+// the declared deadline contract. The fixture pins T195's behavior
+// against that regression.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Wall 2 Stage 1: parametric grammar, `Type::Cap(name, Option<i64>)`
+//     identity, subtyping rule and T195 emission at every site where
+//     a cap value is assigned or passed as a target of declared cap
+//     type (function call, spawn init, message send, return,
+//     let-binding, state-field store, `slot_put`, et al.).
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the call that requires the longer deadline.
+// Removing it leaves a function that drops its linear cap parameter
+// — Sigil's drop semantics for caps allow this — and returns 0
+// cleanly. With the line present, the 2025 cap into the 2030 sink
+// fires T195. Proves the fixture pins the deadline-ordering check
+// and not an incidental property of the surrounding code.
+module sigil;
+
+cap type Approval(deadline_ms: i64) {}
+
+fn use_before_2030(c: Approval(2030)) -> i64 {
+    return 1;
+}
+
+fn boot(c: Approval(2025)) -> i64 {
+    let _ignore = use_before_2030(c);   // MUTATION_SITE
+    return 0;
+}
+
+entry actor Main {
+    state { authority: Approval(2025) }
+
+    on Start() -> i64 {
+        return boot(authority);
+    }
+}

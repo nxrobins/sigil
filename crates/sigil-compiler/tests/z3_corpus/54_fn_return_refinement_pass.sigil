@@ -1,0 +1,37 @@
+// expect-ok
+// Z3 corpus #54: axis-1 — Wall 4 Step 7 function return refinement (positive).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 7 admits return refinements via
+// `fn name(...) -> i64 where @ > 0`. The magic `@` token (lexer
+// `TokenKind::At`, recognized only at the post-`->` where-clause
+// LHS position per N4-S7) references the return value.
+//
+// At the function body, every `return <expr>` statement is checked
+// against the declared `@` predicate via N25-S7's recursive walker.
+// `fn five() -> i64 where @ > 0 { return 5; }` succeeds: Z3 proves
+// `5 > 0` and T225 does not fire.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 7 parser admits `where @ > 0` after the return type.
+//   * Step 7 `check_return` body-level refinement check.
+//
+// MUTATION CONTRACT
+//
+// Replacing `5` with `0` flips this fixture to the expect-error half
+// (fixture 55). Removing the `where @ > 0` clause keeps the function
+// compiling without any refinement obligation.
+module sigil;
+
+fn five() -> i64 where @ > 0 {
+    return 5;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let n: i64 = five();
+        return 1;
+    }
+}

@@ -1,0 +1,21 @@
+module unconditional_abort;
+
+record Guards { __fe_unit: bool }
+
+impl Guards {
+    pub fn new() -> Guards {
+        return Guards { __fe_unit: false };
+    }
+
+    pub fn disabled(self: Guards) -> u256 {
+        trap();
+    }
+
+    pub fn unreachable(self: Guards) -> u256 {
+        trap();
+    }
+
+    pub fn notImplemented(self: Guards) -> u256 {
+        trap();
+    }
+}

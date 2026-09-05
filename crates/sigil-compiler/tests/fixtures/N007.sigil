@@ -1,0 +1,4 @@
+// N007: `use` path does not resolve to any module in this compilation unit.
+module main;
+use sigil::nonexistent_module;
+fn boot() -> i64 { return 0; }

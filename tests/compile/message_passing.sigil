@@ -1,0 +1,19 @@
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(worker: ActorRef<Worker>) -> i64 {
+        worker.send(Ping());
+        let child = spawn::<Worker>(fuel);
+        let count = worker.ask(GetCount(), timeout: 5);
+        return count;
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on Ping() {}
+    on GetCount() -> i64 { return 1; }
+}

@@ -1,0 +1,7 @@
+// T155: cross-module call to private function.
+module helpers;
+fn secret_helper() -> i64 { return 42; }
+
+module main;
+use sigil::helpers;
+fn boot() -> i64 { return helpers::secret_helper(); }

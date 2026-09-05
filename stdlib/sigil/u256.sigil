@@ -1,0 +1,484 @@
+module u256;
+
+// Native u256 checked multi-limb arithmetic (PR-U1a: comparisons + add/sub).
+//
+// A u256 value is a pointer to a 32-byte cell of four u64 little-endian limbs
+// (limb0 = least-significant) read via the `u256_limb` intrinsic and built fresh
+// via `u256_make` — the single canonical layout (E2). Every op is PURE: it reads
+// the operands' limbs and allocates a FRESH result cell, never mutating an
+// operand (E3), so pointer-aliasing on assignment stays sound. Add/sub are
+// CHECKED: they `trap_if` on unsigned overflow / underflow (E1), the
+// Solidity-0.8 revert-equivalent. `mul`/`div`/`mod`/shifts/bitwise are deferred
+// to U1b/U1c (the type-checker fail-closes them until then).
+//
+// The `u256 + b` / `a < b` SURFACE operators lower (in the compiler's AIR
+// `lower_binary_expr`) to calls into the `u256_*` functions below; these bodies
+// themselves use only u64 limb arithmetic + the intrinsics, never the u256
+// operators, so there is no lowering recursion.
+
+// 1 if `a < b` as UNSIGNED u64 (i64.lt_u), else 0. Doubles as the add-carry
+// detector (`ult(sum, operand)` — a wrapping sum that is < an operand carried)
+// and the sub-borrow detector (`ult(a, b)`).
+fn ult(a: u64, b: u64) -> u64 {
+    if a < b {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn u256_add(a: u256, b: u256) -> u256 {
+    let a0: u64 = u256_limb(a, 0);
+    let a1: u64 = u256_limb(a, 1);
+    let a2: u64 = u256_limb(a, 2);
+    let a3: u64 = u256_limb(a, 3);
+    let b0: u64 = u256_limb(b, 0);
+    let b1: u64 = u256_limb(b, 1);
+    let b2: u64 = u256_limb(b, 2);
+    let b3: u64 = u256_limb(b, 3);
+
+    // limb 0
+    let s0: u64 = a0 + b0;
+    let k0: u64 = ult(s0, a0);
+
+    // limb 1: a1 + b1 + k0 (the two partial carries are mutually exclusive, so
+    // their sum is again 0 or 1).
+    let t1: u64 = a1 + b1;
+    let k1a: u64 = ult(t1, a1);
+    let s1: u64 = t1 + k0;
+    let k1b: u64 = ult(s1, t1);
+    let k1: u64 = k1a + k1b;
+
+    // limb 2
+    let t2: u64 = a2 + b2;
+    let k2a: u64 = ult(t2, a2);
+    let s2: u64 = t2 + k1;
+    let k2b: u64 = ult(s2, t2);
+    let k2: u64 = k2a + k2b;
+
+    // limb 3
+    let t3: u64 = a3 + b3;
+    let k3a: u64 = ult(t3, a3);
+    let s3: u64 = t3 + k2;
+    let k3b: u64 = ult(s3, t3);
+    let k3: u64 = k3a + k3b;
+
+    // E1: a carry out of the top limb is an unsigned overflow → revert.
+    trap_if(k3 != 0);
+    return u256_make(s0, s1, s2, s3);
+}
+
+pub fn u256_sub(a: u256, b: u256) -> u256 {
+    let a0: u64 = u256_limb(a, 0);
+    let a1: u64 = u256_limb(a, 1);
+    let a2: u64 = u256_limb(a, 2);
+    let a3: u64 = u256_limb(a, 3);
+    let b0: u64 = u256_limb(b, 0);
+    let b1: u64 = u256_limb(b, 1);
+    let b2: u64 = u256_limb(b, 2);
+    let b3: u64 = u256_limb(b, 3);
+
+    // limb 0
+    let s0: u64 = a0 - b0;
+    let d0: u64 = ult(a0, b0);
+
+    // limb 1: a1 - b1 - d0 (two partial borrows, mutually exclusive).
+    let t1: u64 = a1 - b1;
+    let d1a: u64 = ult(a1, b1);
+    let s1: u64 = t1 - d0;
+    let d1b: u64 = ult(t1, d0);
+    let d1: u64 = d1a + d1b;
+
+    // limb 2
+    let t2: u64 = a2 - b2;
+    let d2a: u64 = ult(a2, b2);
+    let s2: u64 = t2 - d1;
+    let d2b: u64 = ult(t2, d1);
+    let d2: u64 = d2a + d2b;
+
+    // limb 3
+    let t3: u64 = a3 - b3;
+    let d3a: u64 = ult(a3, b3);
+    let s3: u64 = t3 - d2;
+    let d3b: u64 = ult(t3, d2);
+    let d3: u64 = d3a + d3b;
+
+    // E1: a borrow out of the top limb is an unsigned underflow (a < b) → revert.
+    trap_if(d3 != 0);
+    return u256_make(s0, s1, s2, s3);
+}
+
+pub fn u256_eq(a: u256, b: u256) -> bool {
+    if u256_limb(a, 0) != u256_limb(b, 0) {
+        return false;
+    }
+    if u256_limb(a, 1) != u256_limb(b, 1) {
+        return false;
+    }
+    if u256_limb(a, 2) != u256_limb(b, 2) {
+        return false;
+    }
+    if u256_limb(a, 3) != u256_limb(b, 3) {
+        return false;
+    }
+    return true;
+}
+
+pub fn u256_ne(a: u256, b: u256) -> bool {
+    if u256_eq(a, b) {
+        return false;
+    }
+    return true;
+}
+
+// Unsigned compare from the most-significant limb down.
+pub fn u256_lt(a: u256, b: u256) -> bool {
+    let a3: u64 = u256_limb(a, 3);
+    let b3: u64 = u256_limb(b, 3);
+    if a3 < b3 {
+        return true;
+    }
+    if a3 > b3 {
+        return false;
+    }
+    let a2: u64 = u256_limb(a, 2);
+    let b2: u64 = u256_limb(b, 2);
+    if a2 < b2 {
+        return true;
+    }
+    if a2 > b2 {
+        return false;
+    }
+    let a1: u64 = u256_limb(a, 1);
+    let b1: u64 = u256_limb(b, 1);
+    if a1 < b1 {
+        return true;
+    }
+    if a1 > b1 {
+        return false;
+    }
+    let a0: u64 = u256_limb(a, 0);
+    let b0: u64 = u256_limb(b, 0);
+    if a0 < b0 {
+        return true;
+    }
+    return false;
+}
+
+pub fn u256_le(a: u256, b: u256) -> bool {
+    if u256_lt(a, b) {
+        return true;
+    }
+    return u256_eq(a, b);
+}
+
+pub fn u256_gt(a: u256, b: u256) -> bool {
+    // a > b  iff  b < a
+    return u256_lt(b, a);
+}
+
+pub fn u256_ge(a: u256, b: u256) -> bool {
+    // a >= b  iff  not (a < b)
+    if u256_lt(a, b) {
+        return false;
+    }
+    return true;
+}
+
+// ── multiply (PR-U1b) ────────────────────────────────────────────────────────
+
+// Low 64 bits of a*b (wasm i64.mul already wraps).
+fn mul64_lo(a: u64, b: u64) -> u64 {
+    return a * b;
+}
+
+// High 64 bits of the 128-bit product a*b — the canonical Knuth/Warren `mulhu`
+// (every intermediate stays <= 2^64-1, so there is no u64 overflow even though
+// wasm lacks a widening multiply). Each 32x32 product fits a u64 exactly.
+fn mul64_hi(a: u64, b: u64) -> u64 {
+    let mask: u64 = 4294967295;
+    let al: u64 = a & mask;
+    let ah: u64 = a >> 32;
+    let bl: u64 = b & mask;
+    let bh: u64 = b >> 32;
+    let t0: u64 = al * bl;
+    let k0: u64 = t0 >> 32;
+    let t1: u64 = ah * bl + k0;
+    let w1: u64 = t1 & mask;
+    let w2: u64 = t1 >> 32;
+    let t2: u64 = al * bh + w1;
+    let k2: u64 = t2 >> 32;
+    return ah * bh + w2 + k2;
+}
+
+// Checked 256x256 -> 256 multiply. Schoolbook over four u64 limbs, accumulating
+// the full 512-bit product into eight limbs, then trapping if any high limb
+// (>= 2^256) is set (E1 overflow). PURE: reads the operands' limbs into fresh
+// scratch arrays and builds a fresh result; the operands are never mutated (E3).
+pub fn u256_mul(a: u256, b: u256) -> u256 {
+    let mut al: [u64; 4] = [0; 4];
+    al[0] = u256_limb(a, 0);
+    al[1] = u256_limb(a, 1);
+    al[2] = u256_limb(a, 2);
+    al[3] = u256_limb(a, 3);
+    let mut bl: [u64; 4] = [0; 4];
+    bl[0] = u256_limb(b, 0);
+    bl[1] = u256_limb(b, 1);
+    bl[2] = u256_limb(b, 2);
+    bl[3] = u256_limb(b, 3);
+
+    // r holds the 512-bit product (8 u64 limbs), zero-initialized.
+    let mut r: [u64; 8] = [0; 8];
+
+    let mut i: i64 = 0;
+    while i < 4 {
+        let ai: u64 = al[i];
+        let mut carry: u64 = 0;
+        let mut j: i64 = 0;
+        while j < 4 {
+            // r[i+j] += ai*bl[j] + carry  (a 128-bit multiply-accumulate).
+            let lo: u64 = mul64_lo(ai, bl[j]);
+            let hi: u64 = mul64_hi(ai, bl[j]);
+            let cur: u64 = r[i + j];
+            let s1: u64 = cur + lo;
+            let c1: u64 = ult(s1, lo);
+            let s2: u64 = s1 + carry;
+            let c2: u64 = ult(s2, carry);
+            r[i + j] = s2;
+            // The MAC invariant guarantees hi + c1 + c2 fits one u64 (no wrap).
+            carry = hi + c1 + c2;
+            j = j + 1;
+        }
+        // Propagate the row's final carry upward (a 256x256 product fits 8 limbs,
+        // so this never runs past limb 7 — carry out of the top limb is 0).
+        let mut k: i64 = i + 4;
+        while carry != 0 {
+            let cur: u64 = r[k];
+            let s: u64 = cur + carry;
+            let cc: u64 = ult(s, carry);
+            r[k] = s;
+            carry = cc;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // E1: any bit at or above 2^256 (limbs 4-7) is an overflow → revert.
+    trap_if(r[4] != 0);
+    trap_if(r[5] != 0);
+    trap_if(r[6] != 0);
+    trap_if(r[7] != 0);
+    return u256_make(r[0], r[1], r[2], r[3]);
+}
+
+// ── divide / modulo (PR-U1c) ─────────────────────────────────────────────────
+
+// Quotient + remainder of one division, so `u256_div`/`u256_mod` share the loop.
+record U256QR { q: u256, r: u256 }
+
+fn u256_is_zero(x: u256) -> bool {
+    if u256_limb(x, 0) != 0 {
+        return false;
+    }
+    if u256_limb(x, 1) != 0 {
+        return false;
+    }
+    if u256_limb(x, 2) != 0 {
+        return false;
+    }
+    if u256_limb(x, 3) != 0 {
+        return false;
+    }
+    return true;
+}
+
+// x << 1 (one bit). Used only inside long division, where the running remainder
+// stays < divisor <= 2^256-1 before each shift, so the top bit is never lost.
+fn shl1(x: u256) -> u256 {
+    let l0: u64 = u256_limb(x, 0);
+    let l1: u64 = u256_limb(x, 1);
+    let l2: u64 = u256_limb(x, 2);
+    let l3: u64 = u256_limb(x, 3);
+    let n0: u64 = l0 << 1;
+    let n1: u64 = (l1 << 1) | (l0 >> 63);
+    let n2: u64 = (l2 << 1) | (l1 >> 63);
+    let n3: u64 = (l3 << 1) | (l2 >> 63);
+    return u256_make(n0, n1, n2, n3);
+}
+
+// Bit `i` (0..=255) of x, as 0 or 1.
+fn bit_at(x: u256, i: i64) -> u64 {
+    let limb_idx: i64 = i / 64;
+    let bi: i64 = i % 64;
+    let bit_idx: u64 = bi.as_u64();
+    let mut ls: [u64; 4] = [0; 4];
+    ls[0] = u256_limb(x, 0);
+    ls[1] = u256_limb(x, 1);
+    ls[2] = u256_limb(x, 2);
+    ls[3] = u256_limb(x, 3);
+    let limb: u64 = ls[limb_idx];
+    return (limb >> bit_idx) & 1;
+}
+
+// x with bit `i` (0..=255) set to 1.
+fn set_bit(x: u256, i: i64) -> u256 {
+    let limb_idx: i64 = i / 64;
+    let bi: i64 = i % 64;
+    let bit_idx: u64 = bi.as_u64();
+    let one: u64 = 1;
+    let mask: u64 = one << bit_idx;
+    let mut ls: [u64; 4] = [0; 4];
+    ls[0] = u256_limb(x, 0);
+    ls[1] = u256_limb(x, 1);
+    ls[2] = u256_limb(x, 2);
+    ls[3] = u256_limb(x, 3);
+    ls[limb_idx] = ls[limb_idx] | mask;
+    return u256_make(ls[0], ls[1], ls[2], ls[3]);
+}
+
+// Unsigned long division: q = a / b, r = a % b. Traps on b == 0 (E1). Standard
+// bit-by-bit algorithm (256 iterations): bring down each bit of `a` from the top
+// into the running remainder `r`; whenever `r >= b`, subtract and set that
+// quotient bit. The post-condition q*b + r == a with r < b is the differential
+// oracle the tests check (using the verified mul/add/compare).
+fn u256_divmod(a: u256, b: u256) -> U256QR {
+    trap_if(u256_is_zero(b));
+    let mut q: u256 = u256_from_i64(0);
+    let mut r: u256 = u256_from_i64(0);
+    let mut i: i64 = 255;
+    while i >= 0 {
+        r = shl1(r);
+        let abit: u64 = bit_at(a, i);
+        if abit != 0 {
+            r = set_bit(r, 0);
+        }
+        if u256_ge(r, b) {
+            r = u256_sub(r, b);
+            q = set_bit(q, i);
+        }
+        i = i - 1;
+    }
+    return U256QR { q: q, r: r };
+}
+
+pub fn u256_div(a: u256, b: u256) -> u256 {
+    let dm: U256QR = u256_divmod(a, b);
+    return dm.q;
+}
+
+pub fn u256_mod(a: u256, b: u256) -> u256 {
+    let dm: U256QR = u256_divmod(a, b);
+    return dm.r;
+}
+
+// ── bitwise + shifts (PR-U1c-2) ──────────────────────────────────────────────
+
+pub fn u256_and(a: u256, b: u256) -> u256 {
+    let r0: u64 = u256_limb(a, 0) & u256_limb(b, 0);
+    let r1: u64 = u256_limb(a, 1) & u256_limb(b, 1);
+    let r2: u64 = u256_limb(a, 2) & u256_limb(b, 2);
+    let r3: u64 = u256_limb(a, 3) & u256_limb(b, 3);
+    return u256_make(r0, r1, r2, r3);
+}
+
+pub fn u256_or(a: u256, b: u256) -> u256 {
+    let r0: u64 = u256_limb(a, 0) | u256_limb(b, 0);
+    let r1: u64 = u256_limb(a, 1) | u256_limb(b, 1);
+    let r2: u64 = u256_limb(a, 2) | u256_limb(b, 2);
+    let r3: u64 = u256_limb(a, 3) | u256_limb(b, 3);
+    return u256_make(r0, r1, r2, r3);
+}
+
+// true iff the shift amount `b` is < 256 (a meaningful shift distance). A shift
+// by >= 256 produces 0 (Solidity / two's-complement semantics).
+fn shift_in_range(b: u256) -> bool {
+    if u256_limb(b, 1) != 0 {
+        return false;
+    }
+    if u256_limb(b, 2) != 0 {
+        return false;
+    }
+    if u256_limb(b, 3) != 0 {
+        return false;
+    }
+    let lo: u64 = u256_limb(b, 0);
+    let bound: u64 = 256;
+    return lo < bound;
+}
+
+// Logical shift left by `b` bits. `b >= 256` → 0.
+pub fn u256_shl(a: u256, b: u256) -> u256 {
+    if shift_in_range(b) {
+    } else {
+        return u256_from_i64(0);
+    }
+    let lo: u64 = u256_limb(b, 0);
+    let n: i64 = lo.as_i64();
+    let limb_shift: i64 = n / 64;
+    let bit_shift: i64 = n % 64;
+    let bsu: u64 = bit_shift.as_u64();
+    let comp_bits: i64 = 64 - bit_shift;
+    let comp: u64 = comp_bits.as_u64();
+    let mut al: [u64; 4] = [0; 4];
+    al[0] = u256_limb(a, 0);
+    al[1] = u256_limb(a, 1);
+    al[2] = u256_limb(a, 2);
+    al[3] = u256_limb(a, 3);
+    let mut r: [u64; 4] = [0; 4];
+    let mut k: i64 = 0;
+    while k < 4 {
+        let src: i64 = k - limb_shift;
+        if src >= 0 {
+            let mut v: u64 = al[src] << bsu;
+            if bit_shift > 0 {
+                if src - 1 >= 0 {
+                    v = v | (al[src - 1] >> comp);
+                } else {
+                }
+            } else {
+            }
+            r[k] = v;
+        } else {
+        }
+        k = k + 1;
+    }
+    return u256_make(r[0], r[1], r[2], r[3]);
+}
+
+// Logical (unsigned) shift right by `b` bits. `b >= 256` → 0.
+pub fn u256_shr(a: u256, b: u256) -> u256 {
+    if shift_in_range(b) {
+    } else {
+        return u256_from_i64(0);
+    }
+    let lo: u64 = u256_limb(b, 0);
+    let n: i64 = lo.as_i64();
+    let limb_shift: i64 = n / 64;
+    let bit_shift: i64 = n % 64;
+    let bsu: u64 = bit_shift.as_u64();
+    let comp_bits: i64 = 64 - bit_shift;
+    let comp: u64 = comp_bits.as_u64();
+    let mut al: [u64; 4] = [0; 4];
+    al[0] = u256_limb(a, 0);
+    al[1] = u256_limb(a, 1);
+    al[2] = u256_limb(a, 2);
+    al[3] = u256_limb(a, 3);
+    let mut r: [u64; 4] = [0; 4];
+    let mut k: i64 = 0;
+    while k < 4 {
+        let src: i64 = k + limb_shift;
+        if src < 4 {
+            let mut v: u64 = al[src] >> bsu;
+            if bit_shift > 0 {
+                if src + 1 < 4 {
+                    v = v | (al[src + 1] << comp);
+                } else {
+                }
+            } else {
+            }
+            r[k] = v;
+        } else {
+        }
+        k = k + 1;
+    }
+    return u256_make(r[0], r[1], r[2], r[3]);
+}

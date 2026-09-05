@@ -1,0 +1,39 @@
+// expect-error: C003
+// Z3 corpus #7: attenuation reaches Return sink.
+//
+// The function `pass` declares `-> Fuel` (full authority required for the
+// declared return type) but returns `f.restrict(burn)` (restricted to
+// `burn` only). Z3's Return-sink check (z3_capability.rs:476-528) must
+// reject this with C003 — every value flowing to a Return that declares a
+// cap-typed return must satisfy the declared authority mask.
+//
+// WHY THIS FIXTURE MATTERS
+//
+// Fixtures 01-03 cover the three other capability sinks (Call, Spawn,
+// Send/Serialize). Return is the fourth sink, but the corpus had no
+// fixture exercising it. The Z3 layer's Return-sink check is what makes
+// the inter-procedural model SOUND: callers can treat `Call return` as
+// "full authority" only because Z3 guarantees every function returning
+// a cap returns it with full authority. Without this fixture there was
+// no end-to-end test that the Return-sink check fires when it should —
+// a regression silently weakening it would have been caught only by an
+// outright soundness break in another fixture, not at the source.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// restriction. The function's body collapses to `return f;` which
+// returns the unattenuated parameter at full authority. Z3 accepts.
+module sigil;
+cap type Fuel { burn, query }
+
+fn pass(f: Fuel) -> Fuel {
+    let f: Fuel = f.restrict(burn);  // MUTATION_SITE
+    return f;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        return 1;
+    }
+}

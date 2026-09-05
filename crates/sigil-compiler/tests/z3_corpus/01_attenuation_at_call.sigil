@@ -1,0 +1,23 @@
+// expect-error: C003
+// Z3 corpus #1: attenuation reaches Call sink.
+//
+// The function `needs_full` requires unrestricted Fuel authority. We pass a
+// `.restrict(burn)`-attenuated cap. Z3's Call-sink check (z3_capability.rs
+// authority-sufficiency phase) must reject this with C003.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the call —
+// `fuel` is never consumed (state caps persist for actor lifetime), the
+// program reduces to `return 1;`, and verification passes.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 ! {} { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        needs_full(fuel.restrict(burn));  // MUTATION_SITE
+        return 1;
+    }
+}

@@ -1,0 +1,34 @@
+---
+source: crates/sigil-compiler/tests/snap_inregion.rs
+expression: in_region
+---
+(func (;9;) (type 9) (param i64) (result i32)
+    (local i32 i64 i64 i64 i64)
+    i64.const 0
+    local.set 2
+    i64.const 0
+    local.set 3
+    i64.const 0
+    local.set 4
+    i64.const 0
+    local.set 5
+    i32.const 1
+    call 0
+    i32.const 32
+    call 4
+    local.set 1
+    local.get 1
+    local.get 2
+    i64.store
+    local.get 1
+    local.get 3
+    i64.store offset=8
+    local.get 1
+    local.get 4
+    i64.store offset=16
+    local.get 1
+    local.get 5
+    i64.store offset=24
+    local.get 1
+    return
+  )

@@ -1,0 +1,97 @@
+// PR B / stdlib::option — `Option<T>` as a user-defined enum
+// with combinator impl methods.
+//
+// Pre-PR-B, `Option<T>` did NOT exist in SIGIL at all — `"Option"`
+// doesn't appear as a hardcoded string in type_check.rs. Tests
+// used `MyOption<T> { Some(T), None }`-style user enums to
+// demonstrate the Some/None pattern. This file adds Option as
+// a first-class stdlib enum so user code can write
+// `let x: Option<i64> = Some(42); x.map(|v| v + 1)` ergonomically.
+//
+// Per N28-PRB: variants declared in EXACT positional order Some(T), None.
+//
+// Per PR B's variant disambiguation policy (qualified-by-default,
+// unqualified-by-import):
+// - `Some(42)` resolves unambiguously when only Option's Some
+//   is in scope.
+// - Multiple enums-with-Some in scope → T236 fires (PR B commit #3).
+// - Qualified form `Option::Some(42)` always works (PR B commit #3).
+// - Annotation context resolves: `let x: Option<i64> = Some(42)`
+//   picks Option's Some via the ExpectedTypeGuard threading
+//   (N33-PRB).
+
+module option;
+
+pub enum Option<T> {
+    Some(T),
+    None,
+}
+
+impl Option<T> {
+    /// Apply `f` to the inner value if Some; pass through None.
+    pub fn map<U>(self: Option<T>, f: Fn(T) -> U) -> Option<U> {
+        match self {
+            Some(v) => { return Some(f(v)); },
+            None => { return None; }
+        }
+    }
+
+    /// Chain an Option-returning function on Some; short-circuit on None.
+    pub fn and_then<U>(self: Option<T>, f: Fn(T) -> Option<U>) -> Option<U> {
+        match self {
+            Some(v) => { return f(v); },
+            None => { return None; }
+        }
+    }
+
+    /// Call `f` to produce a fallback Option when self is None;
+    /// pass through Some unchanged.
+    pub fn or_else(self: Option<T>, f: Fn() -> Option<T>) -> Option<T> {
+        match self {
+            Some(v) => { return Some(v); },
+            None => { return f(); }
+        }
+    }
+
+    /// Unwrap the Some value or return `default` on None. `default` is `@Mut`
+    /// because it may be RETURNED (moved out to the caller) — under default-frozen
+    /// a returnable parameter cannot be a frozen view (it would be a T253 escape).
+    pub fn unwrap_or(self: Option<T>, default: T @Mut) -> T {
+        match self {
+            Some(v) => { return v; },
+            None => { return default; }
+        }
+    }
+
+    /// Unwrap the Some value or call `f` to produce a value on None.
+    pub fn unwrap_or_else(self: Option<T>, f: Fn() -> T) -> T {
+        match self {
+            Some(v) => { return v; },
+            None => { return f(); }
+        }
+    }
+
+    /// Convert Some/None to Ok/Err with the supplied error value.
+    pub fn ok_or<E>(self: Option<T>, err: E) -> Result<T, E> {
+        match self {
+            Some(v) => { return Ok(v); },
+            None => { return Err(err); }
+        }
+    }
+
+    /// True iff the Option is Some.
+    pub fn is_some(self: Option<T>) -> bool {
+        match self {
+            Some(v) => { return true; },
+            None => { return false; }
+        }
+    }
+
+    /// True iff the Option is None.
+    pub fn is_none(self: Option<T>) -> bool {
+        match self {
+            Some(v) => { return false; },
+            None => { return true; }
+        }
+    }
+}

@@ -1,0 +1,18 @@
+module multimap_lock;
+
+record Token { balances: BoundedMap_u256_u256_64, locked: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new(), locked: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn lock(self: Token @Mut, u: u256, a: u256) {
+        let mut __fe_rb0: u256 = (self.balances.get_or(u, 0) - a);
+        let mut __fe_rb1: u256 = (self.locked.get_or(u, 0) + a);
+        self.balances.reserve1(u);
+        self.locked.reserve1(u);
+        self.balances.insert(u, __fe_rb0);
+        self.locked.insert(u, __fe_rb1);
+    }
+}

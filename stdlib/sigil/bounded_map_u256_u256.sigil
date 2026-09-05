@@ -1,0 +1,527 @@
+// stdlib::bounded_map_u256_u256 — a BOUNDED, stack-backed map keyed by `u256`
+// with `u256` values: `BoundedMap_u256_u256_64`. Same recipe as `bounded_map_str`
+// (parallel fixed `[u256; 64]` keys + values, `count` live-prefix, linear scan,
+// sealed, Alloc-free, full+new force-traps) with one delta vs the str variant:
+// key comparison is the `==` OPERATOR, which on `u256` lowers to the compiler's
+// `u256_eq` (a true 32-byte value compare) — unlike `str`, where `==` is pointer
+// identity and a `bytes_eq` call is required. The backing init is `[0; 64]` (the
+// u256 zero fills the fixed array; cells >= count are NEVER scanned, so 0 is a
+// legal key). `Option` is co-injected for `get`; `u256.sigil` (the native
+// arithmetic the `==` operator lowers to) is co-injected alongside.
+//
+// This is the Solidity frontend's `mapping(address => uint256)` / `mapping(uint256
+// => uint256)` target: a CAPACITY-BOUNDED ledger of at most 64 distinct keys. It
+// is NOT a faithful model of an unbounded Solidity mapping — the 65th distinct-key
+// insert force-traps (never a silent drop).
+
+module bounded_map_u256_u256;
+
+record BoundedMap_u256_u256_64 { keys: [u256; 64], vals: [u256; 64], count: i64 }
+
+impl BoundedMap_u256_u256_64 {
+    pub fn new() -> BoundedMap_u256_u256_64 {
+        return BoundedMap_u256_u256_64 { keys: [0; 64], vals: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedMap_u256_u256_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedMap_u256_u256_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedMap_u256_u256_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedMap_u256_u256_64) -> bool {
+        return self.count == 64;
+    }
+
+    // Probe loops are `for i in 0..64` with a `>= count` break (NOT `while i < count`):
+    // the literal capacity bound makes the trip count STATICALLY known, so the fuel
+    // pass's `recommended_budget` can cover the scan's worst case (the loop-aware-budget
+    // arc). Behavior-identical — the break fires exactly where the while-cond failed.
+    pub fn insert(self: BoundedMap_u256_u256_64 @Mut, key: u256, val: u256) -> i64 {
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            let ki: u256 = self.keys[i];
+            if ki == key {
+                self.vals[i] = val;
+                return self.count;
+            } else {
+            }
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    pub fn try_insert(self: BoundedMap_u256_u256_64 @Mut, key: u256, val: u256) -> bool {
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            let ki: u256 = self.keys[i];
+            if ki == key {
+                self.vals[i] = val;
+                return true;
+            } else {
+            }
+        }
+        if self.count == 64 {
+            return false;
+        } else {
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn get(self: BoundedMap_u256_u256_64, key: u256) -> Option<u256> {
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            let ki: u256 = self.keys[i];
+            if ki == key {
+                return Some(self.vals[i]);
+            } else {
+            }
+        }
+        return None;
+    }
+
+    pub fn get_or(self: BoundedMap_u256_u256_64, key: u256, default: u256) -> u256 {
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            let ki: u256 = self.keys[i];
+            if ki == key {
+                return self.vals[i];
+            } else {
+            }
+        }
+        return default;
+    }
+
+    pub fn contains_key(self: BoundedMap_u256_u256_64, key: u256) -> bool {
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            let ki: u256 = self.keys[i];
+            if ki == key {
+                return true;
+            } else {
+            }
+        }
+        return false;
+    }
+
+    // Read-only capacity RESERVATION for a single key (SOL-MULTIMAP ≥2-map batch). Traps NOW iff a
+    // later `insert(key, _)` WOULD trap — i.e. `key` is NEW and the map is already at capacity (the
+    // 65th distinct key). Performs NO write (only `contains_key`/`count` reads + a `trap_if`), so
+    // calling it commits nothing. The frontend's reserve-all-then-write batch reserves EVERY deferred
+    // map up front (all read-only), so the subsequent `insert`s are guaranteed trap-free. This is
+    // exactly `transfer`'s Phase-2 reservation, factored out for one key. Returns `bool` (always
+    // `true`) — matching `transfer`'s choice to avoid the internal unit-return codegen path; the
+    // caller discards it (a bare statement).
+    pub fn reserve1(self: BoundedMap_u256_u256_64, key: u256) -> bool {
+        let mut needed: i64 = 0;
+        if self.contains_key(key) {
+        } else {
+            needed = needed + 1;
+        }
+        trap_if(self.count + needed > 64);
+        return true;
+    }
+
+    // Atomic value transfer of `amount` from `from` to `to` (the Solidity-frontend
+    // `bal[from] -= amount; bal[to] += amount;` target). Trap-safe by construction:
+    // ALL trap-capable checks run BEFORE either write, so a trap leaves NO partial
+    // state (SIGIL has no atomic rollback). Matches the sequential Solidity 0.8
+    // semantics EXACTLY, including the self-transfer aliasing case:
+    //   - insufficient balance (`from` < amount) traps (the checked `-=` underflow);
+    //   - `from == to` is a net-zero no-op (sequential `-amount` then `+amount`);
+    //   - the credit overflow traps BEFORE any write (Solidity's atomic revert);
+    //   - capacity for any NEW key is reserved before writing (NC-L1 bounded-ledger
+    //     limit — the 65th distinct account traps, loud, never a silent drop).
+    // After the checks, both writes are guaranteed trap-free (`from` is present once
+    // amount>0; `to` has reserved room; both values are precomputed), so no trap can
+    // occur mid-write.
+    // Returns `true` on success (matching ERC20 `transfer`'s bool); a failure path
+    // (insufficient balance, overflow, capacity) `trap`s rather than returning false,
+    // so the bool is always `true` when it returns. Value-returning (not void) with a
+    // single trailing `return` — a unit-returning method called internally hits a
+    // codegen path the SOL1 frontend never exercises (no internal calls).
+    pub fn transfer(
+        self: BoundedMap_u256_u256_64 @Mut,
+        from: u256,
+        to: u256,
+        amount: u256,
+    ) -> bool {
+        // A zero-amount transfer is a TOTAL no-op (Solidity `-= 0`/`+= 0` never traps and
+        // writes nothing): return before touching any key, so it never consumes bounded
+        // capacity on an absent key (NC-L1 faithfulness).
+        if amount == 0 {
+            return true;
+        } else {
+        }
+        let fb: u256 = self.get_or(from, 0);
+        trap_if(fb < amount);
+        // `from == to` is a net-zero no-op (sequential `-amount` then `+amount`); the
+        // real debit/credit lives in the `else` branch.
+        if from == to {
+        } else {
+            let tb: u256 = self.get_or(to, 0);
+            let nt: u256 = tb + amount;
+            let nf: u256 = fb - amount;
+            // Reserve capacity for any NEW key before committing (fund-neutral pre-check).
+            let mut needed: i64 = 0;
+            if self.contains_key(from) {
+            } else {
+                needed = needed + 1;
+            }
+            if self.contains_key(to) {
+            } else {
+                needed = needed + 1;
+            }
+            trap_if(self.count + needed > 64);
+            // Commit phase — trap-free: room ensured, values precomputed.
+            let _a: i64 = self.insert(from, nf);
+            let _b: i64 = self.insert(to, nt);
+        }
+        return true;
+    }
+
+    // Atomic THREE-address split (SOL-MULTIMAP M-B): the fee-on-transfer / reflection idiom
+    //   balances[from] -= amount; balances[to] += net; balances[feeTo] += fee;
+    // applied SEQUENTIALLY (like Solidity 0.8), aliasing-correct across ALL 5 partitions of
+    // {from, to, feeTo}. The frontend has no `a != b` proof, so the aliasing lives HERE, in verified
+    // stdlib (the `.transfer()` precedent generalized to three addresses). Trap-safe by construction:
+    // ALL trap-capable arithmetic (the debit underflow, the two credit overflows) runs on LOCAL slot
+    // values BEFORE any write, in the SAME order as Solidity's sequential execution, so a trap leaves
+    // NO partial state (SIGIL has no rollback). No conservation is assumed (net/fee are the source's
+    // three deltas verbatim — a non-conserving fee is the source author's bug, translated faithfully).
+    //
+    // The model: track each address's CURRENT value (fv/tv/ev) through the 3 steps, propagating a
+    // write to every alias of the written address (so aliased addresses stay in sync). After the 3
+    // steps every alias holds the same final value, so writing all three is idempotent on aliased
+    // slots. Then reserve capacity for the DISTINCT new keys and commit trap-free.
+    pub fn transfer_split(
+        self: BoundedMap_u256_u256_64 @Mut,
+        from: u256,
+        amount: u256,
+        to: u256,
+        net: u256,
+        feeTo: u256,
+        fee: u256,
+    ) -> bool {
+        // Snapshot the three slots. Aliased addresses read the SAME (current) slot ⇒ equal values.
+        let mut fv: u256 = self.get_or(from, 0);
+        let mut tv: u256 = self.get_or(to, 0);
+        let mut ev: u256 = self.get_or(feeTo, 0);
+        // Step 1: `from -= amount` (checked underflow = the balance-insufficient revert). No write yet.
+        trap_if(fv < amount);
+        fv = fv - amount;
+        if to == from {
+            tv = fv;
+        } else {
+        }
+        if feeTo == from {
+            ev = fv;
+        } else {
+        }
+        // Step 2: `to += net` (checked overflow). Propagate to any alias of `to`.
+        tv = tv + net;
+        if from == to {
+            fv = tv;
+        } else {
+        }
+        if feeTo == to {
+            ev = tv;
+        } else {
+        }
+        // Step 3: `feeTo += fee` (checked overflow). Propagate to any alias of `feeTo`.
+        ev = ev + fee;
+        if from == feeTo {
+            fv = ev;
+        } else {
+        }
+        if to == feeTo {
+            tv = ev;
+        } else {
+        }
+        // Reserve capacity for the DISTINCT new keys among {from, to, feeTo}. A leg whose FINAL
+        // value is 0 on a FRESH key is a no-op (Solidity `balances[k] += 0` grows no storage): it
+        // is neither reserved NOR inserted (below), so it consumes no bounded capacity and cannot
+        // trap at the 64-key limit where Solidity succeeds (NC-L1 faithfulness, the `transfer`
+        // zero-amount precedent generalized PER-LEG). An EXISTING key is always written (idempotent).
+        let mut needed: i64 = 0;
+        if self.contains_key(from) {
+        } else {
+            if fv == 0 {
+            } else {
+                needed = needed + 1;
+            }
+        }
+        if self.contains_key(to) {
+        } else {
+            if to == from {
+            } else {
+                if tv == 0 {
+                } else {
+                    needed = needed + 1;
+                }
+            }
+        }
+        if self.contains_key(feeTo) {
+        } else {
+            if feeTo == from {
+            } else {
+                if feeTo == to {
+                } else {
+                    if ev == 0 {
+                    } else {
+                        needed = needed + 1;
+                    }
+                }
+            }
+        }
+        trap_if(self.count + needed > 64);
+        // Commit — trap-free (room reserved, values precomputed). Each leg is written iff its key
+        // ALREADY EXISTS or its final value is non-zero; a FRESH zero-value leg is skipped (matching
+        // Solidity's no-op `+= 0`, materializing no slot). Aliased writes are idempotent (equal final
+        // values); a later aliased insert sees the key present from the earlier one.
+        let mut w_from: bool = self.contains_key(from);
+        if fv == 0 {
+        } else {
+            w_from = true;
+        }
+        if w_from {
+            let _a: i64 = self.insert(from, fv);
+        } else {
+        }
+        let mut w_to: bool = self.contains_key(to);
+        if tv == 0 {
+        } else {
+            w_to = true;
+        }
+        if w_to {
+            let _b: i64 = self.insert(to, tv);
+        } else {
+        }
+        let mut w_feeto: bool = self.contains_key(feeTo);
+        if ev == 0 {
+        } else {
+            w_feeto = true;
+        }
+        if w_feeto {
+            let _c: i64 = self.insert(feeTo, ev);
+        } else {
+        }
+        return true;
+    }
+
+    // ── SOL-UPDATE: the OZ 5.x unified `_update(from, to, value)` as ONE atomic op ──
+    //
+    // Semantics (Solidity 0.8 checked semantics, source order):
+    //   if (from == 0) { totalSupply += value; } else { require(bal[from] >= value); bal[from] -= value; }
+    //   if (to   == 0) { totalSupply -= value; } else { bal[to] += value; }
+    // i.e. `from == 0` MINTS, `to == 0` BURNS, otherwise a transfer; `from == to` (nonzero) is a
+    // net-zero self-transfer. `ts` (the caller's totalSupply) is passed BY VALUE and the new
+    // totalSupply is RETURNED — the frontend emits a trap-free `self._totalSupply = <ret>`
+    // store-back after this single committed op (CEI-safe: a bare-Var `=` store never traps).
+    //
+    // Order of effects (ALL traps BEFORE any write — atomic without rollback):
+    //   1. new_ts: the checked mint-add then burn-sub (a ts trap leaves balances untouched);
+    //      the degenerate `from == 0 && to == 0` nets back to `ts`, with no balance writes.
+    //   2. the debit on a LOCAL snapshot (`from != 0`; the underflow trap IS the
+    //      insufficient-balance revert — also on a nonzero self-transfer, as in Solidity);
+    //   3. the credit on a LOCAL snapshot (`to != 0`; checked overflow), alias-synced for
+    //      `from == to` (seed `tv` from the DEBITED `fv`, write the final value back to `fv`)
+    //      so a nonzero self-transfer nets zero over the one shared slot;
+    //   4. reserve capacity for the DISTINCT NONZERO new keys;
+    //   5. trap-free inserts of ONLY the nonzero keys. The zero address is a SENTINEL, never a
+    //      slot: `balances[0]` is NEVER written (mint/burn skip that side's insert), matching
+    //      Solidity's `_balances[address(0)] == 0` invariant and consuming no bounded slot.
+    pub fn erc20_update(
+        self: BoundedMap_u256_u256_64 @Mut,
+        ts: u256,
+        from: u256,
+        to: u256,
+        value: u256,
+    ) -> u256 {
+        // A zero-value update is a TOTAL no-op (the `transfer` zero-amount precedent, NC-L1
+        // faithfulness): Solidity's `_update(from, to, 0)` changes nothing observable — the
+        // debit guard `fb < 0` can never fire and every delta is ±0 — while materializing a
+        // value-0 slot here would consume bounded capacity for a NON-holder (free slot
+        // griefing) and trap at 64 holders where Solidity succeeds.
+        if value == 0 {
+            return ts;
+        } else {
+        }
+        let zero: u256 = 0;
+        // 1. totalSupply, in source order: mint-add first, then burn-sub over the result.
+        let mut new_ts: u256 = ts;
+        if from == zero {
+            new_ts = ts + value;
+        } else {
+        }
+        if to == zero {
+            new_ts = new_ts - value;
+        } else {
+        }
+        // 2. Debit (`from != 0`) on the local snapshot; the underflow check is the revert.
+        let mut fv: u256 = self.get_or(from, 0);
+        if from == zero {
+        } else {
+            trap_if(fv < value);
+            fv = fv - value;
+        }
+        // 3. Credit (`to != 0`) on the local snapshot; `from == to` reads the DEBITED value
+        //    and writes the credited value back, keeping both locals in sync (idempotent commit).
+        let mut tv: u256 = self.get_or(to, 0);
+        if from == to {
+            tv = fv;
+        } else {
+        }
+        if to == zero {
+        } else {
+            tv = tv + value;
+            if from == to {
+                fv = tv;
+            } else {
+            }
+        }
+        // 4. Reserve capacity for the DISTINCT NONZERO new keys (a zero side never inserts).
+        let mut needed: i64 = 0;
+        if from == zero {
+        } else {
+            if self.contains_key(from) {
+            } else {
+                needed = needed + 1;
+            }
+        }
+        if to == zero {
+        } else {
+            if self.contains_key(to) {
+            } else {
+                if to == from {
+                } else {
+                    needed = needed + 1;
+                }
+            }
+        }
+        trap_if(self.count + needed > 64);
+        // 5. Commit — trap-free (reserved, precomputed); only NONZERO keys are written; the
+        //    `from == to` double-insert is idempotent (both locals hold the same final value).
+        if from == zero {
+        } else {
+            let _a: i64 = self.insert(from, fv);
+        }
+        if to == zero {
+        } else {
+            let _b: i64 = self.insert(to, tv);
+        }
+        return new_ts;
+    }
+
+    // ── SOL-AIRDROP (Rung C): the N-ary atomic from-debit airdrop ─────────────────
+    //
+    // An INDEPENDENT deep copy — a FRESH `::new()` backing, NOT a header alias. MI-5
+    // (load-bearing): `let work = self` would SHARE the backing (reference semantics)
+    // and corrupt self; this straight-line copy of the live `[0, count)` prefix gives
+    // a truly independent map. Same-module field access on the map is fine.
+    pub fn deep_copy(self: BoundedMap_u256_u256_64) -> BoundedMap_u256_u256_64 {
+        let mut out: BoundedMap_u256_u256_64 = BoundedMap_u256_u256_64::new();
+        for i in 0..64 {
+            if i >= self.count {
+                break;
+            } else {
+            }
+            out.keys[i] = self.keys[i];
+            out.vals[i] = self.vals[i];
+        }
+        out.count = self.count;
+        return out;
+    }
+
+    // The raw sequential airdrop loop, mirroring Solidity's per-leg execution EXACTLY:
+    // debit `from` by `amounts[i]`, credit `recipients[i]` by `amounts[i]`. Operates on
+    // the LIVE map slots (each leg `get_or`-re-reads), so ALIASING is handled by the
+    // map's own key identity — a DUPLICATE recipient ACCUMULATES, and `recipients[i] ==
+    // from` reads the just-debited `from` value (the self-leg nets zero, but was still
+    // underflow-checked pre-debit). Zero-amount legs are SKIPPED (NC-L1: `+= 0`
+    // materializes no slot, consumes no capacity). Traps: (a) debit underflow `fb < a`,
+    // (b) credit overflow (the checked u256 `+`), (c) capacity (the 65th distinct key's
+    // `insert` force-trap). Cross-module vector reads go through `len()`/`at()` (never a
+    // raw cross-module field access). Bool-return (never unit) to dodge the internal
+    // unit-return codegen path the frontend never exercises.
+    pub fn batch_apply(self: BoundedMap_u256_u256_64 @Mut, from: u256, recipients: BoundedVec_u256_64, amounts: BoundedVec_u256_64) -> bool {
+        let n: i64 = recipients.len();
+        for i in 0..64 {
+            if i >= n {
+                break;
+            } else {
+            }
+            let a: u256 = amounts.at(i);
+            let r: u256 = recipients.at(i);
+            if a == 0 {
+            } else {
+                let fb: u256 = self.get_or(from, 0);
+                trap_if(fb < a);
+                let nf: u256 = fb - a;
+                let _d: i64 = self.insert(from, nf);
+                let rb: u256 = self.get_or(r, 0);
+                let nr: u256 = rb + a;
+                let _c: i64 = self.insert(r, nr);
+            }
+        }
+        return true;
+    }
+
+    // The N-ary atomic airdrop: debit `from` by each `amounts[i]`, credit each
+    // `recipients[i]` — the loop-generalization of `transfer`/`transfer_split`.
+    // ATOMICITY WITHOUT ROLLBACK (SIGIL has none): run the WHOLE loop on an INDEPENDENT
+    // deep clone first (Pass 1) — any underflow/overflow/capacity trap fires THERE,
+    // leaving self BYTE-UNTOUCHED — then commit via a trap-free BLIT of the validated
+    // clone back into self (Pass 2 = direct FIELD writes, NO per-slot Calls, so it adds
+    // only `count` back-edges of fuel). MI-FUEL: a max-N airdrop completes atomically at
+    // the recommended fuel budget (exec-proven), so the bounded (<=64) two-pass never
+    // fuel-traps mid-commit. The length guard is faithful to Solidity's `amounts[i]` OOB
+    // revert (a source `require(recipients.length == amounts.length)` translates
+    // separately and survives). Bool-return (always `true`; every failure path TRAPS).
+    pub fn batch_transfer(self: BoundedMap_u256_u256_64 @Mut, from: u256, recipients: BoundedVec_u256_64, amounts: BoundedVec_u256_64) -> bool {
+        let alen: i64 = amounts.len();
+        let rlen: i64 = recipients.len();
+        trap_if(alen < rlen);
+        let mut work: BoundedMap_u256_u256_64 = self.deep_copy();
+        let _v: bool = work.batch_apply(from, recipients, amounts);
+        // Pass 2 = trap-free BLIT: FULLY overwrite self from the validated clone (a
+        // partial blit is forbidden — count reset + every live slot copied).
+        self.count = 0;
+        for j in 0..64 {
+            if j >= work.count {
+                break;
+            } else {
+            }
+            self.keys[j] = work.keys[j];
+            self.vals[j] = work.vals[j];
+        }
+        self.count = work.count;
+        return true;
+    }
+}

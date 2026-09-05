@@ -1,0 +1,95 @@
+// expect-ok
+// Z3 corpus #14: axis-1 — deadline-typed (parametric) caps, Stage 1.
+//
+// HISTORY
+//
+// Through Wall 1's closure, this fixture was `expect-error`: the
+// parser refused `cap type Approval(deadline_ms: i64) {}` with
+// "expected `{` or `;` after capability type name". The wall existed
+// to make the absence of parametric cap types honest in the corpus.
+//
+// Wall 2 Stage 1 (this fixture's flip) delivered the bounded first
+// step described in the original WALL section's acceptance criteria:
+//
+//   1. Grammar accepts `cap type <Name>(<param>: i64) { ... }`.
+//   2. Type-checker tracks the parameter as part of cap's type
+//      identity: `Approval(2030_06_01) ≠ Approval(2025_06_01)`.
+//   3. Cap construction (restrict / split / draw) propagates the
+//      parameter; the output cap's deadline equals the source's.
+//   4. Function signatures, spawn init parameters, state fields,
+//      message handler parameters, let-binding annotations, and
+//      `Slot<T>` instantiation all accept literal-deadline cap types.
+//   5. Subtyping rule: `Approval(D_a) <: Approval(D_b)` iff
+//      `D_a >= D_b` (covariance — longer deadline is more permissive).
+//      Subtype-incompatible flows fire **T195**.
+//
+// WHAT THIS FIXTURE NOW PROVES
+//
+// A small parametric program type-checks cleanly: a parametric cap
+// type is declared, a function takes a literal-deadline parametric
+// argument, and a state field uses the same shape. The fixture also
+// exercises the covariant subtyping rule by passing a longer-deadline
+// cap (`Approval(2031)`) into a `Approval(2030)`-typed sink.
+//
+// STAGES 2 AND 3 (now shipped — the wall is closed)
+//
+//   * Stage 2 (`--build-deadline` + `restrict_deadline`): the CLI flag
+//     `sigil check --build-deadline <N>` makes the compiler refuse any
+//     parametric cap literal `Cap(D)` with `D < N` (T199). The new
+//     `cap.restrict_deadline(D')` method narrows a parametric cap's
+//     declared deadline at the call site, consuming the source and
+//     producing a fresh `Cap(name, min(D_orig, D'))`. Extension or
+//     non-parametric receivers fire T200.
+//   * Stage 3 (close the narrowing escape hatch): `restrict_deadline`
+//     arguments are method-call literals, not type positions — Stage
+//     2's T199 didn't see them. Stage 3 mirrors the build-deadline
+//     check at the restrict_deadline call site so a user can't narrow
+//     past `BUILD_NOW` through the method-call door either.
+//
+// What the original WALL section's ACCEPTANCE CRITERIA contemplated
+// for a future "Stage 4" — Z3 QF_LIA modelling of deadlines that
+// would let fixture `11_time_bound_approval.sigil`'s runtime
+// `time_now()` FFI guard become optional — is intentionally NOT
+// shipped. The realized deadline-typed cap story stops at the type
+// system: deadlines are unforgeable type identities, the build
+// pipeline gates literal values, runtime narrowing is constrained
+// by the same gate. Fixture 11's runtime check stays at runtime —
+// it now serves only to catch executions that drift past
+// `BUILD_NOW + lifetime`, never because the compiler missed a
+// type-level violation.
+//
+// THREAT-MODEL STANCE (STAGE 1)
+//
+// Deadline integrity in Stage 1 rests on source-fingerprint trust
+// (the verification certificate, schema v3, SHA-256). The runtime
+// cap-record metadata is unchanged — there is no per-cap deadline
+// field in the wasm representation. Use-after-deadline must still be
+// gated at runtime by the policy author (see fixture #11). Stage 1's
+// contribution is that the TYPE SYSTEM now refuses to let the policy
+// author hand a cap to a sink whose declared deadline doesn't match
+// the cap's declared deadline — that "right argument, right shape"
+// guarantee is what makes the runtime check (when present) provably
+// comparing against the correct value.
+//
+// MUTATION CONTRACT
+//
+// Not applicable. This is an `expect-ok` fixture (positive evidence
+// of expressiveness). Removing any line would break compilation, not
+// flip a verdict.
+module sigil;
+
+cap type Approval(deadline_ms: i64) {}
+
+fn use_before_2030(c: Approval(2030)) -> i64 {
+    return 1;
+}
+
+entry actor Main {
+    state { authority: Approval(2031) }
+
+    on Start() -> i64 {
+        // Covariance: a cap valid until 2031 is acceptable wherever
+        // a 2030-bounded cap is required. The type system accepts.
+        return use_before_2030(authority);
+    }
+}

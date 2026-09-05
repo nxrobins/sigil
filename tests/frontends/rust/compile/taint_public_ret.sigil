@@ -1,0 +1,4 @@
+module taint_public_ret;
+pub fn ignore(a: i64 @Internal) -> i64 {
+  return 0;
+}

@@ -1,0 +1,43 @@
+// Phase 5a-3: stdlib `fs` module — filesystem read/write.
+//
+// Tools that `use sigil::fs;` MUST declare `#[ring(outer)] #[trusted]`
+// on their own module — `compile_tool` selects ONE wasm by `tool_main`'s
+// ring, and FFI-backed stdlib lives in outer ring (per R004 / G2).
+//
+// Grants required:
+//   - `fs::read`  → `IoGrants.fs` containing the read root.
+//   - `fs::list`  → `IoGrants.fs` (the read grant — listing is a read).
+//   - `fs::write` → `IoGrants.fs_write` containing the write root.
+// Read and write are SEPARATE grants — a read grant does not confer
+// write access. Without the appropriate grant, the underlying shim
+// returns -403 (packed as a negative i64).
+#[ring(outer)] #[trusted] module fs;
+
+effect FsIO;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn fs_write(path: i32, path_len: i32, body: i32, body_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn fs_list(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read the file at `path` (interpreted as host bytes). Returns the
+// packed `(ptr * 4294967296 + len)` of the file contents on success, or
+// a negative error code (e.g. -403 for grant rejection, -404 not found,
+// -413 file too large > 5 MB).
+pub fn read(path_ptr: i32, path_len: i32) -> i64 @Internal ! { FsIO, Alloc, FFI, Unsafe } {
+    return fs_read(path_ptr, path_len);
+}
+
+// Write `body` to `path`. Returns 0 on success, or a negative error
+// code (-403 grant rejected, -413 body > 5 MB, -404 parent dir missing,
+// -500 host write failure).
+pub fn write(path_ptr: i32, path_len: i32, body_ptr: i32, body_len: i32) -> i64 @Internal ! { FsIO, FFI, Unsafe } {
+    return fs_write(path_ptr, path_len, body_ptr, body_len);
+}
+
+// List the directory at `path`: the packed `(ptr * 4294967296 + len)` of
+// the SORTED, newline-joined entry names on success, or a negative error
+// code (-403 grant rejected, -404 missing or not a directory, -413 the
+// listing exceeds 5 MB). Uses the READ grant (`IoGrants.fs`).
+pub fn list(path_ptr: i32, path_len: i32) -> i64 @Internal ! { FsIO, Alloc, FFI, Unsafe } {
+    return fs_list(path_ptr, path_len);
+}

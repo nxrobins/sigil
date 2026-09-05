@@ -1,0 +1,43 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [
+            AirCapabilityObligation {
+                var_id: VarId(
+                    3,
+                ),
+                cap_type: "Fuel",
+                required_mask: 3,
+                actual_mask: 1,
+                kind: Serialize,
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "C003",
+                    ),
+                    severity: Error,
+                    message: "`v3` has `Fuel` authority {burn} but message argument requires {burn, query} (missing: {query})",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 740,
+                            end: 759,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+}

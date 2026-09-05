@@ -1,0 +1,44 @@
+// expect-error: T282
+//
+// T282 — a `lo..=hi` match pattern whose bounds are not integer literals
+// is rejected at type-check.
+//
+// The parser reaches its range arm for `BoolLit | IntLit | StrLit` alike,
+// because range patterns share one arm with ordinary literal patterns.
+// That makes `"a"..="z"` a well-formed `Pattern::Range` carrying two
+// `Literal::Str` bounds. Nothing downstream wanted them: a range lowers
+// to a pair of `>=` / `<=` comparisons, and ordering is defined only over
+// the machine integer types.
+//
+// Two upstream checks each had a reason not to fire. The bound/scrutinee
+// compatibility check compares each bound's type against the scrutinee's,
+// and a `str` bound against a `str` scrutinee is compatible, so it passed.
+// T190 (`lo > hi`) is gated on `(Literal::Int, Literal::Int)`, so a
+// non-integer pair skipped it.
+//
+// (The compatibility code is deliberately NOT named here. It sits in the
+// direct-test gap manifest, and the coverage census counts a bare code
+// token in any test-tree file as a reference — so naming it in a comment
+// would mark it "covered" without adding a single test for it.)
+//
+// AIR then coerced both bounds to `0` through a `_ => 0` arm, leaving a
+// `Ptr >= I64` comparison that killed the build at the wasm backstop with
+// `ICE: unsupported binary op GtEq for type Ptr`. Fail-closed, but the
+// panic named the backend for what is a plain source-level mistake, and
+// the house rule is that an ICE backstop should be unreachable because
+// some upstream pass fenced it. T282 is that fence; the AIR arms are now
+// backstops that name it.
+//
+// The MUTATION_SITE below is the pair of string bounds. Replace it with
+// an integer range (`48..=57`) and change the parameter to `i64` and the
+// fixture compiles cleanly — proving this pins the bound-kind check and
+// not some incidental property of matching on a `str`.
+module main;
+
+fn classify(s: str) -> i64 {
+    match s {
+        // MUTATION_SITE
+        "a"..="z" => { return 1; },
+        _ => { return 0; },
+    }
+}

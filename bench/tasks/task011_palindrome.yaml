@@ -1,0 +1,29 @@
+id: task011_palindrome
+source_path: tools/task011_palindrome.sigil
+difficulty: basic
+description: |
+  Write a Sigil tool that returns the literal string "true" if its input is
+  a palindrome (reads the same forwards and backwards, byte by byte), or the
+  literal string "false" otherwise. An empty input is considered a palindrome.
+
+  The tool exports
+  `pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }`
+  and returns the packed (out_ptr * 4294967296 + out_len) of an
+  alloc()-allocated buffer containing the result string.
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }"
+required_attrs: []
+required_effects: ["Alloc"]
+required_grants: {}
+fuel_budget: 100000
+inputs:
+  - name: empty
+    value: ""
+  - name: single_char
+    value: a
+  - name: palindrome
+    value: racecar
+  - name: not_palindrome
+    value: hello
+  - name: even_palindrome
+    value: abba
+expected_output_strategy: capture_from_reference

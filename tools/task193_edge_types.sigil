@@ -1,0 +1,31 @@
+// TASK: edge types — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+// Uses i64 and bool copy types together. Note: integer literals default to
+// i64 in Sigil; i32/u32/u64 can't be mixed with literal constants directly.
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let b: i64 = 2;
+    let flag: bool = true;
+
+    let mut acc: i64 = 0;
+    if flag {
+        acc = b;
+    } else {
+    }
+    if input_len > 0 {
+        acc = acc + 1;
+    } else {
+    }
+
+    let out = alloc(1);
+    if acc > 0 {
+        store8(out, 49);
+    } else {
+        store8(out, 48);
+    }
+    return out * 4294967296 + 1;
+}

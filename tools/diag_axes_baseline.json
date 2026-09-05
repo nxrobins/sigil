@@ -1,0 +1,72 @@
+{
+  "a10_single_error_precision": {
+    "_metric": 67,
+    "allowlisted_extras": 6,
+    "cve_expect_error": 5,
+    "enforced": 73,
+    "fixtures_by_filename": 28,
+    "precision_corpus_expect_error": 3,
+    "total_sigil_glob": 126,
+    "z3_expect_error": 37
+  },
+  "a1_coverage": {
+    "_metric": 270,
+    "codes_declared": 270,
+    "dead_codes": [],
+    "dead_codes_floor": 0
+  },
+  "a2_payload_structure": {
+    "_metric": 1,
+    "diagnosticjson_fields": 8,
+    "rich_fields": [
+      "suggested_edits"
+    ]
+  },
+  "a3_hint_actionability": {
+    "_metric": 176,
+    "fraction_pasteable": 0.6519,
+    "hints_total": 270,
+    "pasteable": 176
+  },
+  "a4_contextualization": {
+    "_metric": 13,
+    "did_you_mean_sites": 20,
+    "error_with_hint_sites": 13
+  },
+  "a5_resolvability": {
+    "_metric": 3,
+    "docs_pages": true,
+    "explain_cmd": true,
+    "fuzzy_mcp_lookup": true
+  },
+  "a6_stability_contract": {
+    "_metric": 1,
+    "golden_snapshot_test": true,
+    "per_message_schema_version": false
+  },
+  "a7_enforcement_rigor": {
+    "_metric": 31,
+    "dead_codes_floor": 0,
+    "fixtures_present": 31,
+    "required_fixture_codes": 31
+  },
+  "a8_implementation_parity": {
+    "_metric": 7,
+    "selfhost_fields_emitted": 7,
+    "span_adopted_codes": [
+      "T060",
+      "T062",
+      "T070",
+      "T120",
+      "T190",
+      "T236"
+    ]
+  },
+  "a9_measured_efficacy": {
+    "_metric": 3,
+    "baseline_exists": true,
+    "bench_runs": true,
+    "scoreboard_exists": true,
+    "task_count": 9
+  }
+}

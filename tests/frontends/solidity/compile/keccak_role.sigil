@@ -1,0 +1,21 @@
+module keccak_role;
+
+record RoleStore { MINTER_ROLE: u256, BURNER_ROLE: u256, members: BoundedMap2_u256_u256_u256_64 }
+
+impl RoleStore {
+    pub fn new() -> RoleStore {
+        return RoleStore { MINTER_ROLE: 0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, BURNER_ROLE: 0x3c11d16cbaffd01df69ce1c404f6340ee057498f5f00246190ea54220576a848, members: BoundedMap2_u256_u256_u256_64::new() };
+    }
+
+    pub fn grantRole(self: RoleStore @Mut, role: u256, account: u256) {
+        self.members.insert(role, account, 1);
+    }
+
+    pub fn hasRole(self: RoleStore, role: u256, account: u256) -> u256 {
+        return self.members.get_or(role, account, 0);
+    }
+
+    pub fn isMinter(self: RoleStore, account: u256) -> u256 {
+        return self.members.get_or(0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6, account, 0);
+    }
+}

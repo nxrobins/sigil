@@ -1,0 +1,29 @@
+description: Registry crate for ToolForge template storage and lookup
+includes:
+  - crates/sigil-registry/
+  - Cargo.toml
+excludes:
+  - crates/sigil-registry/target/
+context: |
+  This crate owns persistent template storage for ToolForge workflows.
+  Keep it small and dependency-light: it should store and retrieve template
+  metadata, not absorb compiler or runtime semantics.
+
+  Current responsibilities:
+  - SQLite-backed storage for reusable tool templates
+  - template metadata including task description, effect row, source, signature,
+    AST node count, fuel usage, timestamps, and tags
+  - CRUD-style accessors used by the CLI: open/create, add, get, search, list,
+    update_fuel, count, and seed default templates
+
+  This crate is consumed primarily by `sigil-cli` for `forge` and `registry`
+  commands.
+related:
+  - crates/.scope
+  - crates/sigil-cli/.scope
+  - crates/sigil-registry/src/.scope
+tags:
+  - registry
+  - rust
+  - sqlite
+  - toolforge

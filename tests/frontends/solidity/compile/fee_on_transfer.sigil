@@ -1,0 +1,14 @@
+module fee_on_transfer;
+
+record Token { balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn splitTransfer(self: Token @Mut, __fe_sender: u256, to: u256, feeTo: u256, amount: u256, fee: u256) {
+        let mut net: u256 = (amount - fee);
+        self.balances.transfer_split(__fe_sender, amount, to, net, feeTo, fee);
+    }
+}

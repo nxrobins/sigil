@@ -1,0 +1,85 @@
+// stdlib::traits — the trait Wall's contracts + the built-in primitive impls.
+//
+// This module declares the two v1 traits (`Hash`, `Eq`) so that `T: Hash` /
+// `T: Eq` bounds resolve, and provides the BUILT-IN IMPL bodies for the
+// primitives as free functions. A primitive method call `(str|i64|bool).hash()`
+// / `.eq(other)` desugars (in the type checker) to the matching
+// `traits::{prim}_{method}` free fn below — exactly the closed
+// `{str,i64,bool} × {hash,eq}` table (CM-T7).
+//
+// Ambient-injected when a `.hash(` / `.eq(` method call or a `: Hash` / `: Eq`
+// bound appears. Self-contained: no `use`, no transitive stdlib deps.
+
+module traits;
+
+/// A type that can be hashed to an `i64` (e.g. for a hash-map key).
+pub trait Hash {
+    fn hash(self: Self) -> i64;
+}
+
+/// A type with value equality.
+pub trait Eq {
+    fn eq(self: Self, other: Self) -> bool;
+}
+
+// ── built-in impl bodies: {str, i64, bool} × {hash, eq} ──────────────────────
+
+/// DJB2 over the bytes of `s` (seed 5381, shift 5) — the ONE canonical `str`
+/// hash (CM-T6). The accumulator wraps on overflow for very long inputs
+/// (unspecified magnitude, fine for hash distribution).
+pub fn str_hash(s: str) -> i64 {
+    let n: i64 = s.len();
+    let mut h: i64 = 5381;
+    let mut i: i64 = 0;
+    while i < n {
+        let b: i64 = s.byte_at(i);
+        h = (h << 5) + h + b;
+        i = i + 1;
+    }
+    return h;
+}
+
+/// Byte equality of two `str` (length first, then per byte). This is the value
+/// the `str` `==` operator does NOT compute for non-interned strings — it only
+/// compares the fat-pointer's data address.
+pub fn str_eq(a: str, b: str) -> bool {
+    let an: i64 = a.len();
+    let bn: i64 = b.len();
+    if an != bn {
+        return false;
+    } else {
+    }
+    let mut i: i64 = 0;
+    while i < an {
+        if a.byte_at(i) != b.byte_at(i) {
+            return false;
+        } else {
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// `i64` hashes to itself (identity).
+pub fn i64_hash(x: i64) -> i64 {
+    return x;
+}
+
+/// `i64` equality is native `==`.
+pub fn i64_eq(a: i64, b: i64) -> bool {
+    return a == b;
+}
+
+/// `bool` hashes to 1 / 0.
+pub fn bool_hash(b: bool) -> i64 {
+    if b {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+/// `bool` equality is native `==`.
+pub fn bool_eq(a: bool, b: bool) -> bool {
+    return a == b;
+}

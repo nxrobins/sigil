@@ -1,0 +1,33 @@
+// expect-error: T242
+// Z3 corpus #74: axis-6 — nested-aggregate cap smuggle.
+//
+// `MyOpt<MyOpt<Fuel>>` exercises `type_contains_cap`'s recursive walk
+// through `Type::Named` args. The outer Just receives a type-arg of
+// `MyOpt<Fuel>` — not a cap on its surface — and the check must
+// recurse to find the cap inside. T242 fires at the outer construction
+// site (and at the inner too).
+//
+// This is the load-bearing recursive test: it proves the
+// containment check follows nested `Type::Named(_, args)` and
+// doesn't only inspect the immediate type-args at one level. The
+// fixture deliberately uses a user-defined `MyOpt` instead of the
+// stdlib `Option` so the corpus harness (which uses bare
+// `compile_module` without ambient stdlib include) can run it.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// entire nested construction. The restricted cap is unused; program
+// reduces to `return 1;` and verification passes.
+module main;
+
+cap type Fuel { burn, query }
+
+enum MyOpt<T> { Just(T), Nothing }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let nested: MyOpt<MyOpt<Fuel> > = Just(Just(restricted));  // MUTATION_SITE
+        return 1;
+    }
+}

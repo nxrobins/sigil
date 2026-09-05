@@ -1,0 +1,48 @@
+// expect-error: C003
+// Z3 corpus #92: axis-2 — restriction survives function passthrough.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A cap that passes through a function (accepted as parameter, returned
+// unmodified) retains full authority — and THEN restricting it in the
+// caller correctly degrades authority. The flow:
+//   fuel (full) → passthrough(fuel) → returns full → caller binds as `f`
+//   → f.restrict(burn) → restricted ({burn only})
+//   → needs_full(restricted) → C003
+//
+// This tests a subtly different authority path from fixture #77
+// (assignment chain). Here the cap crosses a function CALL boundary
+// (parameter → return) before being restricted. An implementation bug
+// that resets authority on function parameter passing (e.g., "parameters
+// always start at full authority independent of the argument") would
+// be hidden by the subsequent restriction — but would be REVEALED if
+// the restriction path depended on the parameter authority being correct.
+//
+// The Z3 assertion chain:
+//   arg → param: auth(param) == auth(arg)
+//   return: auth(ret_val) == auth(f_body_result)
+//   caller: auth(result) == auth(ret_val)
+//   restrict: auth(restricted) == auth(result) & mask
+//   sink: auth(restricted) & full != full → C003
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the sink
+// call. The restricted cap persists unused.
+module sigil;
+cap type Fuel { burn, query }
+
+fn passthrough(f: Fuel) -> Fuel {
+    return f;
+}
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let f: Fuel = passthrough(fuel);
+        let restricted: Fuel = f.restrict(burn);
+        needs_full(restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

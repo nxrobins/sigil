@@ -1,0 +1,51 @@
+// expect-ok
+// Z3 corpus #56: axis-1 — Wall 4 Step 7 cross-function refinement flow.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The headline value of Step 7. A refined-return function's result
+// flows through a `let` binding into a refined-param function call:
+//
+//   fn make_positive() -> i64 where @ > 0 { return 5; }
+//   fn validate(x: i64) where x > 0 -> bool { return true; }
+//   let n: i64 = make_positive();   // n inherits @ > 0
+//   validate(n);                     // accepts via subsumption
+//
+// Without Step 7's N38-S7 let-binding push, this fixture would fire
+// T211 at the `validate(n)` call site (symbolic-no-refinement). With
+// Step 7:
+//   1. `make_positive()`'s call result carries `sig.return_refinement`
+//      on its TypedExpr (N14-S7).
+//   2. `let n: i64 = make_positive();` pushes the refinement into the
+//      pattern_refinement_stack frame keyed by `n` (N38-S7).
+//   3. `validate(n)` reads `n` via `infer_path_expr`, which attaches
+//      the refinement via Step 6's `lookup_pattern_refinement`.
+//   4. `check_call_arg_refinements`'s Case 2 (symbolic with preserved
+//      refinement) tries syntactic match first: source's `@ > 0`
+//      syntactically equals destination's `x > 0` modulo the field
+//      name (refinements_match ignores field names per V14). MATCH.
+//   5. The construction accepts; no T224.
+//
+// MUTATION CONTRACT
+//
+// Replacing `validate(n)` with `validate(0)` flips to fixture 53's
+// path (literal arg violating predicate, T224). Removing the `where
+// @ > 0` clause from `make_positive` drops the preserved refinement
+// from the call result, flipping to T211 at validate(n).
+module sigil;
+
+fn make_positive() -> i64 where @ > 0 {
+    return 5;
+}
+
+fn validate(x: i64) where x > 0 -> bool {
+    return true;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let n: i64 = make_positive();
+        let ok: bool = validate(n);
+        return 1;
+    }
+}

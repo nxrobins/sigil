@@ -1,0 +1,40 @@
+// expect-error: T211
+// Z3 corpus #28: axis-1 — Wall 4 Step 1 symbolic refinement RHS rejected.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// V1's literal-only contract: refinement satisfiability is checked
+// only when the field value is `TypedExpr::IntLiteral`. Symbolic values
+// (function parameters, function-call results, destructured field
+// reads) are explicitly deferred to a later step that adds fact
+// propagation.
+//
+// The construction `Index { value: input }` supplies a symbolic value
+// (the message handler parameter). Wall 4 Step 1 emits T211 without
+// invoking Z3, with a hint instructing the agent to refactor into a
+// literal-RHS construction or lift the symbolic value into a non-
+// refined intermediate.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// V1's containment is enforced in `check_record_refinements_at_construction`
+// via `extract_int_literal`. A non-literal supplied value short-circuits
+// the loop with T211 before any Z3 work happens — V11 dispatch is
+// bypassed entirely because Z3 is never called.
+//
+// MUTATION CONTRACT
+//
+// Replacing `input` with a literal (e.g. `42`) would let Z3 run and
+// (since 42 > 100 is false on the predicate `value > 100`) flip the
+// fixture to a T210 case. Removing the refinement clause drops both
+// T210 and T211 — the construction compiles.
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        let idx: Index = Index { value: input };  // MUTATION_SITE
+        return 1;
+    }
+}

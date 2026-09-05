@@ -1,0 +1,13 @@
+module inh_diamond;
+
+record D { ctx: u256, a: u256, b: u256, d: u256 }
+
+impl D {
+    pub fn new() -> D {
+        return D { ctx: 0, a: 0, b: 0, d: 0 };
+    }
+
+    pub fn setD(self: D @Mut, v: u256) {
+        self.d = v;
+    }
+}

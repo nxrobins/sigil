@@ -1,0 +1,15 @@
+// A cap type cannot be conjured as a value: the record-literal spelling of
+// expect-error: P001, P002, P011
+// a cap construction dies in the parser before any checker runs. (Plain
+// record literals parse fine — see field_nonexistent.sigil — so the rejection
+// is about WHAT is being constructed, not the literal syntax itself.)
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() {
+        let fake_fuel = Fuel {}; // MUTATION_SITE
+    }
+}

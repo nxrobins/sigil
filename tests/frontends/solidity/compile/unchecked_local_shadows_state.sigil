@@ -1,0 +1,15 @@
+module unchecked_local_shadows_state;
+
+record C { x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { x: 0 };
+    }
+
+    pub fn f(self: C @Mut, a: u256) {
+        let mut __fe_unchk0_x: u256 = a;
+        __fe_unchk0_x = (__fe_unchk0_x + 1);
+        self.x = 5;
+    }
+}

@@ -1,0 +1,26 @@
+module onlyrole_gate;
+
+record Gated { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64, __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64, minted: u256 }
+
+impl Gated {
+    pub fn new() -> Gated {
+        return Gated { __fe_sm_6__roles_hasRole: BoundedMap2_u256_u256_u256_64::new(), __fe_sm_6__roles_adminRole: BoundedMap_u256_u256_64::new(), minted: 0 };
+    }
+
+    pub fn getRoleAdmin(self: Gated, role: u256) -> u256 {
+        return self.__fe_sm_6__roles_adminRole.get_or(role, 0);
+    }
+
+    pub fn grantRole(self: Gated @Mut, __fe_sender: u256, role: u256, account: u256) {
+        let mut __fe_inl0_role: u256 = role;
+        let mut __fe_m0_role: u256 = self.__fe_sm_6__roles_adminRole.get_or(__fe_inl0_role, 0);
+        trap_if(!((self.__fe_sm_6__roles_hasRole.get_or(__fe_m0_role, __fe_sender, 0) == 1)));
+        self.__fe_sm_6__roles_hasRole.insert(role, account, 1);
+    }
+
+    pub fn mintFor(self: Gated @Mut, __fe_sender: u256, amount: u256) {
+        let mut __fe_m1_role: u256 = 0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6;
+        trap_if(!((self.__fe_sm_6__roles_hasRole.get_or(__fe_m1_role, __fe_sender, 0) == 1)));
+        self.minted = (self.minted + amount);
+    }
+}

@@ -1,0 +1,9 @@
+module fixture;
+
+// A `mut` state field NOT definitely assigned in `init` (`m` is never assigned) is T125.
+cap type Fuel {}
+actor Worker {
+    state { mut n: i64, mut m: i64 }
+    init(f: Fuel) { n = 0; }
+    on Get() -> i64 { return n + m; }
+}

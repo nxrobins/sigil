@@ -1,0 +1,11 @@
+// N008: ambiguous symbol — single-segment fn name in 2+ `use`'d modules.
+module aaa;
+pub fn shared() -> i64 { return 1; }
+
+module bbb;
+pub fn shared() -> i64 { return 2; }
+
+module main;
+use sigil::aaa;
+use sigil::bbb;
+fn boot() -> i64 { return shared(); }

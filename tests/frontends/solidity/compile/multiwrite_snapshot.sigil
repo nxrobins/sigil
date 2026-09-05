@@ -1,0 +1,15 @@
+module multiwrite_snapshot;
+
+record Token { balances: BoundedMap_u256_u256_64, snapshot: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new(), snapshot: 0 };
+    }
+
+    pub fn creditAndSnapshot(self: Token @Mut, account: u256, amount: u256) {
+        let mut __fe_w0: u256 = self.balances.get_or(account, 0);
+        self.balances.insert(account, self.balances.get_or(account, 0) + (amount));
+        self.snapshot = __fe_w0;
+    }
+}

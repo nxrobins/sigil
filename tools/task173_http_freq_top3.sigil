@@ -1,0 +1,113 @@
+// TASK: http freq top3 — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn render_decimal(n_in: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    if n_in == 0 {
+        let out: i64 @Internal = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch: i64 @Internal = alloc(20);
+        let mut digits: i64 @Internal = 0;
+        let mut n: i64 @Internal = n_in;
+        while n > 0 {
+            let q: i64 @Internal = n / 10;
+            let d: i64 @Internal = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out: i64 @Internal = alloc(digits);
+        let mut i: i64 @Internal = 0;
+        while i < digits {
+            let b: i64 @Internal = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let counts: i64 @Internal = alloc(512);
+    let mut k: i64 @Internal = 0;
+    while k < 512 {
+        store8(counts + k, 0);
+        k = k + 1;
+    }
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let b: i64 @Internal = load8(body_ptr + i);
+        let off: i64 @Internal = b * 2;
+        let lo: i64 @Internal = load8(counts + off);
+        let hi: i64 @Internal = load8(counts + off + 1);
+        let cur: i64 @Internal = lo + hi * 256;
+        let nxt: i64 @Internal = cur + 1;
+        store8(counts + off, nxt);
+        store8(counts + off + 1, nxt / 256);
+        i = i + 1;
+    }
+
+    let out: i64 @Internal = alloc(128);
+    let mut out_len: i64 @Internal = 0;
+    let mut picks: i64 @Internal = 0;
+    while picks < 3 {
+        let mut best_b: i64 @Internal = 0 - 1;
+        let mut best_c: i64 @Internal = 0;
+        let mut x: i64 @Internal = 0;
+        while x < 256 {
+            let xo: i64 @Internal = x * 2;
+            let xl: i64 @Internal = load8(counts + xo);
+            let xh: i64 @Internal = load8(counts + xo + 1);
+            let xc: i64 @Internal = xl + xh * 256;
+            if xc > best_c {
+                best_b = x;
+                best_c = xc;
+            } else {
+            }
+            x = x + 1;
+        }
+        if best_c == 0 {
+            picks = 3;
+        } else {
+            if out_len > 0 {
+                store8(out + out_len, 44);
+                out_len = out_len + 1;
+            } else {
+            }
+            store8(out + out_len, best_b);
+            out_len = out_len + 1;
+            store8(out + out_len, 58);
+            out_len = out_len + 1;
+            let pkg: i64 @Internal = render_decimal(best_c);
+            let pp: i64 @Internal = pkg / 4294967296;
+            let pl: i64 @Internal = pkg - pp * 4294967296;
+            let mut m: i64 @Internal = 0;
+            while m < pl {
+                let mb: i64 @Internal = load8(pp + m);
+                store8(out + out_len, mb);
+                out_len = out_len + 1;
+                m = m + 1;
+            }
+            let zo: i64 @Internal = best_b * 2;
+            store8(counts + zo, 0);
+            store8(counts + zo + 1, 0);
+            picks = picks + 1;
+        }
+    }
+    return out * 4294967296 + out_len;
+}

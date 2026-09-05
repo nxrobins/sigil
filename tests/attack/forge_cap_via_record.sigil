@@ -1,0 +1,15 @@
+// Attack: attempt to forge a capability by constructing a record literal.
+// expect-error: P001, P002, P011
+// The record-literal spelling of a cap construction dies in the parser
+// before any checker runs (plain record literals parse fine — the rejection
+// is about WHAT is constructed).
+module sigil;
+cap type Token {}
+
+entry actor Main {
+    state { fuel: Token }
+
+    on Start() {
+        let forged = Token {}; // MUTATION_SITE
+    }
+}

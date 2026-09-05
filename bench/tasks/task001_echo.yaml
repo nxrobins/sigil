@@ -1,0 +1,22 @@
+id: task001_echo
+source_path: tools/task001_echo.sigil
+difficulty: trivial
+description: |
+  Write a Sigil tool whose tool_main returns its input bytes unchanged.
+  The tool exports `pub fn tool_main(input_ptr: i64, input_len: i64) -> i64`
+  and returns the packed pointer-length value
+  (input_ptr * 4294967296 + input_len) so the host can read the input
+  bytes back as the output.
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64"
+required_attrs: []
+required_effects: []
+required_grants: {}
+fuel_budget: 100000
+inputs:
+  - name: empty
+    value: ""
+  - name: hello
+    value: hello
+  - name: utf8
+    value: "Sigil rocks"
+expected_output_strategy: capture_from_reference

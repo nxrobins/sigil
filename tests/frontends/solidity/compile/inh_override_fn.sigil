@@ -1,0 +1,13 @@
+module inh_override_fn;
+
+record B { x: u256 }
+
+impl B {
+    pub fn new() -> B {
+        return B { x: 0 };
+    }
+
+    pub fn setX(self: B @Mut, v: u256) {
+        self.x = (v + 1);
+    }
+}

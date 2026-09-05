@@ -1,0 +1,14 @@
+module inh_guard;
+
+record B { owner: u256, value: u256 }
+
+impl B {
+    pub fn new() -> B {
+        return B { owner: 0, value: 0 };
+    }
+
+    pub fn setValue(self: B @Mut, __fe_sender: u256, v: u256) {
+        trap_if(!((__fe_sender == self.owner)));
+        self.value = v;
+    }
+}

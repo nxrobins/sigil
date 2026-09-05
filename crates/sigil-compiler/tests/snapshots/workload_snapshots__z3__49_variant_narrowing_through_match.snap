@@ -1,0 +1,79 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "x",
+                    op: Gt,
+                    rhs: Literal(
+                        0,
+                    ),
+                    span: Span {
+                        start: 1916,
+                        end: 1927,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    7,
+                ),
+                site: Span {
+                    start: 2035,
+                    end: 2046,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T220",
+                    ),
+                    severity: Error,
+                    message: "variant `SignedInt::Positive` construction violates refinement: payload field `x` supplied with literal `7`, but predicate `x > 0` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 2035,
+                            end: 2046,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T220",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget discharging variant `SignedInt::Positive` refinement on payload field `x` against literal `7`",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 2035,
+                            end: 2046,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

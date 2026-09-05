@@ -1,0 +1,43 @@
+// expect-error: T217
+// Z3 corpus #38: axis-1 — Wall 4 Step 5 LengthOf rejects non-array fields.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// V69 + A11: `<field>.length()` at refinement RHS is admitted ONLY
+// when the named field has type `Type::Array { elem, size: u32 }`.
+// This fixture references an `i64` field — the resolver
+// `resolve_length_of_for_record` fires T217 at type-check time before
+// any Z3 query is constructed.
+//
+// SCOPE NOTE
+//
+// SIGIL's current grammar does not admit `[T; N]` syntax for record-
+// field types — owned-array types arise only from array-literal type
+// inference (`type_check.rs:4790`). End-to-end LengthOf fixtures
+// referencing actual array-typed fields are deferred to a future SIGIL
+// language step that adds record-array-field syntax. Step 5's mechanism
+// (parser, resolver, T217) ships in this PR; positive end-to-end
+// LengthOf fixtures await the syntax extension.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Parser extension admitting `Ident.length()` at refinement RHS.
+//   * `resolve_length_of_for_record` helper (N6 + A11).
+//   * T217 diagnostic code.
+//
+// MUTATION CONTRACT
+//
+// Deleting MUTATION_SITE removes the `where` clause; the record still
+// declares cleanly and the construction compiles.
+module sigil;
+
+record NonArrayLen { len: i64, other: i64 } where len == other.length() // MUTATION_SITE
+
+record Filler { x: i64 } where x >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let f: Filler = Filler { x: 1 };
+        return 1;
+    }
+}

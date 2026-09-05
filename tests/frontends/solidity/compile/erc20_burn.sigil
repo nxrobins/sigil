@@ -1,0 +1,17 @@
+module erc20_burn;
+
+record Token { balances: BoundedMap_u256_u256_64, totalSupply: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new(), totalSupply: 0 };
+    }
+
+    pub fn burn(self: Token @Mut, from: u256, amount: u256) {
+        let mut fromBalance: u256 = self.balances.get_or(from, 0);
+        trap_if(!((fromBalance >= amount)));
+        let mut __fe_w0: u256 = (self.totalSupply - amount);
+        self.balances.insert(from, (fromBalance - amount));
+        self.totalSupply = __fe_w0;
+    }
+}

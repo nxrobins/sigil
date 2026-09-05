@@ -1,0 +1,46 @@
+// expect-error: T211
+// Z3 corpus #69: axis-1 — Wall 4 Step 10 field-access narrowing rejected.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The recognizer requires a BARE single-segment identifier on the
+// variable side. Field-access conditions (`if r.f > 0`) — where the
+// "variable" is a Path with one segment but the LHS isn't really a
+// path expression but a field projection — are NOT in v1 of Step 10.
+// V6-W4S10 anti-goal documents this.
+//
+// In this fixture, `pair.first > 0` parses as a method/field access
+// expression, NOT a single-segment path. The recognizer returns None
+// and no narrowing frame is pushed. Inside the then-arm, the call
+// `need_positive(pair.first)` fires T211 (the field-read produces a
+// symbolic value with no preserved refinement).
+//
+// MUTATION CONTRACT
+//
+// Replacing the if condition's `pair.first` with a let-bound copy
+// (`let v = pair.first; if v > 0 { need_positive(v) }`) would
+// narrow `v` and flip to expect-ok.
+//
+// NOTE: SIGIL's exact syntax for field/method access on records may
+// differ; this fixture serves as a placeholder until a record type
+// with refinements is required. If the parser rejects the syntax
+// outright, the recognizer's rejection is academic.
+module sigil;
+
+record Pair { first: i64, second: i64 }
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        let pair: Pair = Pair { first: input, second: 0 };
+        if pair.first > 0 {
+            let _val: i64 = need_positive(pair.first);  // MUTATION_SITE
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+}

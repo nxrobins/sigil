@@ -1,0 +1,16 @@
+// Attack: infinite loop burns fuel at back-edges until budget exhausted
+// expect-runtime: FuelExhausted
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let mut x: i64 = 0;
+        while x < 999999 {
+            x = x + 1;
+        }
+        return x;
+    }
+}

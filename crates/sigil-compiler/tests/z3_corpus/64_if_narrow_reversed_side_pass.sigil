@@ -1,0 +1,31 @@
+// expect-ok
+// Z3 corpus #64: axis-1 — Wall 4 Step 10 reversed-form normalization.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The recognizer accepts BOTH `<ident> RELOP <lit>` and the reversed
+// form `<lit> RELOP <ident>`. The reversed form swaps sides and flips
+// the relop: `0 < x` becomes `(name=x, op=Gt, rhs=0)` — same clause
+// as `x > 0`. Z3 subsumption admits `need_positive(x)`.
+//
+// This exercises the `flip_refinement_op` helper's Lt↔Gt branch.
+//
+// MUTATION CONTRACT
+//
+// Replacing `0 < input` with `0 > input` would narrow to `input < 0`
+// (after flip), insufficient for `need_positive` — T211.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if 0 < input {
+            return need_positive(input);
+        } else {
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,15 @@
+// A nested `actor` inside an actor body — the first archived form of the same
+// non-terminating recovery loop, since `at_item_start()` covers `actor` too.
+// expect-error: P011
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    actor Inner { on Ping() -> i64 { return 1; } } // MUTATION_SITE
+
+    on Start() -> i64 {
+        return 0;
+    }
+}

@@ -1,0 +1,4 @@
+module taint_bool;
+pub fn pick(b: bool @Secret) -> bool @Secret {
+  return b;
+}

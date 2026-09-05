@@ -1,0 +1,18 @@
+module constructor_token;
+
+record Token { owner: u256, totalSupply: u256, balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new(__fe_sender: u256, initialSupply: u256) -> Token {
+        let mut __fe_c = Token { owner: 0, totalSupply: 0, balances: BoundedMap_u256_u256_64::new() };
+        trap_if(!((initialSupply > 0)));
+        __fe_c.owner = __fe_sender;
+        __fe_c.totalSupply = initialSupply;
+        __fe_c.balances.insert(__fe_sender, initialSupply);
+        return __fe_c;
+    }
+
+    pub fn balanceOf(self: Token, who: u256) -> u256 {
+        return self.balances.get_or(who, 0);
+    }
+}

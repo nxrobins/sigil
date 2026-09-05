@@ -1,0 +1,118 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "value",
+                    op: Ge,
+                    rhs: Literal(
+                        5,
+                    ),
+                    span: Span {
+                        start: 1359,
+                        end: 1375,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    42,
+                ),
+                site: Span {
+                    start: 1487,
+                    end: 1507,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "record construction violates refinement: field `value` supplied with literal `42`, but predicate `value >= 5` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1487,
+                            end: 1507,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging refinement on field `value` against literal `42`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1487,
+                            end: 1507,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+            SubsumptionAtConstruction {
+                actual: [
+                    RefinementClause {
+                        field: "value",
+                        op: Ge,
+                        rhs: Literal(
+                            5,
+                        ),
+                        span: Span {
+                            start: 1359,
+                            end: 1375,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    },
+                ],
+                expected: RefinementClause {
+                    field: "copy",
+                    op: Ge,
+                    rhs: Literal(
+                        0,
+                    ),
+                    span: Span {
+                        start: 1404,
+                        end: 1419,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                site: Span {
+                    start: 1532,
+                    end: 1555,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

@@ -1,0 +1,18 @@
+module dead_internal_sweep;
+
+record C { x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { x: 0 };
+    }
+
+    pub fn bump(self: C @Mut, v: u256) {
+        let mut __fe_inl0_v: u256 = v;
+        self.x = (__fe_inl0_v + 1);
+    }
+
+    pub fn get(self: C) -> u256 {
+        return self.x;
+    }
+}

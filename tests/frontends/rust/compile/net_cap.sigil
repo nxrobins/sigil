@@ -1,0 +1,7 @@
+module net_cap;
+cap type Net(deadline_ms: i64) {}
+fn __fe_consume_0(c: Net(2030)) -> i64 { return 0; }
+pub fn fetch(n: i64, __fe_cap_0: Net(2030)) -> i64 {
+  let __fe_used_0 = __fe_consume_0(__fe_cap_0);
+  return (n + 1);
+}

@@ -1,0 +1,42 @@
+// expect-error: T242
+//
+// T242 — cap-smuggling through a generic aggregate instantiated with a
+// type-argument that contains a capability, detected at CONSTRUCTION
+// time after type-arg substitution. Sibling to T183 (record fields),
+// T184 (enum payloads), and T186 (array elements), which fire at
+// DECLARATION time on concrete cap-typed slots.
+//
+// The canonical case is `Holder<Fuel>`. This fixture covers the
+// AGGREGATE-SLOT variant: `Holder<(Fuel, i64)>`. The restricted cap
+// rides inside the tuple type-argument; `h.value` field-projection +
+// tuple-destructure then yields a binding Z3's authority tracker treats
+// as a fresh FULL-authority cap — the exact smuggling channel T183/
+// T184/T186/T242 exist to close.
+//
+// This variant was SILENTLY ALLOWED until `type_contains_cap`
+// (type_check/resolve.rs) was made to recurse into `Type::Tuple` and
+// `Type::Fn`: those owned-aggregate positions had no match arm, so a
+// cap riding through a tuple- or closure-typed slot of a generic
+// aggregate was invisible to the T242 check (which delegates the
+// cap-containment test to `type_contains_cap`). With the arms in place
+// the substituted type-argument `(Fuel, i64)` is recognised as
+// cap-bearing and rejected here.
+//
+// THE FIX PATHS (mirroring T183/T184/T186): pass each cap by name
+// through actor messages or function arguments, or use a non-cap
+// surrogate (e.g. an `i64` amount) inside the aggregate and dispatch on
+// a separate cap held in actor state.
+module main;
+
+cap type Fuel { burn, query }
+
+record Holder<T> { value: T }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let h: Holder<(Fuel, i64)> = Holder { value: (restricted, 0) };
+        return 1;
+    }
+}

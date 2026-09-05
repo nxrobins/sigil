@@ -1,0 +1,46 @@
+// expect-error: O001
+// CVE Retrofit #08: CVE-2019-11932 — WhatsApp double-free in GIF parsing
+// Scope: CLASS
+//
+// ORIGINAL VULNERABILITY
+//   WhatsApp's GIF parser (libpl_droidsonroids_gif) double-freed a heap
+//   buffer in its DDGifSlurp function. An attacker who sent a crafted
+//   GIF to a WhatsApp user could trigger a double-free, corrupt the
+//   heap, and ultimately achieve RCE in the messaging app.
+//
+// SIGIL RETROFIT (closest analog, not faithful port)
+//   The actual CVE was a memory-safety bug in C code. SIGIL has no
+//   explicit `free()` — linear types make double-free a compile-time
+//   error by construction. The CLOSEST analog in SIGIL terms is the
+//   linear-capability use-after-move pattern: a value that's been
+//   "consumed" (moved into a sink) can't be used again. The ownership
+//   checker fires O001 at the second use.
+//
+// Why this resembles the original at the class level: both bugs are
+// "a thing got cleaned up, then code tries to use it again." In C
+// the cleanup was `free`; in SIGIL the cleanup is the linear move.
+// SIGIL's static check makes the bug class impossible to ship.
+//
+// MUTATION CONTRACT
+//   MUTATION_SITE: line N — the second `.send(...)` that re-uses the
+//   already-moved cap. Removing it leaves a single move; the program
+//   compiles cleanly.
+module cve;
+
+cap type Frame {}
+
+actor Decoder {
+    init(f: Frame) {}
+    on Process(f: Frame) -> i64 { return 1; }
+}
+
+entry actor Main {
+    // The frame cap flows in as a linear message payload — moved once into
+    // `d.send`, so the second send is a use-after-move (O001), the double-free
+    // analog. (A cap HELD in actor state is borrow-only inside a handler — C010.)
+    on Decode(d: ActorRef<Decoder>, gif_frame: Frame) -> i64 {
+        d.send(Process(gif_frame));
+        d.send(Process(gif_frame));   // MUTATION_SITE
+        return 1;
+    }
+}

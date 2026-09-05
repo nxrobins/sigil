@@ -1,0 +1,40 @@
+// expect-error: T201
+// Z3 corpus #24: axis-1 — multi-parameter arity mismatch (Wall 3).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 3's `Type::Cap(String, Vec<i64>)` is arity-strict: a cap
+// declared with N parameters must always be referenced with exactly
+// N values at every type position. Arity mismatches fire T201 with
+// a message naming the declared arity, used arity, AND the declared
+// parameter names (MC-10 fence).
+//
+// This fixture's state field `bad: Limited(2030)` supplies 1 value
+// where 2 are declared. Without T201, the user could silently pass
+// an incomplete cap type to a multi-parameter sink, defeating the
+// deadline + rate-limit composability guarantee.
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the `bad` state field declaration. Removing
+// it leaves only the arity-correct `authority: Limited(2030, 5)`
+// field, and the program compiles cleanly. Proves the fixture pins
+// the arity check and not an incidental property.
+module sigil;
+
+cap type Limited(deadline_ms: i64, max_uses: i64) {}
+
+fn settle(c: Limited(2030, 5)) -> i64 {
+    return 1;
+}
+
+entry actor Main {
+    state {
+        authority: Limited(2030, 5),
+        bad: Limited(2030),   // MUTATION_SITE
+    }
+
+    on Start() -> i64 {
+        return settle(authority);
+    }
+}

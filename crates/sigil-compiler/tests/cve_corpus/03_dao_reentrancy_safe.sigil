@@ -1,0 +1,33 @@
+// expect-ok
+// CVE Retrofit #03 (safe form): The DAO (2016) Solidity reentrancy
+// Scope: CLASS
+//
+// LEGITIMATE INTENT
+//   Delegate a one-time withdrawal authority from a vault to a worker
+//   actor. The worker processes the withdrawal exactly once, after
+//   which the authority is gone.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   The withdrawal cap is a linear value. Move it once into
+//   `vault.send(Process(cap))`, and any further reference to `cap`
+//   fires O001. There's no way to invoke `withdraw()` twice without
+//   holding a second cap — and the second cap doesn't exist unless
+//   the vault chooses to mint one.
+module cve;
+
+cap type Withdrawal {}
+
+actor Vault {
+    init(w: Withdrawal) {}
+    on Process(w: Withdrawal) -> i64 { return 1; }
+}
+
+entry actor Main {
+    // The withdrawal cap flows in as a linear message payload and is moved
+    // exactly once into `vref.send` — clean. (Held in state it would be
+    // borrow-only in a handler; here it flows through as a param.)
+    on Tick(vref: ActorRef<Vault>, withdraw_cap: Withdrawal) -> i64 {
+        vref.send(Process(withdraw_cap));
+        return 1;
+    }
+}

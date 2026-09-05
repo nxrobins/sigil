@@ -1,0 +1,13 @@
+module emit_msgsender;
+
+record C { total: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { total: 0 };
+    }
+
+    pub fn bump(self: C @Mut, v: u256) {
+        self.total = (self.total + v);
+    }
+}

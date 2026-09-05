@@ -1,0 +1,58 @@
+// Constant-time discipline demo.
+//
+// Three classic crypto-style primitives built from Sigil's CT intrinsics
+// (`ct_eq`, `ct_select`, `ct_lt`) over `@SecretCT` operands. Every
+// operation is branch-free; the compiler rejects this file the instant
+// you replace any `ct_*` call with a plain `if`/`/`/`[]`.
+//
+// See `docs/specs/secret-ct.md` and `lang-ref.md` for the full discipline.
+
+module ct_demo;
+
+// Constant-time equality. Returns true iff `a == b`, without leaking the
+// position of the first differing bit through wall-clock time.
+fn ct_equal(a: i64 @SecretCT, b: i64 @SecretCT) -> bool @SecretCT {
+    return ct_eq(a, b);
+}
+
+// Constant-time minimum. Branches on the relative order of `a` and `b`
+// are replaced by `ct_lt` + `ct_select`, so the runtime is independent
+// of which one is smaller.
+fn ct_min(a: i64 @SecretCT, b: i64 @SecretCT) -> i64 @SecretCT {
+    let a_is_less: bool @SecretCT = ct_lt(a, b);
+    return ct_select(a_is_less, a, b);
+}
+
+// Constant-time maximum. Symmetrical to `ct_min`.
+fn ct_max(a: i64 @SecretCT, b: i64 @SecretCT) -> i64 @SecretCT {
+    let a_is_less: bool @SecretCT = ct_lt(a, b);
+    return ct_select(a_is_less, b, a);
+}
+
+// Constant-time clamp to `[lo, hi]`. Composed from `ct_min` and `ct_max`;
+// no secret-dependent control flow anywhere in the call graph.
+fn ct_clamp(x: i64 @SecretCT, lo: i64 @SecretCT, hi: i64 @SecretCT) -> i64 @SecretCT {
+    let after_lo: i64 @SecretCT = ct_max(x, lo);
+    return ct_min(after_lo, hi);
+}
+
+// --- What the compiler will reject ---
+//
+// Replace any of the above with a non-CT construct and the file no
+// longer compiles:
+//
+//   fn bad_eq(a: i64 @SecretCT, b: i64 @SecretCT) -> bool @SecretCT {
+//       if a == b { return true; } else { return false; }  // CT001
+//   }
+//
+//   fn bad_min(a: i64 @SecretCT, b: i64 @SecretCT) -> i64 @SecretCT {
+//       if a < b { return a; } else { return b; }  // CT001 again
+//   }
+//
+//   fn bad_div(a: i64 @SecretCT, b: i64 @SecretCT) -> i64 @SecretCT {
+//       return a / b;  // CT007 (variable-time division)
+//   }
+//
+// And the upcast escape hatch is closed too: you can't construct a
+// `@SecretCT` value from an `@Internal` FFI return, only from a
+// declared `@SecretCT` source or a `@Public` literal (E1, CT016).

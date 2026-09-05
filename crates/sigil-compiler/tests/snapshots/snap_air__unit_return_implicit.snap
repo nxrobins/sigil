@@ -1,0 +1,33 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::nothing",
+            export_name: "m__nothing",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [],
+            ret: Unit,
+            locals: [],
+            value_kinds: {},
+            debug_names: {},
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [],
+                    terminator: Return(
+                        None,
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

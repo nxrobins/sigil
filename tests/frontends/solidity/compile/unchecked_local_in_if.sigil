@@ -1,0 +1,16 @@
+module unchecked_local_in_if;
+
+record C { balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn credit(self: C @Mut, a: u256, amount: u256) {
+        if (amount > 0) {
+            let mut __fe_unchk0_x: u256 = self.balances.get_or(a, 0);
+            self.balances.insert(a, (__fe_unchk0_x + amount));
+        }
+    }
+}

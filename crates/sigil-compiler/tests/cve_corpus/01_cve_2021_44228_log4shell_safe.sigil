@@ -1,0 +1,26 @@
+// expect-ok
+// CVE Retrofit #01 (safe form): CVE-2021-44228 — Log4Shell
+// Scope: STRUCTURAL
+//
+// LEGITIMATE INTENT
+//   Log a user-supplied message to an in-memory buffer for later
+//   retrieval. The legitimate logger writes the message verbatim and
+//   never performs network I/O.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   A pure inner-ring function with no `FFI` or `Unsafe` effects.
+//   `Alloc` is permitted in inner ring. The compiler enforces that the
+//   logger cannot silently perform network fetches: any attempt to
+//   declare `FFI`/`Unsafe` from inner-ring would fire E003.
+module cve;
+
+fn log_message(msg_ptr: i64, msg_len: i64) -> i64 ! { Alloc } {
+    let buf: i64 = alloc(msg_len);
+    let mut i: i64 = 0;
+    while i < msg_len {
+        let b: i64 = load8(msg_ptr + i);
+        store8(buf + i, b);
+        i = i + 1;
+    }
+    return buf;
+}

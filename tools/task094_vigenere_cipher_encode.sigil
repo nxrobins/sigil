@@ -1,0 +1,130 @@
+// TASK: vigenere cipher encode — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn normalize_key_byte(b: i64) -> i64 {
+    if b >= 97 {
+        if b <= 122 {
+            return b - 97;
+        } else {
+        }
+    } else {
+    }
+
+    if b >= 65 {
+        if b <= 90 {
+            return b - 65;
+        } else {
+        }
+    } else {
+    }
+
+    return 0;
+}
+
+fn shift_letter(b: i64, shift: i64) -> i64 {
+    if b >= 97 {
+        if b <= 122 {
+            let offset = b - 97;
+            let mut value = offset + shift;
+            while value >= 26 {
+                value = value - 26;
+            }
+            return 97 + value;
+        } else {
+        }
+    } else {
+    }
+
+    if b >= 65 {
+        if b <= 90 {
+            let offset = b - 65;
+            let mut value = offset + shift;
+            while value >= 26 {
+                value = value - 26;
+            }
+            return 65 + value;
+        } else {
+        }
+    } else {
+    }
+
+    return b;
+}
+
+fn is_letter(b: i64) -> i64 {
+    if b >= 97 {
+        if b <= 122 {
+            return 1;
+        } else {
+        }
+    } else {
+    }
+
+    if b >= 65 {
+        if b <= 90 {
+            return 1;
+        } else {
+        }
+    } else {
+    }
+
+    return 0;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let zero = input_len - input_len;
+    let one = input_len / input_len;
+    let mut split = input_len;
+    let mut scan = input_len;
+
+    while scan > zero {
+        let b = load8(input_ptr + scan - one);
+        if split == input_len {
+            if b == 58 {
+                split = scan - one;
+            } else {
+            }
+        } else {
+        }
+        scan = scan - one;
+    }
+
+    if split == input_len {
+        return 0 - 400;
+    } else {
+        let key_ptr = split + one;
+        let key_len = input_len - key_ptr;
+
+        if key_len > 0 {
+        } else {
+            return 0 - 400;
+        }
+
+        let out_ptr = alloc(split);
+        let mut key_index = 0;
+        let mut i = 0;
+
+        while i < split {
+            let b = load8(input_ptr + i);
+            if is_letter(b) == 1 {
+                let key_b = load8(input_ptr + key_ptr + key_index);
+                let shift = normalize_key_byte(key_b);
+                store8(out_ptr + i, shift_letter(b, shift));
+                key_index = key_index + 1;
+                if key_index == key_len {
+                    key_index = 0;
+                } else {
+                }
+            } else {
+                store8(out_ptr + i, b);
+            }
+            i = i + 1;
+        }
+
+        return out_ptr * 4294967296 + split;
+    }
+}

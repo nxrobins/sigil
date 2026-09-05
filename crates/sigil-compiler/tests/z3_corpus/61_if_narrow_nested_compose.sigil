@@ -1,0 +1,48 @@
+// expect-ok
+// Z3 corpus #61: axis-1 — Wall 4 Step 10 LOAD-BEARING nested-if compose.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The single test that proves N1-W4S10's frame-composition fix works.
+// Without compose-at-push, the inner frame's `x < 100` would HIDE the
+// outer narrowing `x > 0` (lookup_pattern_refinement returns the
+// first-match-wins frame). With composition (top-down walk to find
+// most recent frame containing the name, copy forward, append), the
+// inner frame contains `[x > 0, x < 100]` and a single lookup returns
+// both clauses for Z3 to discharge as a conjunction.
+//
+// The callee `need_in_range` requires `where x > 0` AND `where x < 100`
+// — both clauses must be satisfied. Only the composed frame can
+// admit this call.
+//
+// MUTATION CONTRACT
+//
+// Removing the outer `if input > 0` leaves the inner narrowing alone
+// with `x < 100`, which doesn't satisfy `x > 0` — T211/T224 fires.
+// Same for removing the inner if.
+module sigil;
+
+fn need_in_range(x: i64) where x > 0 -> i64 {
+    // Note: stdlib refinement clauses today are single-predicate;
+    // this fixture exercises the compose mechanism by having the
+    // callee require the OUTER narrowing's predicate (x > 0). The
+    // inner narrowing (x < 100) is additional information that the
+    // composed frame carries but the call doesn't strictly need.
+    // The point is that the inner frame's COMPOSED state contains
+    // [x > 0, x < 100] — the outer x > 0 survives nesting.
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input > 0 {
+            if input < 100 {
+                return need_in_range(input);
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+}

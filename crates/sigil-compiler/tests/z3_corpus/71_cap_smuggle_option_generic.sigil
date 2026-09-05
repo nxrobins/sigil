@@ -1,0 +1,44 @@
+// expect-error: T242
+// Z3 corpus #71: axis-6 — generic-aggregate cap smuggle through a
+// user-defined generic enum (the Option<T> shape).
+//
+// PR #75 (PR A) wired generic-record-construction substitution and the
+// parallel path for generic enum-variant construction landed in PR #79
+// (PR B). Together those opened a channel the declaration-time T184
+// doesn't catch: at declaration `enum MyOpt<T>` has its payload as
+// `Type::Generic("T")` — no cap visible. Substitution at `Just(cap)`
+// rewrites the payload to a concrete cap type without re-running the
+// cap-check, so the match-arm destructure binding loses the cap's
+// restriction provenance — Z3 sees the extracted cap as a fresh
+// full-authority Fuel, the same gap T184 closes for concrete enum-
+// payload-typed enums.
+//
+// ABUSE VECTOR (verified live against pre-T242 commit 42e43f6):
+// `Just(restricted)` constructed MyOpt<Fuel>; `match ... Just(extracted)
+// => needs_full(extracted)` passed Z3's Call-sink check because the
+// destructure binding lost provenance. The whole pipeline compiled to
+// a 452-byte WASM module shipping the unsafe flow live. The same
+// channel exists for the stdlib `Option<T>` and `Result<T, E>` enums
+// (covered by #72) — fixture #71 uses a user-defined enum so the
+// corpus harness's bare `compile_module` (no ambient stdlib include)
+// can exercise it.
+//
+// MUTATION CONTRACT: deleting the MUTATION_SITE line removes the
+// smuggle construction. The restricted cap is created but never
+// consumed (caps persist for actor lifetime per existing fixture-01
+// pattern), the program reduces to `return 1;`, and verification
+// passes.
+module main;
+
+cap type Fuel { burn, query }
+
+enum MyOpt<T> { Just(T), Nothing }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let smuggle: MyOpt<Fuel> = Just(restricted);  // MUTATION_SITE
+        return 1;
+    }
+}

@@ -1,0 +1,53 @@
+// expect-ok
+// Z3 corpus #70: axis-1 — Wall 4 Step 10 N1-W4S10 LOAD-BEARING fixture.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The N1-W4S10 fix specifically: when an INTERMEDIATE if narrows an
+// UNRELATED variable, the inner if's compose-at-push must walk
+// top-down PAST the intermediate frame to find the outer narrowing.
+// Without top-down walk (i.e., if compose only read `last()` like the
+// original plan wording), the intermediate y-only frame would HIDE
+// the outer x narrowing.
+//
+// Stack progression:
+//   1. Outer if (`x > 0`): push frame {x: [x>0]}.
+//   2. Middle if (`y > 0`): push frame {y: [y>0]}. Stack top has NO
+//      entry for x; lookups for x walk past to the outer frame.
+//   3. Inner if (`x < 100`): compose-at-push must walk top-down,
+//      skip the y-frame, find the outer x:>0, copy forward, append
+//      x:<100. Result: composed frame {x: [x>0, x<100]}.
+//
+// Without N1-W4S10's top-down walk: inner compose reads
+// `stack.last()` (the y-frame), finds no x entry, just pushes
+// {x: [x<100]}. The outer x>0 is now hidden. Call to need_positive
+// (which requires x > 0) fires T211/T224.
+//
+// With N1-W4S10's top-down walk: inner compose finds the outer
+// x:>0, composes [x>0, x<100], the call admits.
+//
+// This is the SINGLE test that distinguishes a correct top-down-walk
+// implementation from a buggy `last()`-only one.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64, other: i64) -> i64 {
+        if input > 0 {
+            if other > 0 {
+                if input < 100 {
+                    return need_positive(input);
+                } else {
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
+}

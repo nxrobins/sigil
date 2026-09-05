@@ -1,0 +1,50 @@
+// expect-error: T200
+// Z3 corpus #21: axis-1 — `restrict_deadline` cannot extend.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 2 Stage 2 added the `cap.restrict_deadline(D')` intrinsic.
+// Semantics: produces a cap of type `Approval(min(D_orig, D'))` and
+// consumes the source cap. Soundness requires `D' <= D_orig` — the
+// intrinsic can only NARROW, never extend. Extension would unsoundly
+// grow the cap's authority window: a cap declared valid until 2025
+// could be re-typed as valid until 2030, then passed to a 2030
+// sink, bypassing the entire deadline-typed cap discipline.
+//
+// This fixture exercises the extension reject:
+//
+//   * Caller holds `c: Approval(2025)`.
+//   * `c.restrict_deadline(2030)` would extend the deadline.
+//   * T200 fires; the cap cannot be falsified into a longer-lived
+//     form via this intrinsic.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Wall 2 Stage 1: parametric grammar + Type::Cap(name, Option<i64>)
+//     + covariant subtyping at every type-flow site.
+//   * Wall 2 Stage 2: `restrict_deadline` method + the narrowing-only
+//     invariant (T200), `--build-deadline` flag (T199).
+//
+// MUTATION CONTRACT
+//
+// The MUTATION_SITE is the extension line. Removing it leaves the
+// linear cap `c` unconsumed (Sigil's drop semantics for caps allow
+// this), and the program compiles. With the line present, T200
+// fires. Proves the fixture pins the narrowing-only invariant and
+// not an incidental property.
+module sigil;
+
+cap type Approval(deadline_ms: i64) {}
+
+fn boot(c: Approval(2025)) -> i64 {
+    let _extended = c.restrict_deadline(2030);   // MUTATION_SITE
+    return 0;
+}
+
+entry actor Main {
+    state { authority: Approval(2025) }
+
+    on Start() -> i64 {
+        return boot(authority);
+    }
+}

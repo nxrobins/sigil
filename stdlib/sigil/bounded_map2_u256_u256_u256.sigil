@@ -1,0 +1,249 @@
+// stdlib::bounded_map2_u256_u256_u256 — a BOUNDED, stack-backed TWO-KEY map keyed
+// by a `(u256, u256)` PAIR with `u256` values: `BoundedMap2_u256_u256_u256_64`.
+// Same recipe as `bounded_map_u256_u256` (parallel fixed `[u256; 64]` arrays, a
+// `count` live-prefix, linear scan, sealed, Alloc-free, full+new force-traps), but
+// the key is two parallel arrays `key1s`/`key2s` compared together (`k1 == key1s[i]
+// && k2 == key2s[i]`). The `==` operator on `u256` lowers to the compiler's
+// `u256_eq` (a true 32-byte value compare). `Option` is co-injected for `get`;
+// `u256.sigil` (the native arithmetic `==` lowers to) and `bounded_map_u256_u256`
+// (the `transfer_from` balance-move callee) are co-injected alongside.
+//
+// This is the Solidity frontend's `mapping(address => mapping(address => uint256))`
+// target — the ERC20 `allowance` map: a CAPACITY-BOUNDED table of at most 64
+// distinct `(owner, spender)` PAIRS. It is NOT a faithful model of an unbounded
+// Solidity nested mapping — the 65th distinct pair force-traps (never a silent
+// drop), and the 64-pair budget is shared across ALL owners (flat, not per-owner).
+
+module bounded_map2_u256_u256_u256;
+
+record BoundedMap2_u256_u256_u256_64 { key1s: [u256; 64], key2s: [u256; 64], vals: [u256; 64], count: i64 }
+
+impl BoundedMap2_u256_u256_u256_64 {
+    pub fn new() -> BoundedMap2_u256_u256_u256_64 {
+        return BoundedMap2_u256_u256_u256_64 { key1s: [0; 64], key2s: [0; 64], vals: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedMap2_u256_u256_u256_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedMap2_u256_u256_u256_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedMap2_u256_u256_u256_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedMap2_u256_u256_u256_64) -> bool {
+        return self.count == 64;
+    }
+
+    pub fn contains_key(self: BoundedMap2_u256_u256_u256_64, k1: u256, k2: u256) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.key1s[i] == k1 {
+                if self.key2s[i] == k2 {
+                    return true;
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    pub fn get(self: BoundedMap2_u256_u256_u256_64, k1: u256, k2: u256) -> Option<u256> {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.key1s[i] == k1 {
+                if self.key2s[i] == k2 {
+                    return Some(self.vals[i]);
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        return None;
+    }
+
+    pub fn get_or(self: BoundedMap2_u256_u256_u256_64, k1: u256, k2: u256, default: u256) -> u256 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.key1s[i] == k1 {
+                if self.key2s[i] == k2 {
+                    return self.vals[i];
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        return default;
+    }
+
+    pub fn insert(self: BoundedMap2_u256_u256_u256_64 @Mut, k1: u256, k2: u256, val: u256) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.key1s[i] == k1 {
+                if self.key2s[i] == k2 {
+                    self.vals[i] = val;
+                    return self.count;
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+        self.key1s[self.count] = k1;
+        self.key2s[self.count] = k2;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Read-only capacity RESERVATION for a `(k1, k2)` pair (SOL-MULTIMAP ≥2-map batch), the two-key
+    // analogue of `BoundedMap_u256_u256_64::reserve1`. Traps NOW iff a later `insert(k1, k2, _)` WOULD
+    // trap — the pair is NEW and the map is at capacity. Performs NO write, so it commits nothing.
+    // Returns `bool` (always `true`, discarded by the caller) to avoid the internal unit-return path.
+    pub fn reserve2(self: BoundedMap2_u256_u256_u256_64, k1: u256, k2: u256) -> bool {
+        let mut needed: i64 = 0;
+        if self.contains_key(k1, k2) {
+        } else {
+            needed = needed + 1;
+        }
+        trap_if(self.count + needed > 64);
+        return true;
+    }
+
+    // Atomic ERC20 `transferFrom` of `amount` from `owner` to `to`, spent against the
+    // `(owner, spender)` allowance — the Solidity-frontend
+    //   require(allowance[from][msg.sender] >= amount);
+    //   allowance[from][msg.sender] -= amount;
+    //   balances[from] -= amount; balances[to] += amount;
+    // target. Trap-safe ACROSS BOTH MAPS by construction (SIGIL has no atomic
+    // rollback): every trap-capable check runs BEFORE any write —
+    //   - insufficient allowance (`allowed < amount`) traps;
+    //   - the allowance slot for a NEW `(owner, spender)` pair is reserved before any
+    //     write (the 65th distinct pair traps, loud, never a silent drop);
+    //   - the balance move delegates to the single-level `transfer`, which itself runs
+    //     ALL its checks (balance, credit overflow, balances-map capacity) before
+    //     either balance write — so if it traps, NO allowance write has happened yet.
+    // The allowance write is LAST and provably trap-free: the slot is reserved, the
+    // value `allowed - amount` is precomputed and cannot underflow (`allowed >=
+    // amount` was checked). So the two-map move is all-or-nothing, matching Solidity
+    // 0.8 `transferFrom` (incl. the `from == to` net-zero case). Returns `true` on
+    // success (a failure traps).
+    pub fn transfer_from(
+        self: BoundedMap2_u256_u256_u256_64 @Mut,
+        bal: BoundedMap_u256_u256_64 @Mut,
+        owner: u256,
+        spender: u256,
+        to: u256,
+        amount: u256,
+    ) -> bool {
+        // A zero-amount transferFrom is a TOTAL no-op (the `transfer` zero-amount precedent, NC-L1
+        // faithfulness): OZ `transferFrom(.,.,0)` neither moves balances nor changes the allowance
+        // (`_spendAllowance` requires `0 >= 0` and writes the same value back — no storage growth),
+        // so it must grow NO storage and never trap. Return before reserving/materializing the
+        // allowance slot for a FRESH (owner, spender) pair (which would consume bounded capacity and
+        // trap at the 65th pair where Solidity succeeds). The balance side already no-ops in
+        // `transfer`; this guards the ALLOWANCE side that the delegated `transfer` cannot.
+        if amount == 0 {
+            return true;
+        } else {
+        }
+        let allowed: u256 = self.get_or(owner, spender, 0);
+        trap_if(allowed < amount);
+        // Reserve the allowance slot for a NEW (owner, spender) pair BEFORE any write.
+        let mut needed: i64 = 0;
+        if self.contains_key(owner, spender) {
+        } else {
+            needed = needed + 1;
+        }
+        trap_if(self.count + needed > 64);
+        // Atomic balance move (all-or-nothing; if it traps, no allowance write yet).
+        let _t: bool = bal.transfer(owner, to, amount);
+        // LAST write — trap-free: slot reserved, value precomputed, allowed >= amount.
+        let na: u256 = allowed - amount;
+        let _x: i64 = self.insert(owner, spender, na);
+        return true;
+    }
+
+    // OZ 5.x `transferFrom` (SOL-XFILE PR6/AC-2): the composed `_spendAllowance` + `_transfer`
+    // spine as ONE atomic op. Differs from `transfer_from` above by:
+    //   (a) trapping on a zero `from`/`to` — an OZ 5.x `transferFrom` NEVER mints/burns (both are
+    //       `revert`ed in `_transfer` before `_update`), so the balance move is a plain non-zero →
+    //       non-zero transfer and totalSupply is UNCHANGED (no `ts` threaded, no `erc20_update`); and
+    //   (b) the INFINITE-ALLOWANCE dispatch: `_spendAllowance` skips the allowance check + decrement
+    //       entirely when the current allowance is `type(uint256).max` (`if currentAllowance < MAX`),
+    //       so an unbounded approval is never spent down.
+    // Trap-safe across BOTH maps (the `transfer_from` reserve-all-then-write discipline): the from/to
+    // guards, the amount==0 no-op, the allowance-sufficiency trap, and the allowance-slot reservation
+    // ALL run before `bal.transfer` (itself all-or-nothing); the allowance write is LAST and provably
+    // trap-free (slot reserved, `allowed - amount` cannot underflow). Aliasing-correct: `from == to`
+    // nets zero balance via the delegated `transfer`; `spender` is an independent allowance key. NC-L1
+    // zero-faithful: amount==0 grows NO storage and never traps (matching Solidity's no-op).
+    pub fn erc20_transfer_from(
+        self: BoundedMap2_u256_u256_u256_64 @Mut,
+        bal: BoundedMap_u256_u256_64 @Mut,
+        from: u256,
+        spender: u256,
+        to: u256,
+        amount: u256,
+    ) -> bool {
+        // `transferFrom` reverts on a zero from/to (never mint/burn) — BEFORE any read or write.
+        trap_if(from == 0);
+        trap_if(to == 0);
+        // amount==0 is a TOTAL no-op (NC-L1): no balance move, no allowance materialization.
+        if amount == 0 {
+            return true;
+        } else {
+        }
+        let allowed: u256 = self.get_or(from, spender, 0);
+        // Infinite allowance (`allowed == 2^256-1`) skips the check + decrement entirely. Build the
+        // sentinel by DOUBLING (`m = 2m + 1`; after step k, m = 2^k - 1; the final 2^256-1 fits
+        // exactly, no overflow) using only `+` — so NO wide (>u64) decimal literal (which in a STDLIB
+        // file trips the self-hosted-lexer differential `lexer_differential`, not yet modeling >u64
+        // literals; user-emitted `type(uint256).max` literals live outside the stdlib corpus and are
+        // unaffected) and NO cross-module intrinsic call (`u256_shl` etc. are out of scope here — only
+        // operators lower to u256 arithmetic). Exec-pinned EXACTLY by `ec_infinite_allowance_not_spent`
+        // (== MAX not spent) + `ec_max_minus_one_is_finite` (MAX-1 spent).
+        let mut max_u256: u256 = 0;
+        let mut mbit: i64 = 0;
+        while mbit < 256 {
+            max_u256 = max_u256 + max_u256 + 1;
+            mbit = mbit + 1;
+        }
+        let mut spend: bool = false;
+        if allowed < max_u256 {
+            spend = true;
+        } else {
+        }
+        // Reserve the allowance side (read-only) BEFORE any write. Defensive/symmetric with
+        // `transfer_from`: a spend implies `allowed >= amount > 0`, so the pair already exists and
+        // `needed` is always 0 here — but the reservation keeps the write provably trap-free.
+        if spend {
+            trap_if(allowed < amount);
+            let mut needed: i64 = 0;
+            if self.contains_key(from, spender) {
+            } else {
+                needed = needed + 1;
+            }
+            trap_if(self.count + needed > 64);
+        } else {
+        }
+        // Atomic balance move (all checks-then-writes internally; from/to != 0 ⇒ a plain transfer,
+        // totalSupply unchanged). If it traps, no allowance write has happened yet.
+        let _t: bool = bal.transfer(from, to, amount);
+        // LAST write — trap-free (slot reserved, `allowed >= amount` checked).
+        if spend {
+            let na: u256 = allowed - amount;
+            let _x: i64 = self.insert(from, spender, na);
+        } else {
+        }
+        return true;
+    }
+}

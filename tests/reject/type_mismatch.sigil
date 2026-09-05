@@ -1,0 +1,8 @@
+// Binary `+` applied to mismatched operand types (i64 and bool).
+// expect-error: T054
+module sigil;
+
+fn add(x: i64) -> i64 {
+    let bad = x + true; // MUTATION_SITE
+    return x;
+}

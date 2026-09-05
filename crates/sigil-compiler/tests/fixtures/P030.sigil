@@ -1,0 +1,6 @@
+module fixture;
+
+// `mut` is only valid on an actor `state {}` field, never a record field (P030).
+record R {
+    mut x: i64,
+}

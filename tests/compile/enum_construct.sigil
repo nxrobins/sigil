@@ -1,0 +1,22 @@
+// Test: enum construction + match destructuring
+// Exercises tagged union memory layout: tag at +0, payload at +4
+// PR B commit #5: variants qualified with `MyOption::` so the test
+// doesn't fire T236 against ambient stdlib Option (which also
+// declares Some/None).
+module sigil;
+cap type Fuel {}
+
+enum MyOption { Some(i64), None }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let a = MyOption::Some(42);
+
+        match a {
+            MyOption::Some(v) => { return v + 1; },
+            MyOption::None => { return 0; }
+        }
+    }
+}

@@ -1,0 +1,84 @@
+// expect-ok
+// Z3 corpus #10: axis-1 — multi-party 3-of-3 approval (distinct types).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A privileged `Action` actor REQUIRES three distinct caps to spawn:
+// `AliceAuth`, `BobAuth`, `CarolAuth`. The type system enforces:
+//   1. All three caps must be present at spawn time (arity check on init).
+//   2. Each cap's TYPE is distinct, so Alice's approval cannot be
+//      substituted for Bob's (or vice versa) — even if a malicious
+//      actor possessed two copies of one party's cap, it could not
+//      satisfy Action's init signature.
+//   3. Each cap is linear → cannot be reused after spawn (O001).
+//   4. Each cap must originate from a legitimate source (capability.rs
+//      structural check + Z3 forge detection).
+//
+// The encoding generalizes to N-of-N for any compile-time-fixed N: add
+// more init params with more cap types.
+//
+// RUNTIME SEMANTICS (VERIFIED)
+//
+// `spawn::<Action>(alice, bob, carol)` at the runtime layer maps to:
+//   * `caps = [alice, bob]` — user-supplied init caps (stored as
+//     Action's state).
+//   * `fuel_cap = carol` — the runtime's per-actor fuel budget; the
+//     spawn convention treats the LAST arg as fuel_cap and earlier args
+//     as user caps. This means Action's third Approval (`carol`) serves
+//     dual purpose: it's required for type-level authorization AND it
+//     funds Action's runtime execution budget.
+//
+// For policies that need a SEPARATE fuel cap distinct from approvals,
+// add an explicit fuel-typed param: `init(a: AliceAuth, b: BobAuth,
+// c: CarolAuth, fuel: Fuel)` and pass four args at spawn.
+//
+// Verified end-to-end: `sigil run` executes this fixture, spawns Action,
+// audit log records the spawn. See `multi_party_approval_runs_end_to_end`
+// in tests/z3_corpus.rs.
+//
+// WHAT THIS FIXTURE DOES NOT SOLVE (deferred axis-1 work, precisely scoped)
+//
+// * Per-actor party isolation and M-of-N quorum share one root
+//   blocker: cap accumulation in coordinator state. The pattern
+//   "receive Alice's cap, store it; receive Bob's cap, store it;
+//   when count >= M, act" requires reassigning a non-primitive
+//   state field (e.g. Option<Cap> or an enum holder). The Phase-1
+//   type-checker explicitly rejects this with the diagnostic
+//   "cannot reassign variable of type `X` — only primitive types
+//   support reassignment in Phase 1". Fixture
+//   `12_quorum_accumulation_wall.sigil` locks the diagnostic; when
+//   the language relaxes the restriction (Phase 2 type system),
+//   that fixture's expect-error flips and inter-actor 3-of-3 plus
+//   M-of-N become writable in the same iteration.
+//
+// * Time-bound approvals: this gap is CLOSED in fixture
+//   `11_time_bound_approval.sigil` using only existing primitives
+//   (FFI `time_now()` + runtime deadline check). The cap itself
+//   doesn't carry a deadline in its type — a stronger form
+//   (deadline-typed caps where use-after-deadline is statically
+//   impossible) would still be a real new primitive, deferred and
+//   regression-locked in fixture `14_deadline_typed_cap_wall.sigil`
+//   (step 33).
+module sigil;
+
+cap type AliceAuth {}
+cap type BobAuth {}
+cap type CarolAuth {}
+
+actor Action {
+    init(a: AliceAuth, b: BobAuth, c: CarolAuth) {}
+    on Fire() -> i64 { return 1; }
+}
+
+entry actor Main {
+    state {
+        alice: AliceAuth,
+        bob: BobAuth,
+        carol: CarolAuth,
+    }
+
+    on Start() -> i64 {
+        let _action = spawn::<Action>(alice, bob, carol);
+        return 1;
+    }
+}

@@ -1,0 +1,32 @@
+id: task151_http_size
+source_path: tools/task151_http_size.sigil
+difficulty: ffi_net
+description: |
+  Write a Sigil tool that fetches the URL given as input via HTTP GET and
+  returns the byte count of the response body as an ASCII-decimal string.
+
+  This is an FFI tool, so it lives in `#[ring(outer)] #[trusted] module tool;`.
+  Declare:
+      extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+  The tool exports
+      pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe }
+  Note `i32` parameters — the FFI ABI requires i32 pointer/length.
+
+  http_get returns a packed (ptr * 4294967296 + len) on success or a
+  negative error code on failure. Propagate the error code if `raw < 0`.
+
+  All locals derived from the FFI return must be `@Internal`-tainted. The
+  body's byte length is the value to render (NOT the body bytes themselves).
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["NetIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  net: ["example.com"]
+fuel_budget: 500000
+inputs:
+  # example.com is documented as reserved-for-documentation by IANA and
+  # serves a stable static page. Acceptable flake risk for a 5-task bench;
+  # if it becomes a problem, swap for a local mock HTTP server.
+  - name: example_com
+    value: "https://example.com/"
+expected_output_strategy: capture_from_reference

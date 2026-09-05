@@ -1,0 +1,7 @@
+module pure_math;
+pub fn scale(x: i64) -> i64 {
+  return (x * 3);
+}
+pub fn combine(a: i64, b: i64) -> i64 {
+  return ((scale(a) + scale(b)) - 1);
+}

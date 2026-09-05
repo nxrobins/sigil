@@ -1,0 +1,126 @@
+// TASK: omni template — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "template_path:url". Read template, fetch URL, replace "URL_PLACEHOLDER"
+// in template with response body.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let bs: i64 @Internal = load8(input_ptr + scan);
+        if bs == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw_t: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw_t < 0 {
+        return raw_t;
+    } else {
+    }
+    let tmpl_ptr: i64 @Internal = raw_t / 4294967296;
+    let tmpl_len: i64 @Internal = raw_t - tmpl_ptr * 4294967296;
+
+    let url_off: i32 @Internal = sep32 + one_i32;
+    let url_len_i32: i32 @Internal = input_len - url_off;
+    let raw_b: i64 @Internal = http_get(input_ptr + url_off, url_len_i32);
+    if raw_b < 0 {
+        return raw_b;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw_b / 4294967296;
+    let body_len: i64 @Internal = raw_b - body_ptr * 4294967296;
+
+    let out: i64 @Internal = alloc(tmpl_len + body_len + 64);
+    let mut out_len: i64 @Internal = 0;
+    // Find URL_PLACEHOLDER start index (first occurrence)
+    let mut found: i64 @Internal = 0 - 1;
+    let mut scan2: i64 @Internal = 0;
+    while scan2 + 4 < tmpl_len {
+        if found < 0 {
+            let c0: i64 @Internal = load8(tmpl_ptr + scan2);
+            let c1: i64 @Internal = load8(tmpl_ptr + scan2 + 1);
+            let c2: i64 @Internal = load8(tmpl_ptr + scan2 + 2);
+            let c3: i64 @Internal = load8(tmpl_ptr + scan2 + 3);
+            let c4: i64 @Internal = load8(tmpl_ptr + scan2 + 4);
+            let mut m: i64 @Internal = 0;
+            if c0 == 85 {
+                if c1 == 82 {
+                    if c2 == 76 {
+                        if c3 == 95 {
+                            if c4 == 80 {
+                                m = 1;
+                            } else {
+                            }
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            if m == 1 {
+                found = scan2;
+            } else {
+            }
+        } else {
+        }
+        scan2 = scan2 + 1;
+    }
+
+    if found < 0 {
+        // no placeholder — emit template as-is
+        let mut p: i64 @Internal = 0;
+        while p < tmpl_len {
+            let pb: i64 @Internal = load8(tmpl_ptr + p);
+            store8(out + out_len, pb);
+            out_len = out_len + 1;
+            p = p + 1;
+        }
+    } else {
+        // emit prefix, body, suffix
+        let mut p1: i64 @Internal = 0;
+        while p1 < found {
+            let pb1: i64 @Internal = load8(tmpl_ptr + p1);
+            store8(out + out_len, pb1);
+            out_len = out_len + 1;
+            p1 = p1 + 1;
+        }
+        let mut p2: i64 @Internal = 0;
+        while p2 < body_len {
+            let bb2: i64 @Internal = load8(body_ptr + p2);
+            store8(out + out_len, bb2);
+            out_len = out_len + 1;
+            p2 = p2 + 1;
+        }
+        let suffix_start: i64 @Internal = found + 15;
+        let mut p3: i64 @Internal = suffix_start;
+        while p3 < tmpl_len {
+            let pb3: i64 @Internal = load8(tmpl_ptr + p3);
+            store8(out + out_len, pb3);
+            out_len = out_len + 1;
+            p3 = p3 + 1;
+        }
+    }
+    return out * 4294967296 + out_len;
+}

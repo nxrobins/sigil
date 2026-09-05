@@ -1,0 +1,61 @@
+---
+source: crates/sigil-compiler/tests/snap_air.rs
+expression: "&comp.air"
+---
+AirProgram {
+    functions: [
+        AirFunction {
+            name: "m::answer",
+            export_name: "m__answer",
+            ring: Inner,
+            kind: ModuleFunction,
+            params: [],
+            ret: I64,
+            locals: [
+                (
+                    VarId(
+                        0,
+                    ),
+                    I64,
+                ),
+            ],
+            value_kinds: {
+                VarId(
+                    0,
+                ): Copy,
+            },
+            debug_names: {
+                VarId(
+                    0,
+                ): "v0",
+            },
+            blocks: [
+                AirBlock {
+                    id: BlockId(
+                        0,
+                    ),
+                    stmts: [
+                        Assign {
+                            dst: VarId(
+                                0,
+                            ),
+                            val: IntLit(
+                                42,
+                            ),
+                        },
+                    ],
+                    terminator: Return(
+                        Some(
+                            VarId(
+                                0,
+                            ),
+                        ),
+                    ),
+                },
+            ],
+            entry_block: BlockId(
+                0,
+            ),
+        },
+    ],
+}

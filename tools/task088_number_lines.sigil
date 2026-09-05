@@ -1,0 +1,93 @@
+// TASK: number lines — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn append_segment(out_ptr: i64, out_len_in: i64, src_ptr: i64, start: i64, end: i64) -> i64 {
+    let mut out_len = out_len_in;
+    let mut i = start;
+
+    while i < end {
+        let b = load8(src_ptr + i);
+        store8(out_ptr + out_len, b);
+        out_len = out_len + 1;
+        i = i + 1;
+    }
+
+    return out_len;
+}
+
+fn append_decimal(out_ptr: i64, out_len_in: i64, n_in: i64, scratch_ptr: i64) -> i64 {
+    if n_in == 0 {
+        store8(out_ptr + out_len_in, 48);
+        return out_len_in + 1;
+    } else {
+        let mut digits = 0;
+        let mut n = n_in;
+
+        while n > 0 {
+            let q = n / 10;
+            let digit = n - q * 10;
+            store8(scratch_ptr + digits, 48 + digit);
+            digits = digits + 1;
+            n = q;
+        }
+
+        let mut out_len = out_len_in;
+        let mut i = 0;
+
+        while i < digits {
+            let b = load8(scratch_ptr + digits - 1 - i);
+            store8(out_ptr + out_len, b);
+            out_len = out_len + 1;
+            i = i + 1;
+        }
+
+        return out_len;
+    }
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len == 0 {
+        let out_ptr = alloc(0);
+        return out_ptr * 4294967296;
+    } else {
+        let out_ptr = alloc(input_len * 4 + 32);
+        let scratch_ptr = alloc(20);
+        let mut out_len = 0;
+        let mut line_no = 1;
+        let mut line_start = 0;
+        let mut i = 0;
+
+        while i < input_len {
+            let b = load8(input_ptr + i);
+            if b == 10 {
+                out_len = append_decimal(out_ptr, out_len, line_no, scratch_ptr);
+                store8(out_ptr + out_len, 58);
+                out_len = out_len + 1;
+                out_len = append_segment(out_ptr, out_len, input_ptr, line_start, i);
+                if i + 1 < input_len {
+                    store8(out_ptr + out_len, 10);
+                    out_len = out_len + 1;
+                } else {
+                }
+                line_no = line_no + 1;
+                line_start = i + 1;
+            } else {
+            }
+            i = i + 1;
+        }
+
+        if line_start < input_len {
+            out_len = append_decimal(out_ptr, out_len, line_no, scratch_ptr);
+            store8(out_ptr + out_len, 58);
+            out_len = out_len + 1;
+            out_len = append_segment(out_ptr, out_len, input_ptr, line_start, input_len);
+        } else {
+        }
+
+        return out_ptr * 4294967296 + out_len;
+    }
+}

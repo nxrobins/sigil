@@ -1,0 +1,30 @@
+// expect-error: R006
+//
+// R006 — `#[trusted]` requires `#[ring(outer)]`.
+//
+// Before step 21 of the supremum loop (axis 6, "fewer escape hatches")
+// this exact source compiled cleanly and produced WASM with a
+// `handle Unsafe` block running in the inner ring. That bypassed the
+// ring discipline: inner-ring code is the safe-by-construction policy
+// tier and must never claim trust.
+//
+// ABUSE VECTOR (verified against the pre-change commit):
+// `#[ring(inner)] #[trusted]` was accepted by the parser AND by the
+// effect-check pass (which checked `module.trusted` without consulting
+// `module.ring`). The combination granted `handle Unsafe` access in the
+// inner ring — exactly the privilege the ring system is meant to
+// quarantine to the outer ring.
+//
+// After step 21, the type-check pass emits R006 for any module that
+// declares `#[trusted]` without `#[ring(outer)]`. The diagnostic names
+// the module by name and offers two copyable fixes (add the ring or
+// drop the trust).
+#[ring(inner)] #[trusted]
+module ext;
+
+fn do_thing() ! { Unsafe } {
+    handle Unsafe {
+        let _x: i64 = 1;
+    };
+    return;
+}

@@ -1,0 +1,375 @@
+---
+source: crates/sigil-compiler/tests/snap_typecheck.rs
+expression: "&typed"
+---
+TypedProgram {
+    modules: [
+        TypedModule {
+            def_id: DefId(
+                0,
+            ),
+            name: "m",
+            ring: Inner,
+            trusted: false,
+            span: Span {
+                start: 0,
+                end: 239,
+                source: SourceId(
+                    4294967295,
+                ),
+            },
+            functions: [
+                TypedFunction {
+                    name: "m::i32_param",
+                    export_name: "m__i32_param",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: I32,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: I32,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: I32,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 51,
+                                                end: 52,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 44,
+                                        end: 53,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 42,
+                            end: 55,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 10,
+                        end: 55,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                TypedFunction {
+                    name: "m::u32_param",
+                    export_name: "m__u32_param",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: U32,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: U32,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: U32,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 97,
+                                                end: 98,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 90,
+                                        end: 99,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 88,
+                            end: 101,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 56,
+                        end: 101,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                TypedFunction {
+                    name: "m::i64_param",
+                    export_name: "m__i64_param",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: I64,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: I64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: I64,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 143,
+                                                end: 144,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 136,
+                                        end: 145,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 134,
+                            end: 147,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 102,
+                        end: 147,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                TypedFunction {
+                    name: "m::u64_param",
+                    export_name: "m__u64_param",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: U64,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: U64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: U64,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 189,
+                                                end: 190,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 182,
+                                        end: 191,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 180,
+                            end: 193,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 148,
+                        end: 193,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                TypedFunction {
+                    name: "m::f64_param",
+                    export_name: "m__f64_param",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: F64,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: F64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: F64,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 235,
+                                                end: 236,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 228,
+                                        end: 237,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 226,
+                            end: 239,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 194,
+                        end: 239,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+            ],
+        },
+    ],
+    records: {},
+    enums: {},
+    effect_registry: EffectRegistry {
+        effects: {
+            "FFI": 0,
+            "Unsafe": 1,
+        },
+        next_id: 2,
+    },
+    effect_ops: {},
+}

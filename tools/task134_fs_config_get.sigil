@@ -1,0 +1,120 @@
+// TASK: fs config get — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input: "path:key". Read key=value lines from path, return value for key.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    // Keep arithmetic in i32 using input_len as our "zero/one" anchor.
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    // Find ':' separator in the raw input (staying in i32)
+    let mut sep32: i32 = input_len; // sentinel: not found
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    // Read the file (path is the prefix of the input)
+    let raw: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Scan the file for lines that start with "key="
+    // The key lives in input memory at input_ptr + sep32 + 1, length = input_len - sep32 - 1
+    let key_offset_i32: i32 @Internal = sep32 + one_i32;
+    let key_len_i32: i32 @Internal = input_len - key_offset_i32;
+
+    // Allocate result buffer (max = file_len)
+    let out: i64 @Internal = alloc(file_len);
+    let mut out_len: i64 @Internal = 0;
+    let mut found: i64 @Internal = 0;
+
+    let mut line_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= file_len {
+        let mut eol: i64 @Internal = 0;
+        if i == file_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(file_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+            }
+        }
+        if eol == 1 {
+            if found == 0 {
+                // Compare the first key_len bytes of this line to the key
+                let line_len: i64 @Internal = i - line_start;
+                // key_len in i64 for comparison
+                let mut kl: i64 @Internal = 0;
+                let mut counter: i32 @Internal = zero_i32;
+                while counter < key_len_i32 {
+                    kl = kl + 1;
+                    counter = counter + one_i32;
+                }
+                if line_len > kl {
+                    // Check that byte at line_start+kl is '='
+                    let eq_byte: i64 @Internal = load8(file_ptr + line_start + kl);
+                    if eq_byte == 61 {
+                        // Compare bytes
+                        let mut match_ok: i64 @Internal = 1;
+                        let mut k: i64 @Internal = 0;
+                        let mut k32: i32 @Internal = zero_i32;
+                        while k < kl {
+                            let fc: i64 @Internal = load8(file_ptr + line_start + k);
+                            let kc: i64 @Internal = load8(input_ptr + key_offset_i32 + k32);
+                            if fc == kc {
+                            } else {
+                                match_ok = 0;
+                            }
+                            k = k + 1;
+                            k32 = k32 + one_i32;
+                        }
+                        if match_ok == 1 {
+                            // Copy value (after '=') to out
+                            let mut m: i64 @Internal = line_start + kl + 1;
+                            while m < i {
+                                let vb: i64 @Internal = load8(file_ptr + m);
+                                store8(out + out_len, vb);
+                                out_len = out_len + 1;
+                                m = m + 1;
+                            }
+                            found = 1;
+                        } else {
+                        }
+                    } else {
+                    }
+                } else {
+                }
+            } else {
+            }
+            line_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return out * 4294967296 + out_len;
+}

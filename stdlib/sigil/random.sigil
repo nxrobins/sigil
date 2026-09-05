@@ -1,0 +1,23 @@
+// Phase 5a-3: stdlib `random` module — secure entropy.
+//
+// Tools that `use sigil::random;` MUST declare `#[ring(outer)] #[trusted]`
+// (per R004) and supply a `RandomGrant::Secure` in their grants —
+// without it, `bytes` returns -403.
+//
+// Per I26: `out_len` is capped at 64 KB by the underlying shim
+// (returns -400 on overflow). For larger entropy needs, call `bytes`
+// repeatedly.
+//
+// `random::*` is non-deterministic by design — a task using random
+// MUST use `expected_output_strategy: literal` in its bench spec
+// (per I27 / `capture_from_reference` is invalid).
+#[ring(outer)] #[trusted] module random;
+
+extern "C" fn random_bytes(out_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Fill `out_len` bytes with cryptographically secure random data.
+// Returns packed pointer to the bytes on success, or:
+//   -403 grant rejected, -400 if out_len < 0 or > 65536, -500 host error.
+pub fn bytes(out_len: i32) -> i64 @Internal ! { Alloc, FFI, Unsafe } {
+    return random_bytes(out_len);
+}

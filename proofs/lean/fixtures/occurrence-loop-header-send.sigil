@@ -1,0 +1,20 @@
+module occurrence_header_send;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping(value: i64) {}
+}
+
+fn guard(worker: ActorRef<Worker>, again: bool @Secret) -> bool @Secret {
+    worker.send(Ping(7));
+    return again;
+}
+
+fn run(worker: ActorRef<Worker>, secret: bool @Secret) -> i64 {
+    let mut again: bool @Secret = secret;
+    while guard(worker, again) {
+        again = false;
+    }
+    return 0;
+}

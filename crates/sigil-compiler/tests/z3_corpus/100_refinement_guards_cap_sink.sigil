@@ -1,0 +1,42 @@
+// expect-ok
+// Z3 corpus #100: axes 1+2 — refinement narrowing enables a cap sink.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// This fixture combines TWO Z3 verification axes:
+//   1. Refinement narrowing (axis-1): `if amount > 0 { ... }` narrows
+//      `amount` to `amount > 0` inside the then-arm.
+//   2. Capability verification (axis-2): the cap `fuel` is drawn with
+//      the narrowed amount and passed to a full-authority sink.
+//
+// The draw uses the refined `amount` — which is provably positive.
+// The sink requires full authority, which the drawn cap has (drawn
+// from unattenuated state). The combined program must compile cleanly:
+// refinement proves the guard, capability proves the authority.
+//
+// This is the first corpus fixture that exercises BOTH Z3 axes in the
+// same program, pinning that they compose without interference. A bug
+// where the refinement narrowing scope and the capability authority
+// scope interact incorrectly would fail here.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+fn guarded_draw(amount: i64) where amount > 0 -> i64 {
+    return amount;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Tick(amount: i64) -> i64 {
+        if amount > 0 {
+            let drawn: Fuel = fuel.draw(amount);
+            let check: i64 = guarded_draw(amount);
+            return needs_full(drawn);
+        } else {
+            return 0;
+        }
+    }
+}

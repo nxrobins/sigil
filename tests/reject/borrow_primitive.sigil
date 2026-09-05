@@ -1,0 +1,14 @@
+// Primitives live in Wasm locals — no memory address to borrow
+// expect-error: T133
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let x: i64 = 42;
+        let r = &x; // MUTATION_SITE
+        return 0;
+    }
+}

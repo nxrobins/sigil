@@ -1,0 +1,46 @@
+module erc20_update_token;
+
+record Token { _balances: BoundedMap_u256_u256_64, _totalSupply: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { _balances: BoundedMap_u256_u256_64::new(), _totalSupply: 0 };
+    }
+
+    pub fn transfer(self: Token @Mut, __fe_sender: u256, to: u256, value: u256) -> bool {
+        let mut __fe_inl1_from: u256 = __fe_sender;
+        let mut __fe_inl1_to: u256 = to;
+        let mut __fe_inl1_value: u256 = value;
+        if (__fe_inl1_from == 0) {
+            trap();
+        }
+        if (__fe_inl1_to == 0) {
+            trap();
+        }
+        let mut __fe_inl2_from: u256 = __fe_inl1_from;
+        let mut __fe_inl2_to: u256 = __fe_inl1_to;
+        let mut __fe_inl2_value: u256 = __fe_inl1_value;
+        let __fe_ts: u256 = self._balances.erc20_update(self._totalSupply, __fe_inl2_from, __fe_inl2_to, __fe_inl2_value);
+        self._totalSupply = __fe_ts;
+        return true;
+    }
+
+    pub fn mint(self: Token @Mut, account: u256, value: u256) {
+        if (account == 0) {
+            trap();
+        }
+        let mut __fe_inl3_from: u256 = 0;
+        let mut __fe_inl3_to: u256 = account;
+        let mut __fe_inl3_value: u256 = value;
+        let __fe_ts: u256 = self._balances.erc20_update(self._totalSupply, __fe_inl3_from, __fe_inl3_to, __fe_inl3_value);
+        self._totalSupply = __fe_ts;
+    }
+
+    pub fn burn(self: Token @Mut, __fe_sender: u256, value: u256) {
+        let mut __fe_inl4_from: u256 = __fe_sender;
+        let mut __fe_inl4_to: u256 = 0;
+        let mut __fe_inl4_value: u256 = value;
+        let __fe_ts: u256 = self._balances.erc20_update(self._totalSupply, __fe_inl4_from, __fe_inl4_to, __fe_inl4_value);
+        self._totalSupply = __fe_ts;
+    }
+}

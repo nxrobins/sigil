@@ -1,0 +1,31 @@
+module struct_point;
+
+record Point { x: u256, y: u256 }
+
+record Geometry { origin: Point, moves: u256 }
+
+impl Geometry {
+    pub fn new() -> Geometry {
+        return Geometry { origin: Point { x: 0, y: 0 }, moves: 0 };
+    }
+
+    pub fn setOrigin(self: Geometry @Mut, a: u256, b: u256) {
+        self.origin = Point { x: a, y: b };
+    }
+
+    pub fn shiftX(self: Geometry @Mut, d: u256) {
+        self.origin.x = (self.origin.x + d);
+    }
+
+    pub fn getX(self: Geometry) -> u256 {
+        return self.origin.x;
+    }
+
+    pub fn makePoint(self: Geometry, a: u256, b: u256) -> Point {
+        return Point { x: a, y: b };
+    }
+
+    pub fn manhattan(self: Geometry, p: Point) -> u256 {
+        return (p.x + p.y);
+    }
+}

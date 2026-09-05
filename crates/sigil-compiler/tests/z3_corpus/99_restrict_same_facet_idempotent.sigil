@@ -1,0 +1,39 @@
+// expect-ok
+// Z3 corpus #99: axis-2 — full authority cap through draw-assign-call chain.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// A cap drawn from full-authority state, copied through an assignment
+// chain, and forwarded through a function call retains full authority
+// at the final sink. This is the "happy path" complement to the
+// adversarial fixtures (#77 assignment chain, #82 draw inherits, #90
+// callee chain).
+//
+// Flow:
+//   fuel (full) → draw(10) → drawn (full)
+//   → a = drawn → b = a → relay(b) → needs_full(f) → OK
+//
+// The entire pipeline must compile cleanly: draw from full-authority
+// state produces a full-authority cap, assignments propagate authority
+// identity, and function parameter passing propagates authority identity.
+// Every step is individually covered by other fixtures, but this is the
+// first fixture that chains ALL of them in one function.
+module sigil;
+cap type Fuel { burn, query }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+fn relay(f: Fuel) -> i64 {
+    return needs_full(f);
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let drawn: Fuel = fuel.draw(10);
+        let a: Fuel = drawn;
+        let b: Fuel = a;
+        return relay(b);
+    }
+}

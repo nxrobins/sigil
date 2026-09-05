@@ -1,0 +1,93 @@
+// TASK: fs compare — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Input "pathA:pathB". Return "identical" or "different".
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let zero_i32: i32 = input_len - input_len;
+    let one_i32: i32 = input_len / input_len;
+
+    let mut sep32: i32 = input_len;
+    let mut scan: i32 = zero_i32;
+    while scan < input_len {
+        let b: i64 @Internal = load8(input_ptr + scan);
+        if b == 58 {
+            if sep32 == input_len {
+                sep32 = scan;
+            } else {
+            }
+        } else {
+        }
+        scan = scan + one_i32;
+    }
+    if sep32 == input_len {
+        return 0 - 400;
+    } else {
+    }
+
+    let raw_a: i64 @Internal = fs_read(input_ptr, sep32);
+    if raw_a < 0 {
+        return raw_a;
+    } else {
+    }
+
+    let path_b_off: i32 @Internal = sep32 + one_i32;
+    let path_b_len: i32 @Internal = input_len - path_b_off;
+    let raw_b: i64 @Internal = fs_read(input_ptr + path_b_off, path_b_len);
+    if raw_b < 0 {
+        return raw_b;
+    } else {
+    }
+
+    let a_ptr: i64 @Internal = raw_a / 4294967296;
+    let a_len: i64 @Internal = raw_a - a_ptr * 4294967296;
+    let b_ptr: i64 @Internal = raw_b / 4294967296;
+    let b_len: i64 @Internal = raw_b - b_ptr * 4294967296;
+
+    let mut same: i64 @Internal = 1;
+    if a_len == b_len {
+        let mut i: i64 @Internal = 0;
+        while i < a_len {
+            let ab: i64 @Internal = load8(a_ptr + i);
+            let bb: i64 @Internal = load8(b_ptr + i);
+            if ab == bb {
+            } else {
+                same = 0;
+            }
+            i = i + 1;
+        }
+    } else {
+        same = 0;
+    }
+
+    if same == 1 {
+        let out: i64 @Internal = alloc(9);
+        store8(out, 105);
+        store8(out + 1, 100);
+        store8(out + 2, 101);
+        store8(out + 3, 110);
+        store8(out + 4, 116);
+        store8(out + 5, 105);
+        store8(out + 6, 99);
+        store8(out + 7, 97);
+        store8(out + 8, 108);
+        return out * 4294967296 + 9;
+    } else {
+        let out: i64 @Internal = alloc(9);
+        store8(out, 100);
+        store8(out + 1, 105);
+        store8(out + 2, 102);
+        store8(out + 3, 102);
+        store8(out + 4, 101);
+        store8(out + 5, 114);
+        store8(out + 6, 101);
+        store8(out + 7, 110);
+        store8(out + 8, 116);
+        return out * 4294967296 + 9;
+    }
+}

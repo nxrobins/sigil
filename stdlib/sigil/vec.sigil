@@ -1,0 +1,465 @@
+// Growable generic vector `Vec<T>`.
+//
+// Layout: a header record { buf, count, slots, alloc } whose `buf` points
+// at a header-less heap buffer of `slots` uniform 8-byte cells, of which
+// the first `count` are initialized. `T` is phantom in the record (it
+// appears only in the type parameter, never a field); the element type is
+// recovered at each access from the `Vec<T>` witness passed to `vec_load` /
+// `vec_store`, so monomorphization freezes the right store width with no
+// leak. (`count` is the length and `slots` the capacity — `len`/`cap` are
+// reserved or collide with a method name.)
+//
+// Records are heap pointers with reference semantics, so a method mutates
+// `self`'s single shared header in place (`self.count = …`, `self.buf = …`)
+// — all holders observe the update.
+//
+// `alloc` is a reserved region/allocator handle (0 = the global heap). v1
+// always allocates via the global `alloc` intrinsic; the field lets the
+// future region model (docs/memory-model.md) generalize `Vec::in_region(r)`
+// without a record-shape break.
+//
+// The `vec_load` / `vec_store` intrinsics are stdlib-private — they may
+// appear ONLY in this file (enforced by tests/vec_quarantine.rs). User code
+// touches a vector solely through the methods below.
+//
+// Element type: `Vec<T>` is fully generic in the record/methods and the
+// 8-byte slots hold any scalar. `Vec<i64>`, `Vec<i32>`, and `Vec<bool>` are all
+// runtime-validated — the call-argument literal-narrowing fix (PR #132) lowers a
+// literal argument at the parameter's inferred width, so `v.push(11)` with
+// `T = i32` emits an i32 `call` that matches the parameter. (Earlier this file
+// noted a then-blocking lowering bug for non-i64 element types; that bug is fixed.)
+
+module vec;
+
+record Vec<T> { buf: i64, count: i64, slots: i64, alloc: i64 }
+
+impl Vec<T> {
+    // Empty vector; no buffer is allocated until the first `push` grows it.
+    // An associated function (no `self`) — call as `Vec::new()`. The element
+    // type comes from the binding's annotation: `let v: Vec<i64> = Vec::new();`.
+    pub fn new() -> Vec<T> {
+        return Vec { buf: 0, count: 0, slots: 0, alloc: 0 };
+    }
+
+    // Pre-sized vector: allocates `n` cells up front, avoiding all growth (and
+    // the prior-generation leak it implies). Call as `Vec::with_capacity(n)`.
+    pub fn with_capacity(n: i64) -> Vec<T> ! { Alloc } {
+        return Vec { buf: alloc(n * 8), count: 0, slots: n, alloc: 0 };
+    }
+
+    // Regions (DEF-2b, LD-7): an empty vector ASSOCIATED with the region `r` — at the type
+    // level the result lives in `r`, so it may flow into a `@in r` parameter (the type-
+    // checker special-cases the result's region = the region of `r`). The HONESTY boundary:
+    // v1 has a single global bump allocator (no per-region arena), so the buffer still grows
+    // on the global heap and the vector is reclaimed by its ENCLOSING lexical region — `r`'s
+    // handle is INERT here (stored as the global `0`; the `alloc` field is reserved for the
+    // future arena handle, AG-2b-7/AG-2b-12). Starts empty like `new()`; capacity grows on
+    // `push`. `r` is consumed for its type-level region only.
+    pub fn in_region(r: Region) -> Vec<T> {
+        return Vec { buf: 0, count: 0, slots: 0, alloc: 0 };
+    }
+
+    pub fn len(self: Vec<T> @ReadOnly) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: Vec<T> @ReadOnly) -> i64 {
+        return self.slots;
+    }
+
+    // Read element `index`. LEN-bounded: traps on `index >= count`, so only
+    // initialized cells `[0, count)` are reachable (never uninitialized
+    // capacity, never out-of-buffer).
+    pub fn get(self: Vec<T> @ReadOnly, index: i64) -> T {
+        return vec_load(self.buf, index, self.count, self);
+    }
+
+    // Append `val`, growing (doubling) when full. Mutates the shared header
+    // in place; returns the new length.
+    pub fn push(self: Vec<T> @Mut, val: T) -> i64 ! { Alloc } {
+        if self.count == self.slots {
+            // Grow: double (or 4 from empty), copy, then re-point the header.
+            let mut newslots: i64 = 4;
+            if self.slots > 0 {
+                newslots = self.slots * 2;
+            } else {
+                newslots = 4;
+            }
+            let newbuf: i64 = alloc(newslots * 8);
+            let mut i: i64 = 0;
+            while i < self.count {
+                let e = vec_load(self.buf, i, self.count, self);
+                vec_store(newbuf, i, newslots, e);
+                i = i + 1;
+            }
+            self.buf = newbuf;
+            self.slots = newslots;
+        } else {
+        }
+        // cap-bounded write: index == count < slots after any grow.
+        vec_store(self.buf, self.count, self.slots, val);
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Overwrite an already-initialized element. LEN-bounded (same bound as
+    // `get`): traps on `index >= count`, so `set` can only rewrite a live cell,
+    // never uninitialized capacity. Reuses the exact `vec_store` path as `push`
+    // (bound = `self.count`), mutating the shared header's buffer in place.
+    //
+    // Returns the written `index` (an echo) rather than `unit`: unit-returning
+    // user functions don't lower to valid wasm yet (the wasm result/return
+    // mismatch — a separate codegen gap), and the i64 echo is freely discardable
+    // in statement position (`v.set(i, x);`).
+    pub fn set(self: Vec<T> @Mut, index: i64, val: T) -> i64 {
+        vec_store(self.buf, index, self.count, val);
+        return index;
+    }
+}
+
+// ── iteration (the lean structural Iterator protocol) ────────────────────────
+//
+// A `VecIter<T>` is a cursor over a `Vec<T>`'s live elements `[0, count)`. It is
+// the iterator the compiler's `for x in <it>` desugar drives: any type with a
+// `next(self @Mut) -> Option<T>` method is iterable, recognized by SHAPE (no
+// `Iterator` trait, no associated types). `for x in v.iter() { … }` therefore just
+// works. Both `iter` and `next` are `Alloc`-free (a record literal + bounds-checked
+// reads); the Vec itself was already allocated. `VecIter` holds the Vec by reference
+// (records are reference-semantic), so it reads the SAME buffer — mutating the Vec
+// mid-iteration is memory-safe (every read is `get`-bounds-checked) but unspecified.
+
+record VecIter<T> { src: Vec<T>, pos: i64 }
+
+impl VecIter<T> {
+    // Yield the next live element and advance, or `None` at the end. LEN-bounded
+    // through `Vec::get` (which traps past `count`), so no uninitialized capacity
+    // or out-of-buffer cell is ever reachable.
+    pub fn next(self: VecIter<T> @Mut) -> Option<T> {
+        if self.pos < self.src.len() {
+            let v = self.src.get(self.pos);
+            self.pos = self.pos + 1;
+            return Some(v);
+        } else {
+            return None;
+        }
+    }
+}
+
+impl Vec<T> {
+    // A fresh forward iterator over the live elements. `for x in v.iter()` desugars
+    // to repeated `next()` calls. Takes `@Mut self`: the `VecIter` is a mutable handle
+    // (the cursor advances), so storing the Vec into it requires `@Mut` authority — a
+    // frozen Vec stored in a mutable handle would re-widen (T253). In practice a Vec is
+    // built mutably (`let mut v`) and then iterated, so this is no extra burden.
+    pub fn iter(self: Vec<T> @Mut) -> VecIter<T> {
+        return VecIter { src: self, pos: 0 };
+    }
+}
+
+// ── eager adapters + terminals (i64 pipelines) ───────────────────────────────
+//
+// Consume the vector eagerly by index (@ReadOnly self — no mutation, no iterator
+// object): `map`/`filter` materialize a fresh `Vec<i64>` and so CHAIN on the
+// result (`v.map(f).filter(g).sum()`); the terminals fold to a scalar/bool/
+// Option. The pipeline is i64-only by construction — the closure signatures are
+// `Fn(i64) -> …`, so a non-i64 element makes `f(e)` a type error (T071), never a
+// silent widening (str/f64/type-changing `map` are a declared follow-on).
+// `map`/`filter` grow a `Vec` so they carry `! { Alloc }`; read-only terminals do
+// not allocate. Closures may capture (PR #337).
+
+impl Vec<T> {
+    // Map every element through `f`, collecting the results in order.
+    pub fn map(self: Vec<T> @ReadOnly, f: Fn(i64) -> i64) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut i: i64 = 0;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            let r: i64 = f(e);
+            let _n: i64 = out.push(r);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Keep the elements for which `pred` is true, preserving order.
+    pub fn filter(self: Vec<T> @ReadOnly, pred: Fn(i64) -> bool) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut i: i64 = 0;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            if pred(e) {
+                let _n: i64 = out.push(e);
+            } else {
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Sum of all elements (0 over an empty vector).
+    pub fn sum(self: Vec<T> @ReadOnly) -> i64 {
+        let mut acc: i64 = 0;
+        let mut i: i64 = 0;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            acc = acc + e;
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    // Left fold seeded with `seed`: g(… g(g(seed, e0), e1) …, e_{n-1}).
+    // (`init` would be a reserved keyword — the actor `init(...)` block.)
+    pub fn fold(self: Vec<T> @ReadOnly, seed: i64, g: Fn(i64, i64) -> i64) -> i64 {
+        let mut acc: i64 = seed;
+        let mut i: i64 = 0;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            acc = g(acc, e);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    // True iff `pred` holds for at least one element (short-circuits).
+    pub fn any(self: Vec<T> @ReadOnly, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut found: bool = false;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            if pred(e) {
+                found = true;
+                i = self.len();
+            } else {
+                i = i + 1;
+            }
+        }
+        return found;
+    }
+
+    // True iff `pred` holds for every element (short-circuits on the first false).
+    pub fn all(self: Vec<T> @ReadOnly, pred: Fn(i64) -> bool) -> bool {
+        let mut i: i64 = 0;
+        let mut ok: bool = true;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            if pred(e) {
+                i = i + 1;
+            } else {
+                ok = false;
+                i = self.len();
+            }
+        }
+        return ok;
+    }
+
+    // The first element satisfying `pred`, or None (short-circuits).
+    pub fn find(self: Vec<T> @ReadOnly, pred: Fn(i64) -> bool) -> Option<i64> {
+        let mut i: i64 = 0;
+        let mut out: Option<i64> = None;
+        while i < self.len() {
+            let e: i64 = self.get(i);
+            if pred(e) {
+                out = Some(e);
+                i = self.len();
+            } else {
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+}
+
+// ── lazy iterator adapters (the fluent `iter()…collect()` pipeline) ───────────
+//
+// `MapIter`/`FilterIter`/`TakeIter` are cursor records that each expose the
+// structural `next(self @Mut) -> Option<i64>` shape, so they are for-in-able
+// (`for x in v.iter().filter(g) { … }`) AND chain through the adapter methods.
+// They store the user's closure in a generic field `f: F` (bound to a concrete
+// `Fn(i64)->…` at construction — closures-in-fields work, PR #337) and the inner
+// iterator in `inner: I`. Lazy: no element is touched until pulled, so
+// `take(n)` calls the inner `next()` at most n times. i64-only (the yielded
+// `Option<i64>`). Terminal `collect()` materializes into a `Vec<i64>`.
+
+record MapIter<I, F> { inner: I, f: F }
+record FilterIter<I, F> { inner: I, f: F }
+record TakeIter<I> { inner: I, n: i64, taken: i64 }
+
+impl MapIter<I, F> {
+    // Pull the inner element and apply the stored closure. The closure is bound
+    // to a local first (`let g = self.f`) — a closure stored in a field is called
+    // through a local, not via field-method dispatch.
+    pub fn next(self: MapIter<I, F> @Mut) -> Option<i64> {
+        let o: Option<i64> = self.inner.next();
+        if o.is_some() {
+            let v: i64 = o.unwrap_or(0);
+            let g = self.f;
+            return Some(g(v));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl FilterIter<I, F> {
+    // Pull inner elements until one satisfies the predicate; None at exhaustion.
+    pub fn next(self: FilterIter<I, F> @Mut) -> Option<i64> {
+        let mut go: bool = true;
+        let mut out: Option<i64> = None;
+        while go {
+            let o: Option<i64> = self.inner.next();
+            if o.is_some() {
+                let v: i64 = o.unwrap_or(0);
+                let g = self.f;
+                if g(v) {
+                    out = Some(v);
+                    go = false;
+                } else {
+                }
+            } else {
+                go = false;
+            }
+        }
+        return out;
+    }
+}
+
+impl TakeIter<I> {
+    // Yield up to `n` elements, then None. The budget is checked BEFORE pulling
+    // the inner iterator, so `inner.next()` is called at most `n` times.
+    pub fn next(self: TakeIter<I> @Mut) -> Option<i64> {
+        if self.taken < self.n {
+            let o: Option<i64> = self.inner.next();
+            if o.is_some() {
+                self.taken = self.taken + 1;
+                let v: i64 = o.unwrap_or(0);
+                return Some(v);
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+}
+
+impl VecIter<T> {
+    // Adapter methods: wrap this iterator in a lazy adapter. Construct-once — the
+    // closure is frozen into the adapter's field.
+    pub fn map(self: VecIter<T> @Mut, f: Fn(i64) -> i64) -> MapIter<VecIter<T>, Fn(i64) -> i64> {
+        return MapIter { inner: self, f: f };
+    }
+    pub fn filter(self: VecIter<T> @Mut, pred: Fn(i64) -> bool) -> FilterIter<VecIter<T>, Fn(i64) -> bool> {
+        return FilterIter { inner: self, f: pred };
+    }
+    // NOTE the space in `TakeIter<VecIter<T> >`: a bare `>>` lexes as the
+    // shift-right operator, so nested generic CLOSERS must be separated.
+    pub fn take(self: VecIter<T> @Mut, n: i64) -> TakeIter<VecIter<T> > {
+        return TakeIter { inner: self, n: n, taken: 0 };
+    }
+    // Terminal: drain into a fresh Vec<i64>.
+    pub fn collect(self: VecIter<T> @Mut) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut go: bool = true;
+        while go {
+            let o: Option<i64> = self.next();
+            if o.is_some() {
+                let _n: i64 = out.push(o.unwrap_or(0));
+            } else {
+                go = false;
+            }
+        }
+        return out;
+    }
+}
+
+impl MapIter<I, F> {
+    pub fn collect(self: MapIter<I, F> @Mut) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut go: bool = true;
+        while go {
+            let o: Option<i64> = self.next();
+            if o.is_some() {
+                let _n: i64 = out.push(o.unwrap_or(0));
+            } else {
+                go = false;
+            }
+        }
+        return out;
+    }
+}
+
+impl FilterIter<I, F> {
+    pub fn collect(self: FilterIter<I, F> @Mut) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut go: bool = true;
+        while go {
+            let o: Option<i64> = self.next();
+            if o.is_some() {
+                let _n: i64 = out.push(o.unwrap_or(0));
+            } else {
+                go = false;
+            }
+        }
+        return out;
+    }
+}
+
+impl TakeIter<I> {
+    pub fn collect(self: TakeIter<I> @Mut) -> Vec<i64> ! { Alloc } {
+        let mut out: Vec<i64> = Vec::new();
+        let mut go: bool = true;
+        while go {
+            let o: Option<i64> = self.next();
+            if o.is_some() {
+                let _n: i64 = out.push(o.unwrap_or(0));
+            } else {
+                go = false;
+            }
+        }
+        return out;
+    }
+}
+
+// ── lazy adapter chaining ────────────────────────────────────────────────────
+//
+// Each adapter gains map/filter/take so the spec's
+// `iter().filter(g).map(f).take(n).collect()` composes lazily. Return types nest
+// the adapter generics; note the space in `<… >` closers — a bare `>>` lexes as
+// the shift-right operator.
+
+impl MapIter<I, F> {
+    pub fn map(self: MapIter<I, F> @Mut, g: Fn(i64) -> i64) -> MapIter<MapIter<I, F>, Fn(i64) -> i64> {
+        return MapIter { inner: self, f: g };
+    }
+    pub fn filter(self: MapIter<I, F> @Mut, p: Fn(i64) -> bool) -> FilterIter<MapIter<I, F>, Fn(i64) -> bool> {
+        return FilterIter { inner: self, f: p };
+    }
+    pub fn take(self: MapIter<I, F> @Mut, n: i64) -> TakeIter<MapIter<I, F> > {
+        return TakeIter { inner: self, n: n, taken: 0 };
+    }
+}
+
+impl FilterIter<I, F> {
+    pub fn map(self: FilterIter<I, F> @Mut, g: Fn(i64) -> i64) -> MapIter<FilterIter<I, F>, Fn(i64) -> i64> {
+        return MapIter { inner: self, f: g };
+    }
+    pub fn filter(self: FilterIter<I, F> @Mut, p: Fn(i64) -> bool) -> FilterIter<FilterIter<I, F>, Fn(i64) -> bool> {
+        return FilterIter { inner: self, f: p };
+    }
+    pub fn take(self: FilterIter<I, F> @Mut, n: i64) -> TakeIter<FilterIter<I, F> > {
+        return TakeIter { inner: self, n: n, taken: 0 };
+    }
+}
+
+impl TakeIter<I> {
+    pub fn map(self: TakeIter<I> @Mut, g: Fn(i64) -> i64) -> MapIter<TakeIter<I>, Fn(i64) -> i64> {
+        return MapIter { inner: self, f: g };
+    }
+    pub fn filter(self: TakeIter<I> @Mut, p: Fn(i64) -> bool) -> FilterIter<TakeIter<I>, Fn(i64) -> bool> {
+        return FilterIter { inner: self, f: p };
+    }
+    pub fn take(self: TakeIter<I> @Mut, n: i64) -> TakeIter<TakeIter<I> > {
+        return TakeIter { inner: self, n: n, taken: 0 };
+    }
+}

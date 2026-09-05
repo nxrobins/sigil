@@ -1,0 +1,44 @@
+// expect-error: T211
+// Z3 corpus #62: axis-1 — Wall 4 Step 10 narrowing doesn't leak past the if.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Narrowing is per-arm, not per-scope. After `if x > 0 { ... }`
+// returns/falls-through, the narrowing frame is popped from the
+// pattern_refinement_stack and `x` reverts to its bare type. A call
+// to `need_positive(x)` AFTER the if-block fires T224 because the
+// preserved narrowing is gone.
+//
+// This is the inverse of fixture 58 (which proved narrowing applies
+// INSIDE the then-arm). 62 proves the discipline: the pop in check_if
+// after check_block returns. Without proper pop, narrowing would leak
+// into subsequent code and produce unsound proofs of refinement
+// satisfaction.
+//
+// Expected diagnostic is T211 (symbolic argument with no preserved
+// refinement) — Step 7's call-site dispatcher Case 3, fired when the
+// arg is neither a literal (Case 1) nor refinement-preserving (Case 2).
+//
+// MUTATION CONTRACT
+//
+// Moving the `need_positive(x)` call INSIDE the if-arm flips to
+// expect-ok (this becomes fixture 58's shape). Adding a `return`
+// inside the if-arm makes the post-if code unreachable but doesn't
+// otherwise affect narrowing.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input > 0 {
+            let _ok: i64 = input;
+        } else {
+            let _other: i64 = 0;
+        }
+        let _outside: i64 = need_positive(input);  // MUTATION_SITE
+        return 0;
+    }
+}

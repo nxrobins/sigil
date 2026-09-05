@@ -1,0 +1,18 @@
+module inh_metadata_ctor;
+
+record Token { total: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        let mut __fe_c = Token { total: 0 };
+        return __fe_c;
+    }
+
+    pub fn bump(self: Token @Mut, v: u256) {
+        self.total = (self.total + v);
+    }
+
+    pub fn get(self: Token) -> u256 {
+        return self.total;
+    }
+}

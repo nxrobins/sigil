@@ -1,0 +1,29 @@
+id: task129_fs_grep_error
+source_path: tools/task129_fs_grep_error.sigil
+difficulty: ffi_fs
+description: |
+  Write a Sigil tool that reads the file whose path is supplied as input and
+  returns only the lines that contain the substring `ERROR`, in their
+  original order, one per line.
+
+  This is an FFI tool, so it lives in `#[ring(outer)] #[trusted] module tool;`.
+  Declare:
+      extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+  The tool exports
+      pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }
+  Note `i32` parameters — the FFI ABI requires i32 pointer/length.
+
+  fs_read returns a packed `(ptr * 4294967296 + len)` on success or a
+  negative error code on failure; propagate a negative `raw` unchanged.
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["FsIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  fs: ["bench/fixtures"]
+fuel_budget: 300000
+inputs:
+  - name: log_with_errors
+    value: bench/fixtures/app.log
+  - name: no_errors
+    value: bench/fixtures/lines3.txt
+expected_output_strategy: capture_from_reference

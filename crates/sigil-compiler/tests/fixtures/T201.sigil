@@ -1,0 +1,9 @@
+// expect-error: T201
+//
+// T201 — parametric capability used with the wrong number of values.
+// `Limited` is declared with arity 2 (`deadline_ms` and `max_uses`);
+// the function signature supplies only 1 value, mismatching the
+// declared arity. Wall 3 Stage 1.
+module main;
+cap type Limited(deadline_ms: i64, max_uses: i64) {}
+fn settle(c: Limited(2030)) -> i64 { return 1; }

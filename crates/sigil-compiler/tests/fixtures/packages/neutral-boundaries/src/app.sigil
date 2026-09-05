@@ -1,0 +1,14 @@
+module app;
+use sigil::helper;
+
+pub fn public_roundtrip(value: i64 @Public) -> i64 @Public {
+    return helper::public_echo(value);
+}
+
+pub fn internal_roundtrip(value: i64 @Internal) -> i64 @Internal {
+    return helper::internal_echo(value);
+}
+
+pub fn secret_roundtrip(value: i64 @Secret) -> i64 @Secret {
+    return helper::secret_echo(value);
+}

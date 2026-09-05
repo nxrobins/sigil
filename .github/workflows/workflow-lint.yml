@@ -1,0 +1,59 @@
+# Workflow validity — the outer half of a mutual-coverage pair.
+#
+# A workflow file that GitHub cannot parse is REFUSED WHOLESALE. Every lane it
+# defines never starts, and no failing check is reported — pull requests simply
+# wait forever on required status that can never arrive. That is what happened
+# on 2026-08-02, when a plain YAML scalar in `ci.yml` contained ": " and the
+# entire CI workflow stopped running while the queue merely looked slow.
+#
+# A validator cannot protect the file it lives in: if that file fails to parse,
+# the validator never runs. A SIBLING file is unaffected, though — throughout
+# that outage the separate Lean workflow ran green. So the protocol is two
+# files covering each other:
+#
+#   * this file validates `ci.yml`
+#   * `ci.yml`'s hygiene lane runs the SAME script, validating this file
+#
+# Whichever one breaks, the other still parses, still runs, and turns red.
+#
+# Keep this file SMALL and boring. Its job is to be the thing that still works
+# when the big one is broken, and every construct added here is another way for
+# it to break in the same breath as its sibling.
+name: Workflow lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  workflows-parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install --upgrade pyyaml
+
+      # Fence before gate, same as the hygiene lane: a validator whose
+      # refusal branches went dead produces the same silent-queue failure
+      # this file exists to prevent. One extra step, same script, no new
+      # dependencies — within this file's keep-it-boring budget.
+      - name: Workflow validator self-test (fail-closed fence)
+        run: python tools/validate_workflows.py --self-test
+
+      - name: Every workflow file parses
+        run: python tools/validate_workflows.py

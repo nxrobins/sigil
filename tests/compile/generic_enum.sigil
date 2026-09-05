@@ -1,0 +1,20 @@
+// Test: generic enum construction and match destructuring
+// PR B commit #5: variants qualified with `MyOption::` so the test
+// doesn't fire T236 against ambient stdlib Option (which also
+// declares Some/None).
+module sigil;
+cap type Fuel {}
+
+enum MyOption<T> { Some(T), None }
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let opt = MyOption::Some(42);
+        match opt {
+            MyOption::Some(v) => { return v + 1; },
+            MyOption::None => { return 0; }
+        }
+    }
+}

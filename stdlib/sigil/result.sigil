@@ -1,0 +1,105 @@
+// PR B / stdlib::result — `Result<T, E>` as a user-defined enum
+// with combinator impl methods.
+//
+// Pre-PR-B, `Result<T, E>` existed only as a compiler-internal
+// `Type::Named("Result", _)` produced by `check_result_ctor_expr`
+// in response to the parser's `Ok(...)` / `Err(...)` shortcuts
+// (`try_parse_result_ctor` at parser.rs:3189-3203). This file
+// elevates Result to a user-declared enum so the impl block can
+// attach combinator methods (`.map`, `.unwrap_or`, etc.) that
+// route through PR #73 v0's impl-block-generic dispatch +
+// PR #78 (HOF) general closure-call lowering.
+//
+// Per the PR B Hybrid scope:
+// - The compiler's hardcoded Result type-shape PRESERVED unchanged
+//   (parser `Ok`/`Err` shortcut still produces ResultCtor; AIR
+//   lower_result_ctor still emits the `is_ok`-tagged flat layout;
+//   `?` operator's special unification preserved).
+// - The 2 reassignability special cases at type_check.rs:9510, 9563
+//   DELETED in PR B commit #4 (the generic universe.enums.get(name)
+//   branch handles Result uniformly now that this enum declaration
+//   populates the registry).
+// - R005 ErrorCode sanitization PRESERVED (security invariant per
+//   AG-PRB-D).
+//
+// Per N28-PRB: variants declared in EXACT positional order Ok(T), Err(E).
+// `try_parse_result_ctor`'s is_ok=true assumes Ok is variant 0; this
+// file's declaration order is the source of truth for that
+// assumption.
+
+module result;
+
+pub enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+impl Result<T, E> {
+    /// Apply `f` to the Ok value; pass through Err unchanged.
+    pub fn map<U>(self: Result<T, E>, f: Fn(T) -> U) -> Result<U, E> {
+        match self {
+            Ok(v) => { return Ok(f(v)); },
+            Err(e) => { return Err(e); }
+        }
+    }
+
+    /// Apply `f` to the Err value; pass through Ok unchanged.
+    pub fn map_err<F>(self: Result<T, E>, f: Fn(E) -> F) -> Result<T, F> {
+        match self {
+            Ok(v) => { return Ok(v); },
+            Err(e) => { return Err(f(e)); }
+        }
+    }
+
+    /// Chain a Result-returning function onto the Ok value;
+    /// short-circuit on Err.
+    pub fn and_then<U>(self: Result<T, E>, f: Fn(T) -> Result<U, E>) -> Result<U, E> {
+        match self {
+            Ok(v) => { return f(v); },
+            Err(e) => { return Err(e); }
+        }
+    }
+
+    /// Chain a Result-returning function onto the Err value;
+    /// short-circuit on Ok.
+    pub fn or_else<F>(self: Result<T, E>, f: Fn(E) -> Result<T, F>) -> Result<T, F> {
+        match self {
+            Ok(v) => { return Ok(v); },
+            Err(e) => { return f(e); }
+        }
+    }
+
+    /// Unwrap the Ok value or return `default` on Err. `default` is `@Mut` because
+    /// it may be RETURNED (moved out to the caller) — under default-frozen a
+    /// returnable parameter cannot be a frozen view (it would be a T253 escape).
+    pub fn unwrap_or(self: Result<T, E>, default: T @Mut) -> T {
+        match self {
+            Ok(v) => { return v; },
+            Err(e) => { return default; }
+        }
+    }
+
+    /// Unwrap the Ok value or call `f` on the Err to produce a value.
+    pub fn unwrap_or_else(self: Result<T, E>, f: Fn(E) -> T) -> T {
+        match self {
+            Ok(v) => { return v; },
+            Err(e) => { return f(e); }
+        }
+    }
+
+    /// True iff the Result is Ok.
+    pub fn is_ok(self: Result<T, E>) -> bool {
+        match self {
+            Ok(v) => { return true; },
+            Err(e) => { return false; }
+        }
+    }
+
+    /// True iff the Result is Err.
+    pub fn is_err(self: Result<T, E>) -> bool {
+        match self {
+            Ok(v) => { return false; },
+            Err(e) => { return true; }
+        }
+    }
+}

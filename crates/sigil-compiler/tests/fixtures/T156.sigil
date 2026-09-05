@@ -1,0 +1,10 @@
+// T156: module name shadowed by local variable.
+module helpers;
+pub fn add_one(x: i64) -> i64 { return x + 1; }
+
+module main;
+use sigil::helpers;
+fn boot() -> i64 {
+    let helpers: i64 = 5;
+    return helpers::add_one(0);
+}

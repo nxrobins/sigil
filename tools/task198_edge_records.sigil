@@ -1,0 +1,77 @@
+// TASK: edge records — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+record Point { x: i64, y: i64, z: i64 }
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+        while n > 0 {
+            let q = n / 10;
+            let d = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out = alloc(digits);
+        let mut i = 0;
+        while i < digits {
+            let b = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+// Parse "a:b:c" decimal integers from input, build a Point, return x+y+z as decimal.
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut vals: i64 = alloc(24);
+    let mut which: i64 = 0;
+    let mut cur: i64 = 0;
+    let mut i: i64 = 0;
+    while i <= input_len {
+        let mut eol: i64 = 0;
+        if i == input_len {
+            eol = 1;
+        } else {
+            let b: i64 = load8(input_ptr + i);
+            if b == 58 {
+                eol = 1;
+            } else {
+                if b > 47 {
+                    if b < 58 {
+                        cur = cur * 10 + b - 48;
+                    } else {
+                    }
+                } else {
+                }
+            }
+        }
+        if eol == 1 {
+            // Store cur as a byte (only works for values 0..255). For 1:2:3 it's fine.
+            store8(vals + which, cur);
+            cur = 0;
+            which = which + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+
+    let x: i64 = load8(vals);
+    let y: i64 = load8(vals + 1);
+    let z: i64 = load8(vals + 2);
+    let p: Point = Point { x: x, y: y, z: z };
+    let sum: i64 = p.x + p.y + p.z;
+    return render_decimal(sum);
+}

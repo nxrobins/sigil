@@ -1,0 +1,92 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            SubsumptionAny {
+                actual: [
+                    RefinementClause {
+                        field: "input",
+                        op: Eq,
+                        rhs: Literal(
+                            5,
+                        ),
+                        span: Span {
+                            start: 680,
+                            end: 690,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    },
+                ],
+                expected: RefinementClause {
+                    field: "x",
+                    op: Gt,
+                    rhs: Literal(
+                        0,
+                    ),
+                    span: Span {
+                        start: 579,
+                        end: 590,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                site: Span {
+                    start: 712,
+                    end: 732,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T224",
+                    ),
+                    severity: Error,
+                    message: "function `need_positive` call-site violates parameter refinement: argument #1 (param `x`) supplied symbolic value carries a refinement that does not subsume the destination's `> 0` predicate (Step 3 syntactic match + Z3 subsumption both failed)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 712,
+                            end: 732,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T224",
+                    ),
+                    severity: Error,
+                    message: "function `need_positive` call-site violates parameter refinement: argument #1 (param `x`) supplied symbolic value carries a refinement that does not subsume the destination's `> 0` predicate (Step 3 syntactic match + Z3 subsumption both failed)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 712,
+                            end: 732,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

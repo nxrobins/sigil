@@ -1,0 +1,1222 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+    branches: [main]
+
+# Cancel an in-progress run when a new commit lands on the same branch / PR.
+# Without this, push + pull_request triggers race for runners and starve each
+# other in the queue (observed: both runs sat for 15 min then got cancelled).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install hygiene tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "bench[dev]"
+
+      - name: Lint Python
+        # tools/ was the one Python root outside this lane — the gate scripts
+        # that guard the compiler were themselves unlinted. Rules live in
+        # per-root .ruff.toml files so the answer is invocation-independent.
+        run: python -m ruff check bench interp tools
+
+      # The inner half of the mutual-coverage pair (see workflow-lint.yml). That
+      # sibling workflow validates THIS file; this step validates that one. A
+      # validator cannot protect the file it lives in — if the file fails to
+      # parse, the lane never runs — so each file's validity is proven by a lane
+      # defined in the other. Whichever breaks, the other still parses and reds.
+      # Fence before gate (the check-no-sorry.sh --self-test pattern): prove
+      # the validator's refusal branches refuse — colon-space hint included,
+      # whose first-ever execution caught it blind to the `- run:` spelling —
+      # before trusting "every workflow file parses".
+      - name: Every commit carries a DCO sign-off
+        # Contributions are accepted under the Developer Certificate of Origin
+        # (the DCO file at the root): each commit in the pull request must carry
+        # a `Signed-off-by:` trailer, which `git commit -s` adds. Pull requests
+        # only: the merge queue re-runs the same commits and a push to main has
+        # no base to range over. Fail closed: one unsigned commit fails the lane.
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          unsigned=0
+          while IFS= read -r sha; do
+            if ! git log -1 --format=%B "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "commit $sha has no Signed-off-by trailer" >&2
+              unsigned=$((unsigned + 1))
+            fi
+          done < <(git rev-list --no-merges "$range")
+          if [ "$unsigned" -ne 0 ]; then
+            echo "$unsigned commit(s) lack a DCO sign-off; amend with \`git commit -s\`" >&2
+            exit 1
+          fi
+          echo "every commit in $range is signed off"
+
+      - name: Token sweep self-test (fail-closed fence)
+        # tools/token_sweep.py is the tree's guard against a private-development
+        # identifier slipping in; it matches hashed identifiers, so the list it
+        # reads discloses nothing. Its refusals are proven before its verdict counts.
+        run: python tools/token_sweep.py --self-test
+
+      - name: No private-development identifier in the tree
+        run: python tools/token_sweep.py
+
+      - name: Workflow validator self-test (fail-closed fence)
+        run: python tools/validate_workflows.py --self-test
+
+      - name: Every workflow file parses
+        run: python tools/validate_workflows.py
+
+      - name: Release-evidence validator self-test
+        run: python tools/validate_release_evidence.py --self-test
+
+      - name: CSIR v9 pending evidence remains non-release
+        run: python tools/validate_release_evidence.py --template docs/release-evidence/csir-v9-dual-gate.toml
+
+      # Self-host ergonomics ratchet. The 2026-07-25 course drove `exact_empty_else` to zero
+      # after optional-`else` shipped; by 2026-08-02 it was back to 2103 because nothing held
+      # the line, and the docs still advertised the cleaned-up number. A one-time cleanup
+      # measures a moment — this makes it a property. Counts may FALL freely; the step fails
+      # only when one GROWS past its pinned ceiling in `RATCHET_CEILINGS`, and it prints the
+      # slack so the pin can be tightened as the number comes down.
+      # Fence before gate: prove each census detector on planted input and
+      # prove the empty-tree path fails closed. Without this, a dead regex or
+      # a moved source tree turns the ratchet into praise for measuring
+      # nothing (the census's own docstring records the exact scenario).
+      - name: Ergonomics census self-test (fail-closed fence)
+        run: python tools/selfhost_ergonomics_census.py --self-test
+
+      - name: Self-host ergonomics ratchet
+        run: python tools/selfhost_ergonomics_census.py --ratchet
+
+      # The certified source must stay inside the subset the INDEPENDENT implementation can read.
+      # `interp/` exists to be a second compiler whose lineage does not pass through the Rust
+      # oracle (docs/CLAIMS.md, HB-3); that comparison is only possible while it can parse the
+      # source. The census is loud on any construct it does not recognize, so this step turns
+      # "the selfhost grew a new construct" from a silent surprise at DDC time into a failure on
+      # the PR that introduced it. Widening the subset stays possible — it just has to be
+      # deliberate, and taught to the interpreter in the same change.
+      - name: Certified source stays within the interpreter subset
+        run: python interp/census.py
+
+      # SC-P4 for the census: its most useful output is a set of ABSENCES (no `for` loop, no
+      # indexing, no `&&`), and an absence is only evidence if the detector can see the construct
+      # when it IS present. This proves each one can.
+      - name: Interpreter parser anti-stubs
+        run: python interp/test_parse.py
+
+      # The evaluator's semantic decisions — i64 wrapping, truncating division, reference-semantic
+      # records, byte-indexed strings — are where an independent implementation is most likely to
+      # diverge from the oracle. Pinning them here means a later change cannot quietly alter the
+      # language this interpreter implements.
+      - name: Interpreter semantic pins
+        run: python interp/test_eval.py
+
+      # The differential itself: both sides execute selfhost/lexer.sigil's `encode(lex(src))`,
+      # so a disagreement is an interpreter-semantics bug. The answer key is produced and kept
+      # current by `interp_corpus.rs` on the Rust side (which the `test` lane runs), so this step
+      # only reads it — an implementation computing its own reference answers would be grading its
+      # own homework.
+      - name: Interpreter lexer differential
+        run: python interp/test_differential.py
+
+      - name: Reject whitespace errors
+        # Markdown is excluded because a trailing double-space is CommonMark's hard line
+        # break — the campaign records and library governance docs use it on purpose, and
+        # the experiment charters are commit-count-frozen, so they cannot be re-whitespaced
+        # even if we wanted to. Patch files are excluded because unified-diff context
+        # lines for blank lines ARE a lone trailing space — stripping them corrupts the
+        # patch (export/scrubs/*.patch). Code files remain fully checked.
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"
+          git diff --check "$base_sha"...HEAD -- . ":(exclude)bench/fixtures/**" ":(exclude)*.md" ":(exclude)*.patch"
+
+      # The certified source is COMPOSED by interp/certified.py rather than committed, and
+      # verified against the same digest the Rust pins carry — so a drifted composition fails
+      # loudly here instead of quietly compiling a slightly different program later. Seconds.
+      # (The full DDC comparison is a Rust test, `interp_ddc_reproduces_the_committed_seed`, so
+      # that docs/CLAIMS.md can name it: a claim's proof has to be a test the ledger can check.)
+      - name: Certified source composition matches the pinned digest
+        run: python interp/certified.py
+
+  # Supply-chain: scan the dependency tree for known RustSec advisories against
+  # the committed Cargo.lock. Added per the security audit — the workspace had
+  # no advisory scan at all.
+  #
+  # GATING: fails the check on any vulnerability. The advisory backlog present
+  # when this job was introduced has been cleared — wasmtime was bumped to
+  # 43.0.2 (fixing the critical Cranelift/Winch sandbox-escape advisories,
+  # RUSTSEC-2026-0095/0096, which are directly load-bearing for a wasm sandbox),
+  # and crossbeam-epoch / rustls-webpki / anyhow were bumped to patched
+  # releases. wasmtime moved again to 47.0.4 on 2026-09-02 for the WASIp3
+  # stream allocation and trailing-slash sandbox-escape advisories
+  # (RUSTSEC-2026-0268/0269).
+  #
+  # The advisory *warnings* have since been cleaned up AT THE SOURCE: lru 0.12
+  # -> 0.16.4 (RUSTSEC-2026-0002 unsound `IterMut`), fastrand 2.4.0 -> 2.4.1 and
+  # gimli 0.33.1 -> 0.33.0 (both yanked), and the unmaintained rustls-pemfile
+  # (RUSTSEC-2025-0134) was REMOVED by dropping ureq's `native-certs` feature
+  # (the default `tls` feature already bundles webpki-roots — see
+  # sigil-runtime/Cargo.toml). NO advisories are currently ignored. The gate
+  # runs with `--deny warnings`, so any NEW vulnerability OR warning fails the
+  # build. If a future advisory has no available fix, add a justified entry to a
+  # `.cargo/audit.toml` `[advisories] ignore` list rather than reintroducing
+  # continue-on-error.
+  supply-chain:
+    name: Supply-chain audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # This job and `interp-ddc` were the only two rust-cache sites with no
+          # `with:` block, so a failed run banked nothing and the next one paid
+          # the ~5.7 min cargo-audit build again. The other five sites already
+          # carry this.
+          cache-on-failure: "true"
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Audit dependencies for security advisories
+        # `--deny warnings`: fail on vulnerabilities AND warnings. No advisories
+        # are ignored — all four prior warnings were fixed at the source.
+        run: cargo audit --deny warnings
+
+  # The workspace test suite — the CI critical path. Split into its own job so
+  # it runs IN PARALLEL with the `checks` job below (clippy + the grep/python
+  # contract lints + the json/trace feature recompiles + the CLI sweep) instead
+  # of serially after them. The ~196 integration-test binaries (each statically
+  # linking its crate's whole lib) make this the dominant cost; the split turns
+  # the old monolithic-job serial SUM into a parallel MAX.
+  #
+  # BRANCH PROTECTION: the old single `rust` required status check no longer
+  # exists. Required checks must be updated to list BOTH `test` AND `checks`,
+  # or PRs can merge with these lanes un-gated.
+  # ── The DDC comparison, in its own PARALLEL lane ──────────────────────────────────────────
+  #
+  # `interpret(S)` applied to `S` must reproduce seed/sigil-seed.wasm byte-for-byte, where the
+  # interpreter's lineage does not pass through the Rust oracle (docs/CLAIMS.md claim 40, HB-3).
+  #
+  # WHY A SEPARATE LANE. Running it inside `cargo test --workspace` cancelled the `test` lane at
+  # its 30-minute timeout. No job in this workflow declares `needs:`, so lanes run in PARALLEL and
+  # a PR's wall-clock is the SLOWEST lane rather than the sum — moving this out returns `test` to
+  # ~22 minutes and makes the comparison effectively free. That beats speeding the interpreter up,
+  # and risks nothing about correctness.
+  #
+  # The gate is fenced: `interp_ddc_lane_is_wired_in_ci` (which runs in the default lane) reads
+  # this file and fails if no job invokes the target with its feature. A feature-gated proof that
+  # nothing runs is the same hole as an `#[ignore]`d one.
+  interp-ddc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # PyPy, not CPython. The interpreter is a tree-walker over ~1.5 billion evaluator steps and
+      # uses nothing outside the standard library, so a JIT is the one speed-up available for
+      # free. It also mildly STRENGTHENS the independence story: a different implementation of
+      # Python, not merely a different language from the oracle.
+      - name: Set up PyPy
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "pypy3.10"
+
+      - name: Show the interpreter under test
+        run: python -VV
+
+      # SHA-pinned like every other action in this file. An unpinned action in the lane that
+      # produces the trusting-trust result is exactly the wrong place to accept a moving target.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Preserve compiled dependencies after failures, matching the five
+          # other rust-cache sites. This is a REQUIRED check, so a failure here
+          # is retried often -- paying a cold dependency build each time was the
+          # worst place in the file to be missing this.
+          cache-on-failure: "true"
+
+      # `-- --nocapture` so the comparison's own output reaches the log, and the `1 passed` check
+      # because `cargo test` EXITS 0 when it runs zero tests. A `#[cfg]`-disabled or filtered-out
+      # test would otherwise leave this lane green while proving nothing — the same
+      # proof-that-never-runs hole the feature gate itself required fencing against.
+      # The trailing `grep` is the real gate: `cargo test` EXITS 0 when it runs ZERO tests, so a
+      # `#[cfg]`-disabled or filtered-out test would leave this lane green while proving nothing.
+      # Kept on ONE `run:` line because `interp_ddc_lane_is_wired_in_ci` requires the invocation to
+      # be a single runnable step — it caught the multi-line form immediately.
+      - name: DDC — the interpreter reproduces the committed seed
+        run: cargo test -p sigil-runtime --test interp_ddc --no-default-features --features ddc -- --nocapture 2>&1 | tee ddc.log; grep -qE "test result:[[:space:]]ok\. 1 passed" ddc.log
+
+  test:
+    runs-on: ubuntu-latest
+    # 60, raised from 30 on 2026-08-25. The 30 was set against WARM-CACHE runs and
+    # does not clear a cold one, so any new branch could be killed here on its
+    # first push -- a red required check caused by cache state rather than by code.
+    # Measured, all on this suite:
+    #
+    #   ~22 min  main, warm default-branch cache (runs 32273388342, 30871892980)
+    #    19 min  a feature branch, warm
+    #   >30 min  KILLED -- this very branch (main plus two commits) on a cold
+    #            cache, and the interaction-net archive branches on every attempt
+    #    32 min  the largest tree in the repo, once the cap allowed it to finish
+    #
+    # So the true cold figure for a large tree is ~32 min and the old cap sat
+    # below it. 60 is a CEILING with roughly 2x headroom, not a budget: its job is
+    # to catch a hang, and a hang is nothing like 32 minutes. Tighten it only
+    # against a fresh cold-cache measurement, the way portability's 50 was set.
+    #
+    # A job killed by this cap reports `cancelled` and renders as "fail", which is
+    # indistinguishable from a broken test at a glance. Compare the duration to
+    # this number before hunting an assertion.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free up disk space
+        # Only this job builds the full ~196-binary test set, so it is the one
+        # that hits the runner-disk wall (os error 28 / ld SIGBUS). The
+        # `[profile.dev] debug = "line-tables-only"` shrink plus this eviction
+        # of preinstalled tooling neither job uses keeps it clear. Measured
+        # 2026-09-02 (run 33607173191): the original four-path eviction left
+        # 40 GB free and the link of the ~150th binary still died with SIGBUS
+        # once every test binary statically links the Lean verifier runtime
+        # through sigil-formal-bridge. The eviction therefore now also drops
+        # the whole hosted tool cache (this job installs its own Rust and Lean
+        # and runs the system python3), the Docker images, and the remaining
+        # large SDKs; the `df` line and the post-build disk step below are
+        # the evidence for the next tightening.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
+          sudo rm -rf /usr/local/lib/node_modules /usr/share/miniconda /opt/az /usr/lib/jvm
+          sudo rm -rf /usr/lib/google-cloud-sdk /usr/local/aws-cli /usr/local/aws-sam-cli /opt/microsoft
+          sudo rm -rf /usr/local/julia* /usr/local/share/chromium /usr/lib/firefox
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h /
+          command -v python3 && python3 --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Auto-keyed by job name ("test"), distinct from the `checks` job's
+          # cache — no collision. Save on failure so the next run can reuse
+          # compiled dependencies.
+          cache-on-failure: "true"
+
+      - name: Build test binaries (no-default-features)
+        # Split build from run so CI exposes compile/link time separately from
+        # test execution. The shared cache absorbs most cold dependency work.
+        run: cargo test --workspace --no-default-features --no-run
+
+      - name: Disk after the test build
+        # Evidence, not a gate: a linker SIGBUS is indistinguishable from a
+        # broken link line without the free-space figure next to it.
+        if: always()
+        run: |
+          df -h /
+          du -sh target/debug/deps target/debug/build 2>/dev/null || true
+
+      - name: Test (workspace, --no-default-features)
+        # Reuses the binaries built above, so this step's wall-clock is the
+        # test-RUN time alone. Exercises both the compiler json tests and the
+        # CLI json_output integration tests in one pass (the CLI hardcodes json
+        # on its sigil-compiler dep), and runs
+        # diagnostic_precision.rs::precision_default_lane (enforced below).
+        run: cargo test --workspace --no-default-features
+
+      - name: Diagnostics scoreboard — self-test + no-regression (a1..a10)
+        # Couples the a10 single-error-precision axis (tools/diag_axes_scoreboard.py)
+        # to its enforcement. The workspace test step above runs
+        # tests/diagnostic_precision.rs::precision_default_lane, so a precision
+        # regression in the non-solver corpus reds the job before this step. The
+        # solver-corpus half (precision_solver_lane) runs in the `solver` job's
+        # `cargo test --features solver`. --self-test checks the scoreboard's own
+        # anti-gaming guards; --check fails if any axis metric (incl. a10) dropped
+        # below tools/diag_axes_baseline.json.
+        run: |
+          set -e
+          python3 tools/diag_axes_scoreboard.py --self-test
+          python3 tools/diag_axes_scoreboard.py --check
+
+  # Formatting, lint, feature-specific checks, and the tools sweep run in
+  # parallel with the workspace test lane.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free up disk space
+        # Feature-distinct builds accumulate in target/. Reclaim preinstalled
+        # tooling this job does not use.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Preserve compiled dependencies after failures. rust-cache also
+          # exports CARGO_INCREMENTAL=0.
+          cache-on-failure: "true"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint (no default features)
+        # The workspace has hundreds of integration-test targets. The shared
+        # runner retains exact all-target coverage, caps high-core metadata/I/O
+        # contention, and emits heartbeats during Cargo's otherwise silent phase.
+        run: bash scripts/clippy-workspace.sh no-default
+
+      - name: Lint (json feature on sigil-compiler)
+        run: bash scripts/clippy-workspace.sh json
+
+      - name: Formal verifier scaling canary
+        # The production v9 envelope retains the complete v8 prefix and adds occurrence records
+        # across the self-host trio. This fixed five-second corpus budget caught two accidental O(n²)
+        # verifier scans. Keep the real linked-verifier path here, in a required
+        # lane, so widening a timeout cannot disguise a scaling regression.
+        run: cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget -- --exact --nocapture
+
+      - name: CSIR v9 dual-gate rollout and retained constructor inventory
+        # Pins the complete numeric record/instruction/policy vocabulary and
+        # prevents the integration release from silently retiring v6 or the
+        # Rust/Z3 compatibility gates before schema-v10 evidence exists.
+        run: cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract
+
+      - name: CSIR v9 linked verifier and retained-v8 raw-security parity
+        # Exercises the same statically linked CombinedKernel + SemanticKernel entry used by
+        # production. This catches decoder/static-policy drift, including caller-pc/capture/return
+        # propagation and certificate-fingerprint changes, without relying on the Lean proof job.
+        run: cargo test -p sigil-compiler --no-default-features --test formal_security
+
+      - name: CSIR v9 occurrence enforcement and historical-v8 counterexamples
+        # Production source must reject the known repeated Public action; the immutable v8
+        # loop-header bytes stay accepted as evidence of the historical gap, and the acyclic
+        # backward escape pins the retained verifier's kernel-checked flow rejection.
+        run: cargo test -p sigil-compiler --no-default-features --test public_region_probes
+
+      - name: Production v9 occurrence, host-profile, and runtime binding boundary
+        # Declaration-only acceptance is deliberately tested beside the authorizing v9 verdict.
+        # Runtime binding must match the exact emitted requirement before instantiation.
+        run: |
+          cargo test -p sigil-abi --test host_contract
+          cargo test -p sigil-abi --test host_profile_lean_parity
+          cargo test -p sigil-formal-bridge --test host_profile_parity
+          cargo test -p sigil-formal-bridge --test v9_declaration_parity
+          cargo test -p sigil-formal-bridge --test v9_production_verifier
+          cargo test -p sigil-compiler --no-default-features --test formal_v9_declarations
+          cargo test -p sigil-compiler --no-default-features --test compiler_context
+          cargo test -p sigil-compiler --no-default-features --test host_profile_wasm
+          cargo test -p sigil-runtime --no-default-features --test host_profile_binding
+
+      - name: CSIR linked-verifier warm latency
+        # Initialization is excluded and recorded separately in release evidence. This pins the
+        # original retirement criterion on repeated in-process calls over the small fixture.
+        run: >-
+          cargo test -p sigil-formal-bridge --test v9_production_verifier
+          production_v9_warm_small_fixture_median_stays_below_one_millisecond -- --exact
+
+      - name: CSIR v8 SSA and pc-join regressions
+        # Pins strong updates, divergent-path exclusion, lexical shadowing, structured pc restore,
+        # and the sparse-phi record bound that keeps long flat CFGs below the CSIR ceiling.
+        run: >-
+          cargo test -p sigil-compiler --no-default-features
+          --test taint_join_early_exit --test large_sibling_statements
+
+      - name: Check JSON path (sigil-compiler with json feature, no Z3)
+        # Catches the case where the json code path compiles standalone
+        # without pulling in the rest of the workspace's deps. This is a
+        # `cargo check` (not `test`): the json-gated tests (json_diagnostics.rs)
+        # already RUN in the `test` job's workspace pass — Cargo feature
+        # unification turns json ON for the sigil-compiler lib there because
+        # sigil-cli/-mcp/-test-utils force features=["json"] on it. So the only
+        # property left to verify here is standalone-with-json compilation;
+        # --all-targets extends that to the test targets without the codegen +
+        # link + run the full `cargo test` was paying (~87s -> ~20s).
+        # NOTE: this redundancy is load-bearing on that forced-json dep edge —
+        # if a refactor drops it, restore `cargo test` here.
+        run: cargo check -p sigil-compiler --no-default-features --features json --all-targets
+
+      - name: Lint — Cap<Z3> TCB isolation (NC5/CM5)
+        # The Z3 runtime capability (the `z3_check` host shim) is gated behind
+        # sigil-runtime's `solver` feature, which is OFF by default. A default
+        # runtime build MUST NOT link the native `z3` crate — otherwise every
+        # sandboxed tool execution would carry Z3 in its trusted computing base
+        # even when no Z3 grant is present. This asserts `z3` is absent from
+        # the default (normal-edges) dependency tree.
+        #
+        # Behavioral Z3 proofs (`z3_capability_shim`, `z3_shim_tests`) run
+        # under `--features solver` in the `solver` job below (which
+        # installs a SHA256-pinned libz3 — this job stays z3-free by
+        # design). The always-on source contract
+        # (`z3_shim_source_contract`, CM1–CM4) and stdlib validity
+        # (`stdlib_compiles::z3_*`) ALSO run in the `test` job's
+        # --no-default-features workspace pass.
+        run: |
+          if cargo tree -p sigil-runtime --edges normal | grep -qiw 'z3'; then
+            echo "::error::z3 leaked into the default sigil-runtime build (NC5/CM5 violation)"
+            cargo tree -p sigil-runtime --edges normal | grep -i z3
+            exit 1
+          fi
+          echo "OK: default sigil-runtime build links no z3 (TCB isolation holds)"
+
+      - name: Lint — v2 is the sole refinement-Z3 caller
+        # The obligation orchestrator `type_check_v2/mod.rs` is the only file allowed to call
+        # the `z3_capability::check_refinement*` primitives (check_refinement,
+        # _xfield, _subsumption). This keeps pure obligation collection separate
+        # from discharge and prevents a parallel refinement-Z3 path.
+        #
+        # Complements `tests/quarantine_grep.rs` (which asserts the v2 Pure
+        # files import no Z3 at all); this asserts the call-site confinement
+        # across the whole compiler. The grep matches CALLS — the identifier
+        # followed by `(` — so prose mentions of the primitive in comments do
+        # not trip it.
+        run: |
+          set -e
+          external_callers=$(grep -RInE 'z3_capability::check_refinement[a-z_]*\(' \
+              crates/sigil-compiler/src/ \
+              | grep -v -E 'src/(z3_capability\.rs|type_check_v2/mod\.rs):' || true)
+          if [ -n "$external_callers" ]; then
+              echo "refinement-discharge violation: a z3_capability::check_refinement*"
+              echo "primitive is called from outside the v2 orchestrator"
+              echo "(type_check_v2/mod.rs). Refinement discharge is isolated:"
+              echo "route new refinement obligations through the v2 Pure ->"
+              echo "Discharge pipeline; do not add a parallel Z3 call:"
+              echo "$external_callers"
+              exit 1
+          fi
+
+      - name: Lint — merged diagnostics are append-only, never re-sorted (order class)
+        # `check_with_warnings` merges v2's refinement diagnostics into the
+        # structural stream from `check_collecting`. That merge MUST be
+        # append-only: structural diagnostics are in TYPE-CHECK EMISSION
+        # order (not span order), so a global sort reorders them and breaks
+        # callers that read `diagnostics()[0]`. The behavior is pinned by
+        # tests/diagnostic_order_preserved.rs; this lint names the anti-pattern
+        # directly.
+        run: |
+          set -e
+          body=$(awk '/pub fn check_with_warnings\(/{f=1} f{print} f && /^\}/{exit}' \
+              crates/sigil-compiler/src/type_check/mod.rs)
+          if printf '%s\n' "$body" | grep -qE 'diagnostics\.sort|\.sort_by'; then
+              echo "order-class violation: check_with_warnings sorts the merged"
+              echo "diagnostics stream. The merge must be APPEND-ONLY -- v2's"
+              echo "refinement diagnostics go after the structural stream, which"
+              echo "stays in type-check emission order. A global sort reorders"
+              echo "emission-ordered structural diagnostics and breaks callers"
+              echo "that read diagnostics()[0]. Append; do not sort."
+              exit 1
+          fi
+          if ! printf '%s\n' "$body" | grep -q 'diagnostics.extend(discharged'; then
+              echo "order-class lint: could not find the expected append"
+              echo "'diagnostics.extend(discharged...)' in check_with_warnings."
+              echo "The merge was refactored -- update this lint to match the new"
+              echo "shape (and re-confirm it stays append-only)."
+              exit 1
+          fi
+
+      - name: Lint — refinement attachment confinement
+        # Refinement clauses attach to TypedExpr only through
+        # `compute_field_access_refinement`. Three source-shape fences enforce
+        # that ownership:
+        #
+        #   V10 — `refinement: Some(` literal must appear in 0 source files
+        #         (the helper returns `Some(clauses)`, callers use field
+        #         shorthand `refinement,`). Catches accidental inlined
+        #         attachment in any other file.
+        #
+        #   V19 — `Option<...RefinementClause` confinement: this type appears
+        #         only in `typed_ast.rs` (struct definition) and
+        #         `type_check/mod.rs` (helper + 2 callers). Catches indirect
+        #         attachment via local Option<RefinementClause> variables in
+        #         unrelated files.
+        #
+        #   V24 — rest-pattern `..` in TypedExpr initializers is forbidden
+        #         workspace-wide. Without this, struct-update syntax could
+        #         propagate refinement from a Some-source through new
+        #         TypedExpr construction sites without naming `refinement:`
+        #         explicitly.
+        run: |
+          set -e
+
+          # V10: refinement: Some( literal must not appear anywhere
+          if grep -RIn 'refinement:\s*Some(' crates/sigil-compiler/src/; then
+              echo "refinement-attachment violation: refinement attaches"
+              echo "ONLY via compute_field_access_refinement (which returns"
+              echo "Some(clauses) and uses field shorthand). Inlining"
+              echo "`refinement: Some(...)` in struct literals bypasses the"
+              echo "single-attachment-site invariant."
+              exit 1
+          fi
+
+          # V19: Option<...RefinementClause> is confined to the owning data
+          # structures and the code that validates, transports, or attaches it.
+          # Allowlist:
+          #   * typed_ast.rs — TypedExpr's refinement sidecar.
+          #   * type_check/mod.rs — the single attachment site.
+          #   * type_check/universe.rs — function-signature collection.
+          #   * type_check/statements.rs — function-block parameter plumbing.
+          #   * type_check/expressions.rs — field-access attachment.
+          #   * type_check/expressions/calls.rs and methods.rs — empty
+          #     monomorphized-parameter slots; neither attaches refinements.
+          #   * type_check/refinement.rs — structural refinement validation,
+          #     attachment, narrowing, and formatting helpers. Several functions
+          #     take or return Option<Vec<RefinementClause>>.
+          #   * type_check/types.rs — signature and monomorph-tracker fields.
+          #   * ast.rs — FnDef.return_refinement.
+          #   * parser.rs — optional return-refinement parsing.
+          #   * diagnostics/certificate.rs — certificate schema documentation.
+          leaks=$(grep -RIn 'Option<[^>]*RefinementClause' \
+              crates/sigil-compiler/src/ \
+              | grep -v -E 'src/(typed_ast\.rs|type_check/mod\.rs|type_check/universe\.rs|type_check/statements\.rs|type_check/expressions\.rs|type_check/expressions/calls\.rs|type_check/expressions/methods\.rs|type_check/refinement\.rs|type_check/types\.rs|ast\.rs|parser\.rs|diagnostics/certificate\.rs):' || true)
+          if [ -n "$leaks" ]; then
+              echo "refinement-ownership violation: Option<RefinementClause> appears"
+              echo "outside the allowlisted files (typed_ast.rs, type_check/mod.rs,"
+              echo "type_check/universe.rs, type_check/statements.rs,"
+              echo "type_check/expressions.rs, type_check/expressions/calls.rs,"
+              echo "type_check/expressions/methods.rs, type_check/refinement.rs,"
+              echo "type_check/types.rs, ast.rs, parser.rs,"
+              echo "diagnostics/certificate.rs)."
+              echo "$leaks"
+              exit 1
+          fi
+
+          # V24: rest-pattern TypedExpr init banned. The shared shape scanner
+          # handles balanced multi-line initializers and is regression-tested.
+          python3 bench/scripts/lint_rust_shape_contracts.py self-test
+          python3 bench/scripts/lint_rust_shape_contracts.py typed-expr-rest
+
+      - name: Lint — Wall 4 Step 7 NF-S7-7 syn-based FnDef rest-pattern lint
+        # NF-S7-7 + NF-S7-13: replaces the originally-planned regex
+        # approach (rejected as fundamentally wrong for Rust's nested-
+        # brace syntax). The `tools/lints/no_fndef_rest_pattern` Cargo
+        # bin crate uses syn::visit::Visit to parse each .rs file and
+        # flag `FnDef { ..Default::default() }` literals exactly.
+        # NF-S7-8 (exact-segment match): `BoxedFnDef` etc. are NOT flagged.
+        # NF-S7-9 (default-only rest): `FnDef { ..existing_def }` clone-
+        # with-override is NOT flagged.
+        # NF-S7-13: lint ships with positive (known_bad.rs.txt) and
+        # negative (known_good.rs.txt) fixtures verified by its own
+        # test suite.
+        working-directory: tools/lints/no_fndef_rest_pattern
+        run: |
+          set -e
+          # debug build (not --release): this is a tiny syn-based file walker;
+          # a debug build of syn is materially faster to compile and the lint's
+          # verdict is profile-independent.
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo run -- ../../../crates/sigil-compiler/src \
+                                ../../../crates/sigil-cli/src \
+                                ../../../crates/sigil-runtime/src \
+                                ../../../crates/sigil-mcp/src \
+                                ../../../crates/sigil-abi/src \
+                                ../../../crates/sigil-registry/src
+
+      - name: Lint — auxiliary Rust crates
+        run: |
+          set -e
+          for manifest in bench/wasm-size/*/Cargo.toml; do
+            cargo clippy --manifest-path "$manifest" --lib --release -- -D warnings
+          done
+
+      - name: Lint — Wall 4 Step 7 diagnostic shape contracts (NF-S7-1/3/4/5)
+        # T217-T226 manifest cases retain their labels and backtick-quoted
+        # values; T223/T226 keep exact case counts and remain solver-independent.
+        # The script runs these contracts in the same fail-fast order as the
+        # former three workflow steps.
+        run: python3 bench/scripts/lint_rust_shape_contracts.py diagnostic-tests
+
+      - name: Lint — Wall 4 Step 7 NF-S7-AG-16 no regex in FnDef lint crate
+        # NF-S7-AG-16: regex-based FnDef lint is REJECTED per NF-S7-7.
+        # The lint crate must use syn, NOT regex::Regex.
+        #
+        # Check Cargo.toml for `regex` as a dependency (load-bearing
+        # signal) and source code for `use regex::` statements (not
+        # doc-comment strings — the lint binary's own doc text mentions
+        # "no regex" as documentation of what it enforces, which the
+        # earlier overly-greedy grep matched as a false positive).
+        run: |
+          set -e
+          if grep -q '^regex\s*=\|"regex"' \
+                tools/lints/no_fndef_rest_pattern/Cargo.toml; then
+              echo "NF-S7-AG-16 violation: lint crate has regex in Cargo.toml dependencies" >&2
+              exit 1
+          fi
+          # Match `use regex` at start of line (Rust use statement) only;
+          # doc comments start with `//`.
+          if grep -RInE '^use regex' \
+                tools/lints/no_fndef_rest_pattern/src; then
+              echo "NF-S7-AG-16 violation: lint crate uses regex in source" >&2
+              exit 1
+          fi
+          if ! grep -q 'use syn::visit::Visit' \
+                tools/lints/no_fndef_rest_pattern/src/main.rs; then
+              echo "NF-S7-7 violation: lint crate must import syn::visit::Visit" >&2
+              exit 1
+          fi
+          echo "NF-S7-7 + NF-S7-AG-16 lint clean: lint uses syn::Visit, no regex."
+
+      - name: Lint — no `static mut` in compiler/runtime (I20)
+        # Compiler and runtime cores do not permit global mutable state.
+        run: |
+          if grep -RIn 'static mut' \
+                crates/sigil-compiler/src crates/sigil-runtime/src; then
+            echo "ERROR: 'static mut' is forbidden in compiler/runtime per I20."
+            exit 1
+          fi
+
+      - name: Lint — deterministic maps in compiler output paths (I29)
+        # G4 (`cross_module.rs::g4_compiler_determinism`) checks output
+        # stability. This structural gate prevents unordered maps from being
+        # reintroduced into the compiler paths that construct emitted output.
+        run: |
+          set -e
+          for path in \
+              crates/sigil-compiler/src/wasm.rs \
+              crates/sigil-compiler/src/air.rs \
+              crates/sigil-compiler/src/memory.rs \
+              crates/sigil-compiler/src/fuel.rs ; do
+            if grep -nE '\bHashMap\b' "$path"; then
+              echo "I29 violation: unordered maps are forbidden in compiler output paths: $path" >&2
+              exit 1
+            fi
+          done
+          echo "I29 lint clean: compiler output paths use deterministic maps."
+
+      - name: Test — trace feature smoke (I21 / AP17)
+        # Typed trace events must fire at documented decision points without
+        # leaking raw source bytes. The feature remains off by default.
+        # `--no-default-features` is load-bearing: sigil-compiler's defaults are
+        # ["solver", "json"] and solver pulls z3-sys, so without it this step
+        # compiled bindgen and LINKED THE RUNNER IMAGE'S UNPINNED libz3 -- inside
+        # the one job whose sibling `solver` lane exists to pin Z3 by SHA256.
+        # trace_smoke.rs is gated on `feature = "trace"` alone. Verified locally
+        # 2026-08-23: 4 passed, same as with defaults.
+        run: cargo test -p sigil-compiler --no-default-features --features trace --test trace_smoke
+
+      - name: Build sigil CLI (for tools/ corpus compile-sweep)
+        # No Z3 in CI: build the CLI without the solver feature. The
+        # tools/ compile-sweep only needs parser + type-checker + AIR
+        # lowering + Wasm emission, none of which require Z3.
+        #
+        # Debug (not --release): the sweep just runs `sigil check` on ~210
+        # trivial files (sub-second each — deps are opt-level=2 via
+        # profile.dev.package."*"), so a release build buys nothing while a
+        # fresh release profile recompiles the whole tree from scratch.
+        run: cargo build --bin sigil --no-default-features --features json
+
+      - name: Compile-sweep — tools/ corpus drift detector
+        # Every .sigil in tools/ must `sigil check` cleanly, except the rows of
+        # tools/v9-legacy-policy-rejections.txt, which the CSIR v9 legacy-host
+        # occurrence policy refuses by design (a host call under a branch on an
+        # @Internal value): those must fail with exactly the pinned refusal
+        # (I013, occurrence detail 40) in the legacy no-profile context AND
+        # compile against the ephemeral host's declared profile
+        # (`--host-profile ephemeral`, Internal-occurrence host operations),
+        # so a relaxed policy, a stale row, a profile regression, or an
+        # unrelated failure all red this step. Tools that import the SIGIL
+        # stdlib (`use sigil::*`) are skipped — they require the bench
+        # harness's compose_with_stdlib path and are exercised by the
+        # bench-tests job below.
+        #
+        # This keeps the reference implementations in tools/ aligned with the
+        # language accepted by the current compiler.
+        run: |
+          set -e
+          fail=0
+          total=0
+          skipped=0
+          pinned=0
+          manifest=tools/v9-legacy-policy-rejections.txt
+          grep -vE '^\s*(#|$)' "$manifest" | while read -r row; do
+            test -f "$row" || { echo "STALE ROW (no such file): $row"; exit 1; }
+          done
+          for f in tools/*.sigil; do
+            total=$((total + 1))
+            if grep -q '^use sigil::' "$f"; then
+              skipped=$((skipped + 1))
+              continue
+            fi
+            if grep -qxF "$f" "$manifest"; then
+              # Pinned refusal: the exact occurrence-policy diagnostic, nothing else.
+              if ./target/debug/sigil check "$f" > /dev/null 2>&1; then
+                echo "UNEXPECTED PASS (policy rejection row is stale): $f"
+                fail=$((fail + 1))
+              elif ! ./target/debug/sigil check "$f" 2>&1 | grep -q 'I013\|detail=40'; then
+                echo "FAIL (not the pinned occurrence refusal): $f"
+                ./target/debug/sigil check "$f" 2>&1 | head -5
+                fail=$((fail + 1))
+              elif ! ./target/debug/sigil check --host-profile ephemeral "$f" > /dev/null 2>&1; then
+                echo "FAIL (refused even against the ephemeral host profile): $f"
+                ./target/debug/sigil check --host-profile ephemeral "$f" 2>&1 | head -5
+                fail=$((fail + 1))
+              else
+                pinned=$((pinned + 1))
+              fi
+              continue
+            fi
+            if ! ./target/debug/sigil check "$f" > /dev/null 2>&1; then
+              echo "FAIL: $f"
+              ./target/debug/sigil check "$f" 2>&1 | head -5
+              fail=$((fail + 1))
+            fi
+          done
+          clean=$((total - skipped - pinned - fail))
+          echo "tools/ sweep: $total total | $skipped stdlib-dependent (skipped) | $pinned pinned policy refusals | $clean clean | $fail failed."
+          if [ "$fail" -gt 0 ]; then
+            exit 1
+          fi
+
+  bench-tests:
+    # Python tests for the AutoForge benchmark harness. Spawns the real
+    # sigil-mcp binary, exercises the wire + agent loop with stub
+    # generators. Does NOT need ANTHROPIC_API_KEY (LLM calls are gated
+    # behind manual `python -m sigil_bench run` invocations only).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Runs in parallel with the `rust` job — bench builds its own binary
+    # so it doesn't have to wait for the workspace test pass.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # One cache entry for the two jobs that build exactly these binaries
+          # (the training suites lane shares the key), so the second saves nothing.
+          shared-key: "bench-binaries"
+          # Preserve compiled dependencies after failures. rust-cache also
+          # exports CARGO_INCREMENTAL=0.
+          cache-on-failure: "true"
+
+      - name: Build bench integration binaries
+        run: cargo build --release -p sigil -p sigil-mcp
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bench package
+        working-directory: bench
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run bench tests
+        env:
+          SIGIL_ALLOW_UNVERIFIED_CERT: "1"
+        run: >-
+          python -m pytest bench/tests/
+          -W error::pytest.PytestCollectionWarning -v
+
+  solver:
+    # Required solver-feature lane. It installs the pinned Z3 release and runs
+    # the compiler, runtime, and frontend solver lint and test suites.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      # Pinned Z3 release (ET-Z10): version + SHA256 of the exact asset,
+      # computed from the artifact itself. apt is NOT used — ubuntu's
+      # libz3 (4.8.x) predates z3-sys 0.8.1's API surface. Bumping the
+      # pin means re-running the docs/z3-theory-inventory.md §7 update
+      # protocol (re-measure rlimit headroom; re-audit the fence list).
+      Z3_VERSION: "4.12.2"
+      Z3_ASSET: "z3-4.12.2-x64-glibc-2.35"
+      Z3_SHA256: "29604c87d74855690f5f43fa2ecb8e214af89bdddffac378ce403e29c6ea30ec"
+      # EVERY Z3 resolution path is pinned to the unzipped asset —
+      # bindgen (header), linker (-L), and loader (LD_LIBRARY_PATH).
+      # Copying into /usr/{lib,include} is insufficient because the runner also
+      # carries Z3 under /usr/local. Pin the header, linker, and loader to the
+      # same asset so enum values cannot drift across versions.
+      Z3_SYS_Z3_HEADER: ${{ github.workspace }}/z3-pinned/include/z3.h
+      LD_LIBRARY_PATH: ${{ github.workspace }}/z3-pinned/bin
+      RUSTFLAGS: -L ${{ github.workspace }}/z3-pinned/bin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free up disk space
+        # Solver integration binaries statically link the compiler and can fill
+        # the runner disk. Reclaim preinstalled tooling this job does not use.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install pinned Z3 (official release binary, SHA256-verified)
+        # `sha256sum -c` under `set -euo pipefail`: a hash mismatch fails
+        # BEFORE any file is installed — an unverified library never
+        # enters the link path of the process that defines what the
+        # compiler accepts (ET-Z10). The runner's bundled Z3 is evicted
+        # so no shadow copy can win any resolution path.
+        run: |
+          set -euo pipefail
+          curl -sSfL -o z3.zip "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/${Z3_ASSET}.zip"
+          echo "${Z3_SHA256}  z3.zip" | sha256sum -c -
+          unzip -q z3.zip
+          mv "${Z3_ASSET}" z3-pinned
+          # Evict the runner image's bundled Z3 (header + lib + exe) —
+          # diagnostic listing first so the log shows what was shadowing.
+          echo "--- pre-eviction z3 artifacts on the runner:"
+          ldconfig -p | grep -i libz3 || true
+          ls /usr/local/include/z3*.h /usr/local/lib/libz3* /usr/local/bin/z3 2>/dev/null || true
+          sudo rm -f /usr/local/bin/z3 /usr/local/lib/libz3* /usr/local/include/z3*.h /usr/lib/libz3* /usr/include/z3*.h
+          sudo ldconfig
+          echo "--- pinned Z3:"
+          ./z3-pinned/bin/z3 --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Preserve compiled dependencies after failures. rust-cache also
+          # exports CARGO_INCREMENTAL=0.
+          cache-on-failure: "true"
+
+      - name: Lint (sigil-compiler, solver feature)
+        # Apply the workspace solver chokepoint and quantifier fences to code
+        # hidden from no-default-feature builds.
+        run: cargo clippy -p sigil-compiler --all-targets --features solver -- -D warnings
+
+      - name: Lint (sigil-runtime, solver feature)
+        run: cargo clippy -p sigil-runtime --all-targets --features solver -- -D warnings
+
+      - name: Lint (sigil-frontends, solver feature)
+        # Lints the RS4 refinement tests' solver-gated code (the T211 enforcement
+        # demo + SR-5 fragment pin), which the default `rust` lane cannot see.
+        run: cargo clippy -p sigil-frontends --all-targets --features solver -- -D warnings
+
+      - name: Test (sigil-compiler, solver) — corpus + guard + manifest
+        # SIGIL_Z3_CACHE_VERIFY=always: paranoid cache mode — every cache
+        # hit is re-verified against a fresh solve. The exactness manifest
+        # (observed ops == the inventory pin) runs in this suite.
+        env:
+          SIGIL_Z3_CACHE_VERIFY: "always"
+        run: cargo test -p sigil-compiler --features solver
+
+      - name: Test (sigil-runtime, solver) — the Cap<Z3> shim proofs
+        # Run the solver-dependent runtime unit tests and capability-shim suite.
+        # Host-profile/import rejection must also hold with the extra solver import.
+        run: cargo test -p sigil-runtime --features solver --lib --test z3_capability_shim --test host_profile_binding --test runtime_import_contract
+
+      - name: Test (sigil-frontends, solver) — RS4 refinement enforcement
+        # The RS4a Rust-frontend refinement tests are solver-gated: the T211
+        # enforcement demo (an unprovable `#[sigil::requires]` precondition is
+        # refuted by the compiler) + the SR-5 fragment-pin round-trip. Without this
+        # step they are cfg'd out — the frontend deps sigil-compiler with
+        # default-features=false, so `--workspace --features solver` does not reach
+        # `sigil-frontends/solver`; the per-package invocation does.
+        run: cargo test -p sigil-frontends --features solver
+
+  portability:
+    # GATED, not always-on. macOS bills at 10x and Windows at 2x, and measured
+    # 2026-08-23 this lane is 4.5 + 15.6 min warm / 11.9 + 35.6 cold, i.e. ~76
+    # billed minutes on a warm pull request and ~190 on a cold one. 154 of the
+    # last 200 ci.yml runs were pull_request-triggered, so that is where the
+    # money goes -- and the evidence this lane buys does not change per push.
+    #
+    # A job-level `if:` and NEVER an `on.paths` filter: a skipped job still
+    # reports a check run, whereas a path-filtered workflow reports nothing at
+    # all and a required context never arrives (the 2026-08-02 outage recorded
+    # in workflow-lint.yml). Verified against branch protection on 2026-08-23:
+    # required contexts are hygiene, test, checks, solver, interp-ddc,
+    # workflows-parse and the Lean lane -- `portability` is not among them, so skipping it
+    # cannot satisfy a gate it did not run.
+    #
+    # The label takes effect on the PR's NEXT push, by design: `labeled` is
+    # deliberately absent from this workflow's `pull_request` types, because
+    # adding it would re-fire every lane in this file on every label change and
+    # would collide with `cancel-in-progress` -- cancelling the in-flight
+    # required checks and blocking the PR until someone re-ran them.
+    if: >-
+      github.event_name == 'push'
+      || contains(github.event.pull_request.labels.*.name, 'ci-portability')
+    # Phase 0 of the prebuilt-binary distribution channel. Every other job
+    # in this file is `runs-on: ubuntu-latest`, so SIGIL has never been
+    # compiled on macOS or Windows in CI — "we publish binaries for these
+    # targets" is currently a promise with no evidence behind it. This job
+    # buys the evidence BEFORE a release workflow starts uploading
+    # artifacts nobody has proven run.
+    #
+    # Scope is the host-facing surface, deliberately NOT the full
+    # workspace: wasmtime and Cranelift are the portable part of this
+    # stack, while `std::path` handling, file I/O, and line endings are
+    # what actually differ per platform — and those live in the CLI, the
+    # compiler frontend, the foreign frontends, and the serve host.
+    # sigil-runtime's
+    # differential suites are excluded because they execute a multi-MB
+    # merged wasm tool per fixture and are the `test` job's critical path
+    # (850s on a 2-core runner); paying that again on three more runners
+    # buys portability signal that the smoke steps below already give for
+    # a fraction of the clock.
+    #
+    # Windows checkout leaves CRLF line endings in the working tree
+    # (autocrlf is on by default on the runner image). That is NOT
+    # incidental — it is the realistic condition for a Windows user
+    # writing .sigil files, and the lexer's handling of it is exactly the
+    # kind of thing this job exists to discover.
+    #
+    # x86_64-apple-darwin is CROSS-BUILT from the arm64 runner rather than
+    # given a macos-13 leg of its own. Measured, not assumed: a macos-13
+    # entry was queued for the whole of two runs and never got a runner —
+    # there is no x86_64 macOS capacity to allocate here, so that leg
+    # reported nothing at all. Cross-building from macos-14 also halves the
+    # macOS billing (macOS minutes bill at 10x).
+    #
+    # It gives up less than expected. The image README documents no
+    # Rosetta 2, but the runner has it — measured, by the probe below
+    # taking its positive branch on the first run. So this lane both
+    # BUILDS and EXECUTES the Intel binary: cross-built, `file`-verified
+    # as x86_64, then run through `--version` and a wasmtime forge.
+    #
+    # The probe is kept as a REGRESSION GUARD, not dead weight. Rosetta is
+    # an undocumented property of the image and can disappear without
+    # notice; if it does, the lane degrades to build-only and says so by
+    # name instead of quietly reporting the same green it does today.
+    #
+    # NOTE: do not add this to branch protection as a required check until
+    # it has been green for every target. Its first job is to report what
+    # the non-Linux targets cost, not to block.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            cross_target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    # 50, not the 30 the other jobs use. Measured on the first run of this
+    # job: Windows cold-cache spent 11m17s on the release build and 17m32s
+    # on the test step, then tripped the 30m cap during post-job cache save
+    # — every actual step had already passed. macos-14 finished the same
+    # work in 9m11s. Windows is simply the slow target here (MSVC link
+    # times, no sccache, C builds for ring and bundled SQLite), so the cap
+    # has to clear a cold-cache Windows run with room to spare or the lane
+    # reports infrastructure noise instead of portability.
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          # `targets` is empty for legs with no cross_target, which the
+          # action treats as "host target only".
+          targets: ${{ matrix.cross_target }}
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Distinct key per target so the runners don't evict each other's
+          # artifacts.
+          key: ${{ matrix.target }}
+          cache-on-failure: "true"
+
+      - name: Build the release artifact
+        # --release specifically: this is the binary the release workflow
+        # will ship, and opt-level differences have historically been where
+        # platform-specific miscompiles and link failures surface.
+        run: cargo build --release -p sigil
+
+      - name: Smoke — `sigil --version` reports its own verification tier
+        # `cargo run` rather than a hardcoded ./target path so the step is
+        # identical on Windows (sigil.exe) and Unix. The binary must ANSWER
+        # this rather than exit 2 — an installer's upgrade check has no
+        # other way to read the installed version.
+        run: cargo run --release -p sigil -- --version
+
+      - name: Smoke — compile a file from disk
+        # Path handling, file reads, and (on Windows) CRLF through the
+        # lexer. `check` is the narrowest command that exercises all three.
+        run: cargo run --release -p sigil -- check tools/task001_echo.sigil
+
+      - name: Smoke — forge end-to-end through wasmtime
+        # The full ephemeral path on this host: compile, instantiate in a
+        # fresh Wasmtime store, run against input, discard. This is the
+        # step that would catch a wasmtime backend that does not work on
+        # the target, which no amount of `cargo build` would reveal.
+        #
+        # SIGIL_ALLOW_UNVERIFIED_CERT: the CLI pins sigil-compiler to
+        # `default-features = false`, so this binary is solver-off and the
+        # R817 gate fails closed on `forge` — correctly, since nothing
+        # discharged the refinement obligations. Same opt-in the
+        # `bench-tests` job uses. This step is asking "does wasmtime work
+        # on this target", not "is the artifact proven"; the gate itself is
+        # covered by the compiler's own suites on ubuntu.
+        env:
+          SIGIL_ALLOW_UNVERIFIED_CERT: "1"
+        run: cargo run --release -p sigil -- forge tools/task001_echo.sigil --input hello
+
+      - name: Test (CLI + compiler + foreign frontends + serve host)
+        # sigil-serve was added here on 2026-07-30, after a Windows-only
+        # break sat on main from the day the crate landed (#669). A test
+        # helper ASSERTED its temp path contained no backslash instead of
+        # escaping it into the config JSON — vacuous on `/tmp/...`, a hard
+        # panic on `C:\Users\...`. This lane existed and still missed it,
+        # because the package list was never widened when serve landed.
+        # The crate is squarely inside the stated scope above: a host
+        # process whose entire job is paths, file I/O, and on-disk config.
+        #
+        # It brings `tests/scheduler_durability.rs`, the one timing-
+        # sensitive suite in the crate (real sleeps; `wait_until` ceilings
+        # up to 10s against work that takes well under 1s). The ceilings
+        # carry ~20x margin, so it should hold on a 2-core runner — but if
+        # this lane starts flaking on that binary specifically, narrow the
+        # serve leg to a separate build-and-test step that skips it rather
+        # than dropping the whole crate back out.
+        run: cargo test -p sigil -p sigil-compiler -p sigil-frontends -p sigil-serve --no-default-features
+
+      - name: Test host-profile codec and runtime binding portability
+        run: |
+          cargo test -p sigil-abi -p sigil-runtime --no-default-features --test host_contract --test host_profile_lean_parity --test host_profile_binding --test runtime_import_contract
+          cargo test -p sigil-formal-bridge --test host_profile_parity
+          cargo test -p sigil-formal-bridge --test v9_declaration_parity
+          cargo test -p sigil-formal-bridge --test v9_production_verifier
+          cargo test -p sigil-compiler --no-default-features --test formal_v9_declarations
+
+      - name: Install pinned Intel Lean runtime for the cross-build
+        if: matrix.cross_target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(tr -d '\r\n' < proofs/lean/lean-toolchain)"
+          test "$toolchain" = "leanprover/lean4:v4.32.0-rc1" \
+            || { echo "::error::update the target-runtime artifact and checksum for $toolchain"; exit 1; }
+          archive="$RUNNER_TEMP/lean-4.32.0-rc1-darwin.tar.zst"
+          runtime_root="$RUNNER_TEMP/lean-x86_64"
+          curl -sSfL \
+            "https://github.com/leanprover/lean4/releases/download/v4.32.0-rc1/lean-4.32.0-rc1-darwin.tar.zst" \
+            -o "$archive"
+          printf '%s  %s\n' \
+            '70aa84790e3b4524d40e2b7413063993a33cae632cc5bdb540e173d6355e5efc' \
+            "$archive" | shasum -a 256 -c -
+          mkdir -p "$runtime_root"
+          zstd -d --stdout "$archive" | tar -xf - -C "$runtime_root"
+          prefix="$runtime_root/lean-4.32.0-rc1-darwin"
+          lipo -info "$prefix/lib/lean/libleanrt.a" | grep -q 'x86_64' \
+            || { echo "::error::downloaded Lean runtime is not x86_64"; exit 1; }
+          echo "SIGIL_LEAN_TARGET_PREFIX=$prefix" >> "$GITHUB_ENV"
+
+      - name: Cross-build ${{ matrix.cross_target }} release artifact
+        # Stands in for a runner GitHub will not give us (see the matrix
+        # comment). Proves the release binary COMPILES AND LINKS for Intel
+        # Macs — which is where a target-specific break would show up: the
+        # C dependencies (ring's per-arch asm, bundled SQLite) and the
+        # wasmtime/Cranelift x86_64 backend all have to build.
+        #
+        # `file` is the check that this is real: without it the step passes
+        # just as happily if cargo silently produced an arm64 binary, and
+        # the lane would claim Intel coverage it does not have.
+        if: matrix.cross_target
+        run: |
+          set -euo pipefail
+          cargo build --release -p sigil --target "${{ matrix.cross_target }}"
+          bin="target/${{ matrix.cross_target }}/release/sigil"
+          file "$bin"
+          file "$bin" | grep -q 'x86_64' \
+            || { echo "::error::$bin is not an x86_64 binary — cross-build did not target ${{ matrix.cross_target }}"; exit 1; }
+
+      - name: Smoke — ${{ matrix.cross_target }} binary (Rosetta, if present)
+        # Execution coverage for the cross-built target. Rosetta 2 IS
+        # present on the arm64 runner despite being absent from the image
+        # README, so the positive branch is the one that runs today and
+        # Intel Macs get the same `--version` + wasmtime forge check as
+        # every other target.
+        #
+        # The conditional stays because that availability is undocumented
+        # and therefore unpromised. If the image drops Rosetta, this
+        # reports the lost coverage by name rather than letting the lane
+        # keep reporting green over a silently narrower check.
+        if: matrix.cross_target
+        env:
+          SIGIL_ALLOW_UNVERIFIED_CERT: "1"
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.cross_target }}/release/sigil"
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "Rosetta 2 available — executing the ${{ matrix.cross_target }} binary."
+            arch -x86_64 "$bin" --version
+            arch -x86_64 "$bin" forge tools/task001_echo.sigil --input hello
+          else
+            echo "::notice::No Rosetta 2 on this runner. ${{ matrix.cross_target }} is BUILD-VERIFIED ONLY — this lane provides no execution coverage for Intel Macs, and the release workflow must not claim otherwise."
+          fi

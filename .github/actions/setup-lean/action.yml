@@ -1,0 +1,18 @@
+name: Set up pinned Lean
+description: Install the exact Lean toolchain required by the production CSIR verifier build
+runs:
+  using: composite
+  steps:
+    - name: Install elan and pinned toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -x "$HOME/.elan/bin/elan" ] && [ ! -x "$HOME/.elan/bin/elan.exe" ]; then
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/v4.2.3/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none
+        fi
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.elan/bin:$PATH"
+        toolchain="$(tr -d '\r\n' < proofs/lean/lean-toolchain)"
+        elan toolchain install "$toolchain"
+        (cd proofs/lean && lake env lean --version)

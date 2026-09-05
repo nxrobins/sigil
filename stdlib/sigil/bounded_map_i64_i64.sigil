@@ -1,0 +1,125 @@
+// stdlib::bounded_map_i64_i64 — a BOUNDED, stack-backed `i64`→`i64` map
+// (COMPLETENESS Phase 4). Modeled on `bounded_vec_i64`: a monomorphized fixed-N
+// record (NOT parametric const generics — the LOCKED decision), ships as one
+// concrete size `_64`. Parallel fixed arrays `keys`/`vals` + a `count` live-prefix
+// length; lookups are a LINEAR SCAN of `keys[0..count]` (no hashing — that is the
+// unbounded `Map`'s job; at bounded N a scan is fixed-cost and Z3-friendly).
+//
+// Why no `cap Alloc`: the `[i64; 64]` backings are FIXED regions embedded in the
+// record (no `alloc()`), so the whole API is `Alloc`-free, exactly like
+// `bounded_vec_i64`. Overflow is a RUNTIME TRAP: `insert` of a NEW key into a full
+// map writes `keys[self.count]` at `count == 64`, i.e. `keys[64]`, which trips the
+// backing's `idx >= 64` bounds trap — a write never escapes the backing. Integrity
+// (the `count <= 64` claim) is construction-SEALED (T258): buildable only inside
+// this module via `new()`, never a forged `BoundedMap_i64_i64_64 { count: 99 }`.
+//
+// Invariants (the ritual's strict negative constraints): the scan is bounded by
+// `count`, NEVER 64 (so cells >= count are never read); `insert` scans-then-
+// overwrites on a match before appending (no duplicate keys); `keys[i]`/`vals[i]`
+// are written at the SAME index and `count` is incremented ONCE; `count` stays in
+// [0, 64]. `get` returns `Option<i64>` (Option is ambiently co-injected).
+
+module bounded_map_i64_i64;
+
+record BoundedMap_i64_i64_64 { keys: [i64; 64], vals: [i64; 64], count: i64 }
+
+impl BoundedMap_i64_i64_64 {
+    // Empty bounded map — the ONLY public constructor (the record is sealed).
+    pub fn new() -> BoundedMap_i64_i64_64 {
+        return BoundedMap_i64_i64_64 { keys: [0; 64], vals: [0; 64], count: 0 };
+    }
+
+    pub fn len(self: BoundedMap_i64_i64_64) -> i64 {
+        return self.count;
+    }
+
+    pub fn capacity(self: BoundedMap_i64_i64_64) -> i64 {
+        return 64;
+    }
+
+    pub fn is_empty(self: BoundedMap_i64_i64_64) -> bool {
+        return self.count == 0;
+    }
+
+    pub fn is_full(self: BoundedMap_i64_i64_64) -> bool {
+        return self.count == 64;
+    }
+
+    // Insert/overwrite. Present key → overwrite its value (no append, count
+    // unchanged). Absent key → append at `count`; when count == 64 the append
+    // writes `keys[64]` → backing force-trap (NEVER a silent drop). Returns the
+    // new live count.
+    pub fn insert(self: BoundedMap_i64_i64_64 @Mut, key: i64, val: i64) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.keys[i] == key {
+                self.vals[i] = val;
+                return self.count;
+            } else {
+            }
+            i = i + 1;
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return self.count;
+    }
+
+    // Graceful insert: present → overwrite + true; absent+full → false (NO trap,
+    // nothing written); absent+room → append + true.
+    pub fn try_insert(self: BoundedMap_i64_i64_64 @Mut, key: i64, val: i64) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.keys[i] == key {
+                self.vals[i] = val;
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        if self.count == 64 {
+            return false;
+        } else {
+        }
+        self.keys[self.count] = key;
+        self.vals[self.count] = val;
+        self.count = self.count + 1;
+        return true;
+    }
+
+    pub fn get(self: BoundedMap_i64_i64_64, key: i64) -> Option<i64> {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.keys[i] == key {
+                return Some(self.vals[i]);
+            } else {
+            }
+            i = i + 1;
+        }
+        return None;
+    }
+
+    pub fn get_or(self: BoundedMap_i64_i64_64, key: i64, default: i64) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.keys[i] == key {
+                return self.vals[i];
+            } else {
+            }
+            i = i + 1;
+        }
+        return default;
+    }
+
+    pub fn contains_key(self: BoundedMap_i64_i64_64, key: i64) -> bool {
+        let mut i: i64 = 0;
+        while i < self.count {
+            if self.keys[i] == key {
+                return true;
+            } else {
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}

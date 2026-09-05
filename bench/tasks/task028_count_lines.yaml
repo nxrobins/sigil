@@ -1,0 +1,39 @@
+id: task028_count_lines
+source_path: tools/task028_count_lines.sigil
+difficulty: ffi_fs
+description: |
+  Write a Sigil tool that reads a file from the path supplied as input and
+  returns the number of lines as an ASCII-decimal string. Lines are
+  delimited by `\n` (byte value 10). A trailing newline does NOT count as
+  an extra line; a file ending without a trailing newline still counts its
+  final line.
+
+  This is an FFI tool, so it lives in `#[ring(outer)] #[trusted] module tool;`.
+  Declare:
+      extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+  The tool exports
+      pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }
+  Note `i32` parameters (not i64) — the FFI ABI requires i32 pointer/length.
+
+  fs_read returns a packed (ptr * 4294967296 + len) on success or a negative
+  error code on failure. Propagate the error code if `raw < 0`.
+
+  All locals derived from the FFI return must be `@Internal`-tainted (the
+  taint checker auto-marks FFI returns @Internal). The final decimal-string
+  output of the tool is also @Internal — the forge tool entry point's
+  declared return taint accommodates this.
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["FsIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  fs: ["bench/fixtures"]   # resolved relative to repo root by the runner
+fuel_budget: 200000
+inputs:
+  # Each input value is a path RELATIVE to repo root; the runner resolves
+  # to absolute before passing to the forge tool, and grants are similarly
+  # canonicalized to satisfy fs_read's prefix check.
+  - name: trailing_newline_3_lines
+    value: bench/fixtures/lines3.txt
+  - name: no_trailing_newline_5_lines
+    value: bench/fixtures/lines5_no_trailing_newline.txt
+expected_output_strategy: capture_from_reference

@@ -1,0 +1,39 @@
+// expect-error: E003
+//
+// E003 — inner-ring function cannot declare `Unsafe` or `FFI` in its
+// effect row.
+//
+// Before step 30 of the supremum loop (axis 6, "fewer escape hatches")
+// this source compiled cleanly and produced WASM with a `handle Unsafe`
+// block running in the inner ring. The chain of bypasses:
+//
+//   1. E003 was declared in the registry since the ring system was
+//      introduced, but never emitted in code. The "inner-ring fn
+//      declared an effect row" check existed only on paper.
+//
+//   2. `effect_check.rs` line 22-24 explicitly skips inner-ring
+//      modules ("inner ring exempt") — so E002 ("handle Unsafe
+//      requires #[trusted]") never fires for inner-ring code.
+//
+//   3. Step 21's R006 closed `#[ring(inner)] #[trusted]` but NOT
+//      this case (plain inner ring with effect row claiming
+//      Unsafe). The trust-system check requires the trusted
+//      annotation; effect-row-only abuse slips past.
+//
+// Combined, an inner-ring module declaring `fn x() ! { Unsafe }` and
+// using `handle Unsafe { ... }` produced WASM with the inner ring
+// running unsafe code — exactly the privilege the ring system is
+// meant to quarantine to the outer ring.
+//
+// AFTER STEP 30: E003 fires on the function signature. The
+// downstream handle Unsafe never matters because the function
+// declaration is rejected first. The message names both the
+// offending function AND the specific forbidden effects.
+module ext;
+
+fn do_dangerous() ! { Unsafe } {
+    handle Unsafe {
+        let _x: i64 = 1;
+    };
+    return;
+}

@@ -1,0 +1,10 @@
+#[ring(outer)]
+module effect_policy;
+effect FsIO;
+effect NetIO;
+pub fn fetch(timeout: i64) -> i64 ! { NetIO } {
+  return (timeout + 1);
+}
+pub fn sync(a: i64) -> i64 ! { FsIO, NetIO } {
+  return (fetch(a) + 1);
+}

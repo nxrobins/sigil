@@ -1,0 +1,11 @@
+module fixture;
+
+// A `mut` state field must be plain reassignable data — a capability-bearing type
+// is rejected (C011), since overwriting a state cap would drop it without linear
+// accounting (an unbounded leak / double-spend).
+cap type Fuel {}
+actor Worker {
+    state { mut power: Fuel }
+    init(f: Fuel) { power = f; }
+    on Tick() {}
+}

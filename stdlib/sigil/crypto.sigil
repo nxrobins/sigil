@@ -1,0 +1,102 @@
+// Phase 5a-3: stdlib `crypto` module — hashing + hex encoding.
+//
+// Tools that `use sigil::crypto;` MUST declare `#[ring(outer)] #[trusted]`
+// because this module declares `extern "C"` (per R004).
+//
+// Determinism per I3: `sha256`, `sha512`, `hex_encode`, `hex_decode`
+// are all deterministic — same input bytes always produce the same
+// output bytes. No grants required (pure compute).
+#[ring(outer)] #[trusted] module crypto;
+
+extern "C" fn crypto_sha256(input: i32, input_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn crypto_sha512(input: i32, input_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Compute SHA-256 of the input bytes. Returns packed pointer to 32 bytes.
+pub fn sha256(input_ptr: i32, input_len: i32) -> i64 @Internal ! { Alloc, FFI, Unsafe } {
+    return crypto_sha256(input_ptr, input_len);
+}
+
+// Compute SHA-512 of the input bytes. Returns packed pointer to 64 bytes.
+pub fn sha512(input_ptr: i32, input_len: i32) -> i64 @Internal ! { Alloc, FFI, Unsafe } {
+    return crypto_sha512(input_ptr, input_len);
+}
+
+// Encode `input_len` bytes at `input_ptr` as lowercase hex. The output
+// preserves the input's conservative @Internal label, which permits hashing
+// helpers to compose without an unauthorized declassification.
+pub fn hex_encode(input_ptr: i64 @Internal, input_len: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    let out_len: i64 @Internal = input_len * 2;
+    let out_ptr: i64 @Internal = alloc(out_len);
+    let mut i: i64 @Internal = 0;
+
+    while i < input_len {
+        let byte: i64 @Internal = load8(input_ptr + i);
+        let high: i64 @Internal = byte >> 4;
+        let low: i64 @Internal = byte & 0xF;
+
+        if high < 10 {
+            store8(out_ptr + i * 2, 0x30 + high);     // '0' + high
+        } else {
+            store8(out_ptr + i * 2, 0x57 + high);     // 'a' - 10
+        }
+
+        if low < 10 {
+            store8(out_ptr + i * 2 + 1, 0x30 + low);  // '0' + low
+        } else {
+            store8(out_ptr + i * 2 + 1, 0x57 + low);  // 'a' - 10
+        }
+
+        i += 1;
+    }
+
+    return out_ptr << 32 | out_len;
+}
+
+// Decode `input_len` ASCII hex chars at `input_ptr` to bytes.
+// Accepts both lowercase ('a'-'f') and uppercase ('A'-'F').
+// Returns packed pointer to (input_len / 2) bytes on success, or
+// -400 if input_len is odd or any char isn't a hex digit.
+pub fn hex_decode(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len % 2 == 0 {
+    } else {
+        return -400;
+    }
+    let half: i64 = input_len / 2;
+    let out_ptr: i64 = alloc(half);
+    let mut i: i64 = 0;
+
+    while i < half {
+        let hi_char: i64 = load8(input_ptr + i * 2);
+        let lo_char: i64 = load8(input_ptr + i * 2 + 1);
+
+        let mut hi_val: i64 = -1;
+        match hi_char {
+            0x30..=0x39 => { hi_val = hi_char - 0x30; },  // '0'-'9'
+            0x41..=0x46 => { hi_val = hi_char - 0x37; },  // 'A'-'F'
+            0x61..=0x66 => { hi_val = hi_char - 0x57; },  // 'a'-'f'
+            _ => {},
+        }
+
+        let mut lo_val: i64 = -1;
+        match lo_char {
+            0x30..=0x39 => { lo_val = lo_char - 0x30; },  // '0'-'9'
+            0x41..=0x46 => { lo_val = lo_char - 0x37; },  // 'A'-'F'
+            0x61..=0x66 => { lo_val = lo_char - 0x57; },  // 'a'-'f'
+            _ => {},
+        }
+
+        if hi_val < 0 {
+            return -400;
+        } else {
+            if lo_val < 0 {
+                return -400;
+            } else {
+                store8(out_ptr + i, hi_val << 4 | lo_val);
+            }
+        }
+
+        i += 1;
+    }
+
+    return out_ptr << 32 | half;
+}

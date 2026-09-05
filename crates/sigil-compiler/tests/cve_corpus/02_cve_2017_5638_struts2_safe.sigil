@@ -1,0 +1,30 @@
+// expect-ok
+// CVE Retrofit #02 (safe form): CVE-2017-5638 — Apache Struts2 / Equifax
+// Scope: BY-CONSTRUCTION
+//
+// LEGITIMATE INTENT
+//   Parse a `Content-Type` header from an HTTP request and dispatch
+//   based on its kind. The legitimate parser pattern-matches against
+//   known values; it does NOT evaluate the header as an expression.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   SIGIL has no `eval()` of strings. The only way to "act on" an
+//   untrusted byte sequence is to read it, compare it, and choose a
+//   code path explicitly. The Struts2 bug pattern (untrusted string
+//   reaches an OGNL evaluator) is inexpressible in SIGIL by
+//   construction — there is no evaluator to reach.
+module cve;
+
+fn dispatch_content_type(content_type_kind: i64) -> i64 {
+    // Typed dispatch: the kind is a parsed enum-like integer.
+    // No string evaluation is possible — only explicit comparisons.
+    if content_type_kind == 1 {
+        return 100;
+    } else {
+        if content_type_kind == 2 {
+            return 200;
+        } else {
+            return 0;
+        }
+    }
+}

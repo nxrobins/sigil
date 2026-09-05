@@ -1,0 +1,48 @@
+{
+  "compiler_requires": ">=0.1.0",
+  "format_version": "1",
+  "graph_hash": "sha256:c0f246f1fe6913047f3fa84fa4f05596b55b460c51f44dd3b3dbe4842a530e4c",
+  "nodes": [
+    {
+      "content_hash": "sha256:bc9bc57c5227a87ea3096249d7ae133e3899aba7eef9c78c80a0487164c28f4a",
+      "dependencies": [],
+      "features": [],
+      "manifest_hash": "sha256:e80ff4b92bf3ab8d814efd90149262d745e1edc0d6f2c0e94cb1706a540b2d81",
+      "modules": [
+        "helper"
+      ],
+      "package": "test/helper",
+      "source": {
+        "kind": "workspace",
+        "locator": "deps/helper"
+      },
+      "version": "1.0.0",
+      "yanked_observed": false
+    },
+    {
+      "content_hash": "sha256:8b4ec24f937cc660bd26ade21967f7d18b3ed5782f62ca7d25894e175d425723",
+      "dependencies": [
+        "test/helper"
+      ],
+      "features": [],
+      "manifest_hash": "sha256:44e34b4cf5a5b3279668da0f2ac70656b3f59b70cec01c386328486a37338404",
+      "modules": [
+        "app"
+      ],
+      "package": "test/app",
+      "source": {
+        "kind": "workspace",
+        "locator": "."
+      },
+      "version": "1.0.0",
+      "yanked_observed": false
+    }
+  ],
+  "resolver": {
+    "contract": "sigil-resolver-v1",
+    "offline": true
+  },
+  "root": "test/app",
+  "root_manifest_hash": "sha256:44e34b4cf5a5b3279668da0f2ac70656b3f59b70cec01c386328486a37338404",
+  "stdlib_hash": "sha256:55645d3dd4419b41f10dcf60b4f71260b74d3c02e2b89257dea0ac383e0cc427"
+}

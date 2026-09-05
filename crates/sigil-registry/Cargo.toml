@@ -1,0 +1,15 @@
+[package]
+name = "sigil-registry"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# `bundled` compiles SQLite from source into the binary: the registry is a
+# per-user local store created on first use by `sigil registry`, and a
+# missing or mismatched system libsqlite3 on the host must not be able to
+# break the CLI. The cost is build time, paid once per cold cache.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Tags round-trip through a JSON array in a TEXT column (src/lib.rs); this
+# is the only (de)serializer that touches it.
+serde_json = "1"

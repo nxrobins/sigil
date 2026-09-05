@@ -1,0 +1,62 @@
+[workspace]
+members = [
+    "crates/sigil-abi",
+    "crates/sigil-formal-bridge",
+    "crates/sigil-compiler",
+    "crates/sigil-runtime",
+    "crates/sigil-registry",
+    "crates/sigil-cli",
+    "crates/sigil-mcp",
+    "crates/sigil-serve",
+    "crates/sigil-test-utils",
+    "crates/sigil-corpus",
+    "crates/sigil-frontends",
+]
+resolver = "3"
+
+[workspace.package]
+# MIT OR Apache-2.0 by owner decision (2026-09-05): each recipient picks either license,
+# the Rust convention. The texts are LICENSE-MIT and LICENSE-APACHE at the root.
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+sigil-abi = { path = "crates/sigil-abi" }
+sigil-formal-bridge = { path = "crates/sigil-formal-bridge" }
+# Shared test dependencies, declared once so each crate can opt in with
+# `{ workspace = true }`:
+#
+#   * `insta`             — golden-snapshot tests on pass outputs (Pillar 2)
+#   * `proptest`          — property-based / state-machine fuzzers (Pillar 4)
+#   * `wasmprinter`       — WASM bytes → readable WAT for snapshots (Pillar 2)
+#   * `sigil-test-utils`  — shared parse macros / fixtures / mock WASM (Pillar 1)
+insta = { version = "1", features = ["filters"] }
+proptest = "1"
+wasmprinter = "0.246"
+sigil-test-utils = { path = "crates/sigil-test-utils" }
+
+# Trim debug info in dev/test builds to `line-tables-only`: backtraces and
+# panic locations are preserved (line tables), but the bulky variable/type
+# DWARF is dropped. With ~180 statically-linked integration-test binaries each
+# embedding full DWARF (`debug = 2`, the Rust default), `target/` exhausted the
+# CI runner's ~14GB disk ("No space left on device, os error 28") and tipped the
+# json-feature link into a SIGBUS (`ld` signal 7). `line-tables-only` slashes
+# per-binary debug size — far less for the linker to relocate and far less disk —
+# fixing both, at the cost of variable inspection in a debugger (rarely used in
+# CI). `[profile.test]` inherits this from `[profile.dev]`.
+[profile.dev]
+debug = "line-tables-only"
+
+# Optimize EXTERNAL dependencies in dev/test builds while keeping
+# workspace crates at opt-level 0 (fast iteration, full debuggability).
+# The motivating case: the lexer/parser differential harnesses execute
+# the merged selfhost tool through wasmtime per fixture, and each cache
+# miss Cranelift-compiles the multi-MB module — a debug-built Cranelift
+# made tests/parser_differential.rs the CI critical path (850s of the
+# rust job's 18-minute test step on the 2-core runner; 133s locally).
+# Optimizing only dependencies cut the local suite to a fraction with
+# zero assertion/corpus changes. One-time dep-rebuild cost is absorbed
+# by the CI cargo cache. (The wasmtime Module cache in
+# `sigil-runtime::ephemeral` now also collapses the per-fixture recompile.)
+[profile.dev.package."*"]
+opt-level = 2

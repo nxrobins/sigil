@@ -1,0 +1,17 @@
+module metadata_getter_drop;
+
+record Token { balances: BoundedMap_u256_u256_64 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn decimals(self: Token) -> u256 {
+        return 18;
+    }
+
+    pub fn balanceOf(self: Token, a: u256) -> u256 {
+        return self.balances.get_or(a, 0);
+    }
+}

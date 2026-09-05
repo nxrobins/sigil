@@ -1,0 +1,15 @@
+// R002 (bug-hunt F005): a `&cap` hidden in a TUPLE return must not escape
+// expect-error: R002
+// the outer ring. The `contains_cap_ref` walker recurses through tuple
+// elements; a missing arm would let `(&Fuel, i64)` smuggle the reference out
+// (the same escape a bare `-> &Fuel` return already fires on).
+#[ring(outer)]
+module ext;
+cap type Fuel {}
+fn escape(g: &Fuel) -> (&Fuel, i64) { return (g, 0); } // MUTATION_SITE
+
+// The mutant (marked line deleted) must still be a valid outer-ring module,
+// so a benign fn keeps the module non-trivial either way.
+fn benign() -> i64 {
+    return 0;
+}

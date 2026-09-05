@@ -1,0 +1,20 @@
+module param_modifier;
+
+record C { x: u256, feeCap: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { x: 0, feeCap: 0 };
+    }
+
+    pub fn limit(self: C) -> u256 {
+        return self.feeCap;
+    }
+
+    pub fn setX(self: C @Mut, v: u256) {
+        let mut __fe_m0_fee: u256 = self.feeCap;
+        trap_if(!((__fe_m0_fee > 0)));
+        trap_if(!((__fe_m0_fee < 1000)));
+        self.x = v;
+    }
+}

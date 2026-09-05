@@ -1,0 +1,37 @@
+// expect-ok
+// Z3 corpus #58: axis-1 — Wall 4 Step 10 basic then-arm narrowing.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The headline value of Step 10. Inside `if x > 0 { ... }`, the
+// variable `x` is narrowed to `x > 0` for the duration of the then-
+// arm. A call to `need_positive(x)` (which requires `where x > 0`)
+// admits cleanly via the call-site dispatcher's pre-existing path
+// (Step 7's `check_call_arg_refinements`, Case 2: symbolic with
+// preserved refinement, Z3 subsumption holds).
+//
+// Without Step 10, this fixture would fire T224 at the
+// `need_positive(x)` call because `x` is symbolic with no preserved
+// refinement (the function parameter `x` has no declared `where`
+// clause).
+//
+// MUTATION CONTRACT
+//
+// Removing the `if x > 0 { ... }` wrapper leaves the call exposed to
+// the bare parameter `x`, flipping to T224. Replacing the condition
+// with `if x > 5` keeps narrowing alive (Z3 subsumes `x > 5 ⇒ x > 0`).
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+entry actor Main {
+    on Tick(input: i64) -> i64 {
+        if input > 0 {
+            return need_positive(input);
+        } else {
+            return 0;
+        }
+    }
+}

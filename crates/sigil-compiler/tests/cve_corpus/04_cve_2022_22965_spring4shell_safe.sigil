@@ -1,0 +1,36 @@
+// expect-ok
+// CVE Retrofit #04 (safe form): CVE-2022-22965 — Spring4Shell ClassLoader reflection
+// Scope: BY-CONSTRUCTION
+//
+// LEGITIMATE INTENT
+//   Delegate a capability from one component to another at runtime.
+//   The Spring4Shell CVE existed because Java's reflection allowed a
+//   request-bound property setter to reach `class.classLoader` — a
+//   capability the request was never meant to receive.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   Capabilities in SIGIL are TYPED values. The only ways to obtain a
+//   capability of a given type are: (1) receive it at spawn time
+//   (init param), (2) attenuate one you already hold via `.restrict`
+//   / `.split` / `.draw`, (3) accept it as a message payload. There
+//   is no reflection API to "find a cap of type X on this object."
+//   The Spring4Shell pattern is structurally inexpressible.
+module cve;
+
+cap type ClassLoader {}
+
+actor Worker {
+    init(loader: ClassLoader) {}
+    on Ping() -> i64 { return 1; }
+}
+
+entry actor Main {
+    state { loader: ClassLoader }
+
+    on Start() -> i64 {
+        // Legitimate delegation: pass the ClassLoader cap explicitly
+        // at spawn time. The worker cannot acquire it any other way.
+        let _w = spawn::<Worker>(loader);
+        return 1;
+    }
+}

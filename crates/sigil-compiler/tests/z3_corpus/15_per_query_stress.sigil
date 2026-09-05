@@ -1,0 +1,57 @@
+// expect-ok
+// Z3 corpus #15: per-query rlimit stress fixture.
+//
+// Iteration 39 of Spec A + E (axis-2 seventh touch). Folded-in fix
+// MI-7: the corpus must exercise BOTH rlimit bounds for the
+// production-rlimit fence to be meaningful, not just whichever
+// happens to dominate on hand-picked fixtures.
+//
+// This fixture targets the PER-QUERY bound (`AIR_CAP_Z3_RLIMIT =
+// 1_000_000`, air_capability_v2/mod.rs). A single entry handler
+// performs many `.draw()` operations on one fuel cap. Each draw
+// produces an LIA constraint (fuel conservation) plus an
+// authority-inheritance constraint (BV equality propagation). Z3
+// verifies the cumulative chain within the function's discharge
+// (the sole prover's solver context), exercising the per-query
+// rlimit. The fixture must compile cleanly at production rlimit —
+// proving the bound has enough headroom for chains of this depth.
+//
+// `.draw()` is non-consuming so the parent stays alive after each
+// operation. `.restrict()` would be consuming and force a linear
+// chain of let-bindings, which exercises the constraint solver
+// slightly differently — see fixture #16 for the cross-function
+// (per-program) cumulative cost variant.
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Tick() -> i64 {
+        // 16 sequential .draw operations from a single parent cap.
+        // Each draw → BV authority equality + LIA conservation
+        // constraint pair, all live in one solver context.
+        let _w1 = spawn::<Worker>(fuel.draw(1));
+        let _w2 = spawn::<Worker>(fuel.draw(1));
+        let _w3 = spawn::<Worker>(fuel.draw(1));
+        let _w4 = spawn::<Worker>(fuel.draw(1));
+        let _w5 = spawn::<Worker>(fuel.draw(1));
+        let _w6 = spawn::<Worker>(fuel.draw(1));
+        let _w7 = spawn::<Worker>(fuel.draw(1));
+        let _w8 = spawn::<Worker>(fuel.draw(1));
+        let _w9 = spawn::<Worker>(fuel.draw(1));
+        let _w10 = spawn::<Worker>(fuel.draw(1));
+        let _w11 = spawn::<Worker>(fuel.draw(1));
+        let _w12 = spawn::<Worker>(fuel.draw(1));
+        let _w13 = spawn::<Worker>(fuel.draw(1));
+        let _w14 = spawn::<Worker>(fuel.draw(1));
+        let _w15 = spawn::<Worker>(fuel.draw(1));
+        let _w16 = spawn::<Worker>(fuel.draw(1));
+        return 16;
+    }
+}

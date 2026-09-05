@@ -1,0 +1,31 @@
+// expect-ok
+// CVE Retrofit #08 (safe form): CVE-2019-11932 — WhatsApp double-free
+// Scope: CLASS
+//
+// LEGITIMATE INTENT
+//   Hand a parsed frame to a decoder actor. The legitimate code moves
+//   the frame value exactly once; the decoder takes ownership.
+//
+// IDIOMATIC SIGIL EXPRESSION
+//   The frame is a linear capability value. After `decoder.send(Process(frame))`
+//   any further reference to `frame` fires O001. There's no `free()`
+//   to call twice; the move IS the cleanup, and the language refuses
+//   a second use.
+module cve;
+
+cap type Frame {}
+
+actor Decoder {
+    init(f: Frame) {}
+    on Process(f: Frame) -> i64 { return 1; }
+}
+
+entry actor Main {
+    // The frame cap flows in as a linear message payload and is moved exactly
+    // once into `d.send` — clean. (Held in state it would be borrow-only in a
+    // handler; here it flows through as a param.)
+    on Decode(d: ActorRef<Decoder>, gif_frame: Frame) -> i64 {
+        d.send(Process(gif_frame));
+        return 1;
+    }
+}

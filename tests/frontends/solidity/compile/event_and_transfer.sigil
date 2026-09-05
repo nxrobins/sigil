@@ -1,0 +1,13 @@
+module event_and_transfer;
+
+record C { balances: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn transfer(self: C @Mut, __fe_sender: u256, to: u256, amount: u256) {
+        self.balances.transfer(__fe_sender, to, amount);
+    }
+}

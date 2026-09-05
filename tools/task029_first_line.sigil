@@ -1,0 +1,37 @@
+// TASK: first line — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+
+    if raw < 0 {
+        return raw;
+    } else {
+        let file_ptr: i64 @Internal = raw / 4294967296;
+        let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+        let mut line_len: i64 @Internal = file_len;
+        let mut i: i64 @Internal = 0;
+        let mut found: i64 @Internal = 0;
+
+        while i < file_len {
+            let b: i64 @Internal = load8(file_ptr + i);
+            if found == 0 {
+                if b == 10 {
+                    line_len = i;
+                    found = 1;
+                } else {
+                }
+            } else {
+            }
+            i = i + 1;
+        }
+
+        return file_ptr * 4294967296 + line_len;
+    }
+}

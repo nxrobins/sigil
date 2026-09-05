@@ -1,0 +1,58 @@
+// expect-ok
+// Z3 corpus #16: per-program rlimit stress fixture.
+//
+// Iteration 39 of Spec A + E (axis-2 seventh touch). Folded-in fix
+// MI-7. Companion to fixture #15: where #15 exercises a long chain
+// in a single function (per-query rlimit), this fixture exercises
+// many tiny functions whose individual Z3 cost is well under the
+// per-query bound but whose cumulative cost sums against
+// `AIR_CAP_Z3_PROGRAM_RLIMIT = 50_000_000` (air_capability_v2/mod.rs).
+//
+// Each `pass_*` function takes a fuel cap, spawns one worker, and
+// returns. The Z3 verifier processes each function independently
+// (separate solver context, separate per-query budget) but the
+// CUMULATIVE rlimit-count statistic accumulates across all 24
+// functions. At production limits the total must remain well below
+// `AIR_CAP_Z3_PROGRAM_RLIMIT` — proving the per-program bound has
+// enough headroom for programs of this fan-out.
+//
+// If a future change tightens `AIR_CAP_Z3_PROGRAM_RLIMIT` to the point
+// where this fixture trips a C004, the zero-C004 assertion in the
+// corpus harness catches it.
+module sigil;
+cap type Fuel {}
+
+actor Worker {
+    init(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+fn pass_01(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 1; }
+fn pass_02(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 2; }
+fn pass_03(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 3; }
+fn pass_04(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 4; }
+fn pass_05(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 5; }
+fn pass_06(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 6; }
+fn pass_07(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 7; }
+fn pass_08(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 8; }
+fn pass_09(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 9; }
+fn pass_10(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 10; }
+fn pass_11(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 11; }
+fn pass_12(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 12; }
+fn pass_13(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 13; }
+fn pass_14(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 14; }
+fn pass_15(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 15; }
+fn pass_16(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 16; }
+fn pass_17(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 17; }
+fn pass_18(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 18; }
+fn pass_19(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 19; }
+fn pass_20(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 20; }
+fn pass_21(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 21; }
+fn pass_22(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 22; }
+fn pass_23(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 23; }
+fn pass_24(f: Fuel) -> i64 { let _ = spawn::<Worker>(f); return 24; }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Tick() -> i64 { return pass_01(fuel.draw(1)); }
+}

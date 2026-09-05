@@ -1,0 +1,37 @@
+module sigil;
+cap type Fuel {}
+
+fn abs(x: i64) -> i64 {
+    if x < 0 {
+        return 0 - x;
+    } else {
+        return x;
+    }
+}
+
+fn max(a: i64, b: i64) -> i64 {
+    if a > b {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+fn min(a: i64, b: i64) -> i64 {
+    if a < b {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let a = abs(0 - 5);
+        let b = max(3, 7);
+        let c = min(3, 7);
+        return a + b + c;
+    }
+}

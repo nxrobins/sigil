@@ -1,0 +1,107 @@
+// TASK: ascii histogram — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len == 0 {
+        let out_ptr = alloc(0);
+        return out_ptr * 4294967296;
+    } else {
+        let mut total_hashes = 0;
+        let mut current_count = 0;
+        let mut in_count = 0;
+        let mut i = 0;
+
+        while i < input_len {
+            let b = load8(input_ptr + i);
+            if in_count == 1 {
+                if b == 44 {
+                    total_hashes = total_hashes + current_count;
+                    current_count = 0;
+                    in_count = 0;
+                } else {
+                    if b >= 48 {
+                        if b <= 57 {
+                            current_count = current_count * 10 + b - 48;
+                        } else {
+                        }
+                    } else {
+                    }
+                }
+            } else {
+                if b == 58 {
+                    in_count = 1;
+                    current_count = 0;
+                } else {
+                }
+            }
+            i = i + 1;
+        }
+
+        if in_count == 1 {
+            total_hashes = total_hashes + current_count;
+        } else {
+        }
+
+        let out_ptr = alloc(input_len + total_hashes);
+        let mut out_len = 0;
+        let mut emit_count = 0;
+        let mut count_value = 0;
+        i = 0;
+
+        while i < input_len {
+            let b = load8(input_ptr + i);
+            if emit_count == 1 {
+                if b == 44 {
+                    let mut hashes = 0;
+                    while hashes < count_value {
+                        store8(out_ptr + out_len, 35);
+                        out_len = out_len + 1;
+                        hashes = hashes + 1;
+                    }
+                    store8(out_ptr + out_len, 10);
+                    out_len = out_len + 1;
+                    count_value = 0;
+                    emit_count = 0;
+                } else {
+                    if b >= 48 {
+                        if b <= 57 {
+                            count_value = count_value * 10 + b - 48;
+                        } else {
+                        }
+                    } else {
+                    }
+                }
+            } else {
+                if b == 44 {
+                } else {
+                    if b == 58 {
+                        store8(out_ptr + out_len, 58);
+                        out_len = out_len + 1;
+                        emit_count = 1;
+                        count_value = 0;
+                    } else {
+                        store8(out_ptr + out_len, b);
+                        out_len = out_len + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        if emit_count == 1 {
+            let mut hashes = 0;
+            while hashes < count_value {
+                store8(out_ptr + out_len, 35);
+                out_len = out_len + 1;
+                hashes = hashes + 1;
+            }
+        } else {
+        }
+
+        return out_ptr * 4294967296 + out_len;
+    }
+}

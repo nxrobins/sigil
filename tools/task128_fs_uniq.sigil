@@ -1,0 +1,106 @@
+// TASK: fs uniq — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read a file, deduplicate consecutive-or-global lines, return unique lines.
+// Global dedup: each unique line appears once (first occurrence).
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Collect (start, len) for each unique line and emit in order.
+    let out: i64 @Internal = alloc(file_len + 16);
+    let mut out_len: i64 @Internal = 0;
+
+    // Store seen line ranges in out-buffer range: we use a parallel array
+    // of up to 256 (start, len) pairs. 8 bytes per entry.
+    let seen_starts: i64 @Internal = alloc(2048);
+    let seen_lens: i64 @Internal = alloc(2048);
+    let mut nseen: i64 @Internal = 0;
+
+    let mut line_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= file_len {
+        let mut eol: i64 @Internal = 0;
+        if i == file_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(file_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+            }
+        }
+        if eol == 1 {
+            let ln: i64 @Internal = i - line_start;
+            if ln > 0 {
+                // Compare to all seen lines
+                let mut dup: i64 @Internal = 0;
+                let mut s: i64 @Internal = 0;
+                while s < nseen {
+                    let s_off: i64 @Internal = s * 8;
+                    let ss_lo: i64 @Internal = load8(seen_starts + s_off);
+                    let ss_mid: i64 @Internal = load8(seen_starts + s_off + 1);
+                    let ss_hi: i64 @Internal = load8(seen_starts + s_off + 2);
+                    let ss: i64 @Internal = ss_lo + ss_mid * 256 + ss_hi * 65536;
+                    let sl_lo: i64 @Internal = load8(seen_lens + s_off);
+                    let sl_hi: i64 @Internal = load8(seen_lens + s_off + 1);
+                    let sl: i64 @Internal = sl_lo + sl_hi * 256;
+                    if sl == ln {
+                        let mut same: i64 @Internal = 1;
+                        let mut k: i64 @Internal = 0;
+                        while k < ln {
+                            let ba: i64 @Internal = load8(file_ptr + line_start + k);
+                            let bb: i64 @Internal = load8(file_ptr + ss + k);
+                            if ba == bb {
+                            } else {
+                                same = 0;
+                            }
+                            k = k + 1;
+                        }
+                        if same == 1 {
+                            dup = 1;
+                        } else {
+                        }
+                    } else {
+                    }
+                    s = s + 1;
+                }
+                if dup == 0 {
+                    let n_off: i64 @Internal = nseen * 8;
+                    store8(seen_starts + n_off, line_start);
+                    store8(seen_starts + n_off + 1, line_start / 256);
+                    store8(seen_starts + n_off + 2, line_start / 65536);
+                    store8(seen_lens + n_off, ln);
+                    store8(seen_lens + n_off + 1, ln / 256);
+                    nseen = nseen + 1;
+                    let mut k2: i64 @Internal = 0;
+                    while k2 < ln {
+                        let bb2: i64 @Internal = load8(file_ptr + line_start + k2);
+                        store8(out + out_len, bb2);
+                        out_len = out_len + 1;
+                        k2 = k2 + 1;
+                    }
+                    store8(out + out_len, 10);
+                    out_len = out_len + 1;
+                } else {
+                }
+            } else {
+            }
+            line_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+    return out * 4294967296 + out_len;
+}

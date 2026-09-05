@@ -1,0 +1,41 @@
+// expect-ok
+// Z3 corpus #52: axis-1 — Wall 4 Step 7 function parameter refinement (literal arg).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 7 admits parameter refinements via `fn name(p: i64)
+// where p > 0`. At a call site, the dispatcher (`check_call_arg_refinements`)
+// routes each (arg, param-refinement) pair through one of three cases
+// per N36-S7:
+//   1. literal arg → check_refinement (Step 1 path);
+//   2. symbolic + preserved refinement → Step 3 subsumption;
+//   3. symbolic without refinement → T211.
+//
+// This fixture exercises CASE 1: `validate(5)` supplies a literal `5`
+// against the declared `where x > 0`. Z3 proves `5 > 0` (Unsat on
+// negation), the call accepts.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 7 parser admits `where p > 0` between `)` and `->`.
+//   * Step 7 `FunctionSig.param_refinements` populated by
+//     `collect_function_sigs`.
+//   * Step 7 `check_call_arg_refinements` Case 1 (literal path).
+//
+// MUTATION CONTRACT
+//
+// Replacing `5` with `0` flips this fixture to the expect-error half
+// (fixture 53). Deleting the call statement leaves a refined fn
+// declaration without a caller; still compiles cleanly.
+module sigil;
+
+fn validate(x: i64) where x > 0 -> bool {
+    return true;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let ok: bool = validate(5);
+        return 1;
+    }
+}

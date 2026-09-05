@@ -1,0 +1,30 @@
+id: task127_fs_sort_lines
+source_path: tools/task127_fs_sort_lines.sigil
+difficulty: ffi_fs
+description: |
+  Write a Sigil tool that reads the file whose path is supplied as input and
+  returns its lines sorted in ascending byte order, one per line.
+
+  This is an FFI tool, so it lives in `#[ring(outer)] #[trusted] module tool;`.
+  Declare:
+      extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+  The tool exports
+      pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }
+  Note `i32` parameters — the FFI ABI requires i32 pointer/length.
+
+  fs_read returns a packed `(ptr * 4294967296 + len)` on success or a
+  negative error code on failure; propagate a negative `raw` unchanged.
+signature: "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe }"
+required_attrs: ["#[ring(outer)]", "#[trusted]"]
+required_effects: ["FsIO", "Alloc", "FFI", "Unsafe"]
+required_grants:
+  fs: ["bench/fixtures"]
+fuel_budget: 300000
+inputs:
+  - name: unsorted
+    value: bench/fixtures/unsorted.txt
+  - name: lines3
+    value: bench/fixtures/lines3.txt
+  - name: log
+    value: bench/fixtures/app.log
+expected_output_strategy: capture_from_reference

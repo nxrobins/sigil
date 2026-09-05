@@ -1,0 +1,17 @@
+module logical;
+pub fn both(a: i64, b: i64) -> bool {
+  let mut __fe_0 = (a < b);
+  if __fe_0 {
+    __fe_0 = (b < 10);
+  } else {
+  }
+  return __fe_0;
+}
+pub fn either(a: i64, b: i64) -> bool {
+  let mut __fe_0 = (a == 0);
+  if __fe_0 {
+  } else {
+    __fe_0 = (b == 0);
+  }
+  return __fe_0;
+}

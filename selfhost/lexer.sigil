@@ -1,0 +1,1191 @@
+// The SIGIL lexer, in SIGIL — Stage 0 self-hosting (docs/specs/lexer-in-sigil.md).
+//
+// Breadth so far: the full keyword set, all single-char operators/delimiters, line
+// comments, BoolLit (true/false), maximal-munch multi-char operators (`-> :: == << ..`
+// …, PR-2a), and numeric literals — decimal/hex IntLit with decoded value + FloatLit
+// span (PR-2b). String literals + their decoded value ride PR-2c; the differential
+// corpus stays within the shipped slice (no strings yet).
+//
+// A `Token` is `{kind, start, end, value, text}`; `kind` is a named tag (the contract
+// with the Rust harness's `TokenKind -> tag` map, drift-guarded total in `lexer_differential`).
+// `[start, end)` is the byte span. `value` carries the decoded scalar for value-bearing
+// tokens (the IntLit i64; 1/0 for BoolLit true/false) — ET-3's "(tag, start, end, value)"
+// comparison; it is 0 for every other kind. FloatLit is span-only (AG-L3). `text` carries a
+// StrLit's DECODED value (escapes applied) — the byte-for-byte twin of the oracle's
+// StrLit(String); it is "" for every non-string kind.
+
+module lexer;
+
+// ── Token tags (the harness contract) ────────────────────────────────────────
+const T_EOF: i64 = 0;
+const T_IDENT: i64 = 1;
+const T_INT: i64 = 2;
+const T_BOOL: i64 = 3;
+const T_FLOAT: i64 = 4;
+const T_STR: i64 = 5;
+
+// single-char operators / punctuation / delimiters
+const T_LPAREN: i64 = 10;
+const T_RPAREN: i64 = 11;
+const T_LBRACE: i64 = 12;
+const T_RBRACE: i64 = 13;
+const T_LBRACKET: i64 = 14;
+const T_RBRACKET: i64 = 15;
+const T_SEMI: i64 = 16;
+const T_COMMA: i64 = 17;
+const T_DOT: i64 = 18;
+const T_PLUS: i64 = 19;
+const T_MINUS: i64 = 20;
+const T_STAR: i64 = 21;
+const T_SLASH: i64 = 22;
+const T_PERCENT: i64 = 23;
+const T_EQ: i64 = 24;
+const T_LT: i64 = 25;
+const T_GT: i64 = 26;
+const T_AMP: i64 = 27;
+const T_PIPE: i64 = 28;
+const T_BANG: i64 = 29;
+const T_QUESTION: i64 = 30;
+const T_COLON: i64 = 31;
+const T_HASH: i64 = 32;
+const T_AT: i64 = 33;
+
+// multi-char operators (maximal munch) — 100..=119
+const T_PLUSEQ: i64 = 100;
+const T_MINUSEQ: i64 = 101;
+const T_STAREQ: i64 = 102;
+const T_SLASHEQ: i64 = 103;
+const T_PERCENTEQ: i64 = 104;
+const T_EQEQ: i64 = 105;
+const T_FATARROW: i64 = 106;
+const T_BANGEQ: i64 = 107;
+const T_LTEQ: i64 = 108;
+const T_GTEQ: i64 = 109;
+const T_LTLT: i64 = 110;
+const T_LTLTEQ: i64 = 111;
+const T_GTGT: i64 = 112;
+const T_GTGTEQ: i64 = 113;
+const T_AMPEQ: i64 = 114;
+const T_PIPEEQ: i64 = 115;
+const T_COLONCOLON: i64 = 116;
+const T_ARROW: i64 = 117;
+const T_DOTDOT: i64 = 118;
+const T_DOTDOTEQ: i64 = 119;
+
+// PR-E3: f-string `f"…{e}…"` token sequence. Tags MUST match the Rust harness's
+// `tag_of` (lexer_differential.rs): FStrBegin=120 … FStrEnd=124. The lexer emits
+// T_FSTR_BEGIN, then (always) a T_FSTR_CHUNK literal run and, if a hole follows,
+// T_FSTR_HOLE_START, the hole's own tokens, T_FSTR_HOLE_END — closing T_FSTR_END.
+const T_FSTR_BEGIN: i64 = 120;
+const T_FSTR_CHUNK: i64 = 121;
+const T_FSTR_HOLE_START: i64 = 122;
+const T_FSTR_HOLE_END: i64 = 123;
+const T_FSTR_END: i64 = 124;
+
+// keywords
+const T_KW_ACTOR: i64 = 50;
+const T_KW_ASK: i64 = 51;
+const T_KW_CAP: i64 = 52;
+const T_KW_CONST: i64 = 53;
+const T_KW_DECLASSIFY: i64 = 54;
+const T_KW_DECLASSIFY_CT: i64 = 55;
+const T_KW_DISTINCT: i64 = 56;
+const T_KW_ELSE: i64 = 57;
+const T_KW_EFFECT: i64 = 58;
+const T_KW_ENTRY: i64 = 59;
+const T_KW_ENUM: i64 = 60;
+const T_KW_EXTERN: i64 = 61;
+const T_KW_HANDLE: i64 = 62;
+const T_KW_FN: i64 = 63;
+const T_KW_FOR: i64 = 64;
+const T_KW_IF: i64 = 65;
+const T_KW_IMPL: i64 = 66;
+const T_KW_IN: i64 = 67;
+const T_KW_INIT: i64 = 68;
+const T_KW_LET: i64 = 69;
+const T_KW_MATCH: i64 = 70;
+const T_KW_MODULE: i64 = 71;
+const T_KW_MUT: i64 = 72;
+const T_KW_ON: i64 = 73;
+const T_KW_BREAK: i64 = 74;
+const T_KW_CONTINUE: i64 = 75;
+const T_KW_PUB: i64 = 76;
+const T_KW_GRANT: i64 = 77;
+const T_KW_RING: i64 = 78;
+const T_KW_RECORD: i64 = 79;
+const T_KW_REGION: i64 = 80;
+const T_KW_RETURN: i64 = 81;
+const T_KW_SEND: i64 = 82;
+const T_KW_SPAWN: i64 = 83;
+const T_KW_STATE: i64 = 84;
+const T_KW_SUPERVISION: i64 = 85;
+const T_KW_TRAIT: i64 = 86;
+const T_KW_TYPE: i64 = 87;
+const T_KW_USE: i64 = 88;
+const T_KW_WHILE: i64 = 89;
+const T_KW_WITH: i64 = 90;
+
+// an internal sentinel from single_char_tag/scan_op: a byte that starts no token.
+// The lex loop turns it into an L004 error-token (never emitted as a token itself).
+const T_UNKNOWN: i64 = 900;
+
+// error-token tag — a lexer DIAGNOSTIC carried in the stream where the oracle would
+// emit no token + a diagnostic. `value` holds the L-code (1=L001, 3=L003, 4=L004);
+// `[start, end)` is the oracle-matching error span. The host splits these out and
+// compares them to `lex_with_id`'s diagnostics (presence + position, AG-L4).
+const T_ERR: i64 = 800;
+const L001: i64 = 1;
+const L003: i64 = 3;
+const L004: i64 = 4;
+
+record Token {
+    kind: i64,
+    start: i64,
+    end: i64,
+    value: i64,
+    text: str
+}
+
+// scan_string's result: where the literal ends (past the closing `"`), its decoded
+// value, and `ok` (1 = a closing `"` was found, 0 = ran to EOF unterminated → L003).
+// A record (not a tuple) keeps the mixed i64/str fields explicit.
+record StrScan {
+    end: i64,
+    text: str,
+    ok: i64
+}
+
+// ── byte classifiers (no `&&`/`||`: nested `if`) ─────────────────────────────
+fn is_digit(b: i64) -> bool {
+    if b >= 48 {
+        if b <= 57 {
+            return true;
+        } else {
+        }
+    } else {
+    }
+    return false;
+}
+
+fn is_alpha(b: i64) -> bool {
+    if b == 95 {
+        return true;
+    } else {
+    }
+    if b >= 65 {
+        if b <= 90 {
+            return true;
+        } else {
+        }
+    } else {
+    }
+    if b >= 97 {
+        if b <= 122 {
+            return true;
+        } else {
+        }
+    } else {
+    }
+    return false;
+}
+
+fn is_alnum(b: i64) -> bool {
+    if is_alpha(b) {
+        return true;
+    } else {
+    }
+    if is_digit(b) {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+fn is_ws(b: i64) -> bool {
+    if b == 32 {
+        return true;
+    } else {
+    }
+    if b == 9 {
+        return true;
+    } else {
+    }
+    if b == 10 {
+        return true;
+    } else {
+    }
+    if b == 13 {
+        return true;
+    } else {
+    }
+    return false;
+}
+
+// `//` line comment? (b == '/' AND the next byte is '/')
+fn is_comment_start(src: str, i: i64, n: i64) -> bool {
+    if src.byte_at(i) == 47 {
+        let j: i64 = i + 1;
+        if j < n {
+            if src.byte_at(j) == 47 {
+                return true;
+            } else {
+            }
+        } else {
+        }
+    } else {
+    }
+    return false;
+}
+
+// skip from the first `/` of `//` to the newline (exclusive — the newline is
+// whitespace, consumed next iteration), matching the oracle's line-comment skip.
+fn skip_comment(src: str, i: i64, n: i64) -> i64 {
+    let mut j: i64 = i + 2;
+    while j < n {
+        let c: i64 = src.byte_at(j);
+        if c == 10 {
+            break;
+        } else {
+            j = j + 1;
+        }
+    }
+    return j;
+}
+
+// identifier lexeme → keyword/bool tag, else IDENT. Length-bucketed so a plain
+// identifier fails most buckets in O(1) before any byte-compare (R7 fuel).
+fn ident_tag(lex: str) -> i64 {
+    let n: i64 = lex.len();
+    if n == 2 {
+        if lex.bytes_eq("fn") {
+            return T_KW_FN;
+        } else {
+        }
+        if lex.bytes_eq("if") {
+            return T_KW_IF;
+        } else {
+        }
+        if lex.bytes_eq("in") {
+            return T_KW_IN;
+        } else {
+        }
+        if lex.bytes_eq("on") {
+            return T_KW_ON;
+        } else {
+        }
+    } else {
+    }
+    if n == 3 {
+        if lex.bytes_eq("ask") {
+            return T_KW_ASK;
+        } else {
+        }
+        if lex.bytes_eq("cap") {
+            return T_KW_CAP;
+        } else {
+        }
+        if lex.bytes_eq("for") {
+            return T_KW_FOR;
+        } else {
+        }
+        if lex.bytes_eq("let") {
+            return T_KW_LET;
+        } else {
+        }
+        if lex.bytes_eq("mut") {
+            return T_KW_MUT;
+        } else {
+        }
+        if lex.bytes_eq("pub") {
+            return T_KW_PUB;
+        } else {
+        }
+        if lex.bytes_eq("use") {
+            return T_KW_USE;
+        } else {
+        }
+    } else {
+    }
+    if n == 4 {
+        if lex.bytes_eq("true") {
+            return T_BOOL;
+        } else {
+        }
+        if lex.bytes_eq("else") {
+            return T_KW_ELSE;
+        } else {
+        }
+        if lex.bytes_eq("enum") {
+            return T_KW_ENUM;
+        } else {
+        }
+        if lex.bytes_eq("impl") {
+            return T_KW_IMPL;
+        } else {
+        }
+        if lex.bytes_eq("init") {
+            return T_KW_INIT;
+        } else {
+        }
+        if lex.bytes_eq("ring") {
+            return T_KW_RING;
+        } else {
+        }
+        if lex.bytes_eq("send") {
+            return T_KW_SEND;
+        } else {
+        }
+        if lex.bytes_eq("type") {
+            return T_KW_TYPE;
+        } else {
+        }
+        if lex.bytes_eq("with") {
+            return T_KW_WITH;
+        } else {
+        }
+    } else {
+    }
+    if n == 5 {
+        if lex.bytes_eq("false") {
+            return T_BOOL;
+        } else {
+        }
+        if lex.bytes_eq("actor") {
+            return T_KW_ACTOR;
+        } else {
+        }
+        if lex.bytes_eq("const") {
+            return T_KW_CONST;
+        } else {
+        }
+        if lex.bytes_eq("entry") {
+            return T_KW_ENTRY;
+        } else {
+        }
+        if lex.bytes_eq("grant") {
+            return T_KW_GRANT;
+        } else {
+        }
+        if lex.bytes_eq("match") {
+            return T_KW_MATCH;
+        } else {
+        }
+        if lex.bytes_eq("break") {
+            return T_KW_BREAK;
+        } else {
+        }
+        if lex.bytes_eq("spawn") {
+            return T_KW_SPAWN;
+        } else {
+        }
+        if lex.bytes_eq("state") {
+            return T_KW_STATE;
+        } else {
+        }
+        if lex.bytes_eq("trait") {
+            return T_KW_TRAIT;
+        } else {
+        }
+        if lex.bytes_eq("while") {
+            return T_KW_WHILE;
+        } else {
+        }
+    } else {
+    }
+    if n == 6 {
+        if lex.bytes_eq("effect") {
+            return T_KW_EFFECT;
+        } else {
+        }
+        if lex.bytes_eq("extern") {
+            return T_KW_EXTERN;
+        } else {
+        }
+        if lex.bytes_eq("handle") {
+            return T_KW_HANDLE;
+        } else {
+        }
+        if lex.bytes_eq("module") {
+            return T_KW_MODULE;
+        } else {
+        }
+        if lex.bytes_eq("record") {
+            return T_KW_RECORD;
+        } else {
+        }
+        if lex.bytes_eq("region") {
+            return T_KW_REGION;
+        } else {
+        }
+        if lex.bytes_eq("return") {
+            return T_KW_RETURN;
+        } else {
+        }
+    } else {
+    }
+    if n == 8 {
+        if lex.bytes_eq("distinct") {
+            return T_KW_DISTINCT;
+        } else {
+        }
+        if lex.bytes_eq("continue") {
+            return T_KW_CONTINUE;
+        } else {
+        }
+    } else {
+    }
+    if n == 10 {
+        if lex.bytes_eq("declassify") {
+            return T_KW_DECLASSIFY;
+        } else {
+        }
+    } else {
+    }
+    if n == 11 {
+        if lex.bytes_eq("supervision") {
+            return T_KW_SUPERVISION;
+        } else {
+        }
+    } else {
+    }
+    if n == 13 {
+        if lex.bytes_eq("declassify_ct") {
+            return T_KW_DECLASSIFY_CT;
+        } else {
+        }
+    } else {
+    }
+    return T_IDENT;
+}
+
+// single operator/punctuation byte → its tag. `scan_op` does the multi-char
+// maximal munch and falls through to here for the single-only bytes (`( ) { }
+// [ ] ; , ? # @`) and the 1-byte form of every multi-char operator's prefix.
+fn single_char_tag(b: i64) -> i64 {
+    if b == 40 {
+        return T_LPAREN;
+    } else {
+    }
+    if b == 41 {
+        return T_RPAREN;
+    } else {
+    }
+    if b == 123 {
+        return T_LBRACE;
+    } else {
+    }
+    if b == 125 {
+        return T_RBRACE;
+    } else {
+    }
+    if b == 91 {
+        return T_LBRACKET;
+    } else {
+    }
+    if b == 93 {
+        return T_RBRACKET;
+    } else {
+    }
+    if b == 59 {
+        return T_SEMI;
+    } else {
+    }
+    if b == 44 {
+        return T_COMMA;
+    } else {
+    }
+    if b == 46 {
+        return T_DOT;
+    } else {
+    }
+    if b == 43 {
+        return T_PLUS;
+    } else {
+    }
+    if b == 45 {
+        return T_MINUS;
+    } else {
+    }
+    if b == 42 {
+        return T_STAR;
+    } else {
+    }
+    if b == 47 {
+        return T_SLASH;
+    } else {
+    }
+    if b == 37 {
+        return T_PERCENT;
+    } else {
+    }
+    if b == 61 {
+        return T_EQ;
+    } else {
+    }
+    if b == 60 {
+        return T_LT;
+    } else {
+    }
+    if b == 62 {
+        return T_GT;
+    } else {
+    }
+    if b == 38 {
+        return T_AMP;
+    } else {
+    }
+    if b == 124 {
+        return T_PIPE;
+    } else {
+    }
+    if b == 33 {
+        return T_BANG;
+    } else {
+    }
+    if b == 63 {
+        return T_QUESTION;
+    } else {
+    }
+    if b == 58 {
+        return T_COLON;
+    } else {
+    }
+    if b == 35 {
+        return T_HASH;
+    } else {
+    }
+    if b == 64 {
+        return T_AT;
+    } else {
+    }
+    return T_UNKNOWN;
+}
+
+// byte at `idx`, or -1 if past the end (for maximal-munch lookahead).
+fn peek_at(src: str, idx: i64, n: i64) -> i64 {
+    if idx < n {
+        return src.byte_at(idx);
+    } else {
+    }
+    return 0 - 1;
+}
+
+// Maximal-munch operator scan → (tag, byte_length). Mirrors the Rust lexer's
+// operator dispatch exactly; `//` comments are handled before this. Returns a
+// TUPLE — dogfooding tuples in the lexer. Allocates the tuple (! { Alloc }).
+fn scan_op(src: str, i: i64, n: i64) -> (i64, i64) ! { Alloc } {
+    let b: i64 = src.byte_at(i);
+    let b1: i64 = peek_at(src, i + 1, n);
+    let b2: i64 = peek_at(src, i + 2, n);
+    if b == 43 {
+        if b1 == 61 {
+            return (T_PLUSEQ, 2);
+        } else {
+        }
+        return (T_PLUS, 1);
+    } else {
+    }
+    if b == 45 {
+        if b1 == 62 {
+            return (T_ARROW, 2);
+        } else {
+        }
+        if b1 == 61 {
+            return (T_MINUSEQ, 2);
+        } else {
+        }
+        return (T_MINUS, 1);
+    } else {
+    }
+    if b == 42 {
+        if b1 == 61 {
+            return (T_STAREQ, 2);
+        } else {
+        }
+        return (T_STAR, 1);
+    } else {
+    }
+    if b == 47 {
+        if b1 == 61 {
+            return (T_SLASHEQ, 2);
+        } else {
+        }
+        return (T_SLASH, 1);
+    } else {
+    }
+    if b == 37 {
+        if b1 == 61 {
+            return (T_PERCENTEQ, 2);
+        } else {
+        }
+        return (T_PERCENT, 1);
+    } else {
+    }
+    if b == 61 {
+        if b1 == 61 {
+            return (T_EQEQ, 2);
+        } else {
+        }
+        if b1 == 62 {
+            return (T_FATARROW, 2);
+        } else {
+        }
+        return (T_EQ, 1);
+    } else {
+    }
+    if b == 33 {
+        if b1 == 61 {
+            return (T_BANGEQ, 2);
+        } else {
+        }
+        return (T_BANG, 1);
+    } else {
+    }
+    if b == 60 {
+        if b1 == 60 {
+            if b2 == 61 {
+                return (T_LTLTEQ, 3);
+            } else {
+            }
+            return (T_LTLT, 2);
+        } else {
+        }
+        if b1 == 61 {
+            return (T_LTEQ, 2);
+        } else {
+        }
+        return (T_LT, 1);
+    } else {
+    }
+    if b == 62 {
+        if b1 == 62 {
+            if b2 == 61 {
+                return (T_GTGTEQ, 3);
+            } else {
+            }
+            return (T_GTGT, 2);
+        } else {
+        }
+        if b1 == 61 {
+            return (T_GTEQ, 2);
+        } else {
+        }
+        return (T_GT, 1);
+    } else {
+    }
+    if b == 38 {
+        if b1 == 61 {
+            return (T_AMPEQ, 2);
+        } else {
+        }
+        return (T_AMP, 1);
+    } else {
+    }
+    if b == 124 {
+        if b1 == 61 {
+            return (T_PIPEEQ, 2);
+        } else {
+        }
+        return (T_PIPE, 1);
+    } else {
+    }
+    if b == 58 {
+        if b1 == 58 {
+            return (T_COLONCOLON, 2);
+        } else {
+        }
+        return (T_COLON, 1);
+    } else {
+    }
+    if b == 46 {
+        if b1 == 46 {
+            if b2 == 61 {
+                return (T_DOTDOTEQ, 3);
+            } else {
+            }
+            return (T_DOTDOT, 2);
+        } else {
+        }
+        return (T_DOT, 1);
+    } else {
+    }
+    let st: i64 = single_char_tag(b);
+    return (st, 1);
+}
+
+// hex digit value (0-15), or -1 if `b` is not a hex digit.
+fn hex_val(b: i64) -> i64 {
+    if b >= 48 {
+        if b <= 57 {
+            return b - 48;
+        } else {
+        }
+    } else {
+    }
+    if b >= 97 {
+        if b <= 102 {
+            return b - 87;
+        } else {
+        }
+    } else {
+    }
+    if b >= 65 {
+        if b <= 70 {
+            return b - 55;
+        } else {
+        }
+    } else {
+    }
+    return 0 - 1;
+}
+
+// `0x`/`0X` hex literal → (tag, end, value). `i` is at the leading `0`, `i+1` the
+// `x`/`X`; scan hex digits from `i+2`, accumulating the i64 value (mirrors the oracle's
+// `from_str_radix(.., 16)`). Zero hex digits is the oracle's L001 — returned as
+// `(T_ERR, i+2, L001)` so the lex loop emits an error-token over the `0x`, span [i, i+2],
+// exactly as the oracle does. (i64 OVERFLOW of a too-long literal is deferred — it wraps
+// here rather than reproducing Rust's exact parse boundary; such literals don't occur.)
+fn scan_hex(src: str, i: i64, n: i64) -> (i64, i64, i64) ! { Alloc } {
+    let mut j: i64 = i + 2;
+    let mut val: i64 = 0;
+    while j < n {
+        let c: i64 = src.byte_at(j);
+        let hv: i64 = hex_val(c);
+        if hv < 0 {
+            break;
+        } else {
+            val = val * 16 + hv;
+            j = j + 1;
+        }
+    }
+    if j == i + 2 {
+        return (T_ERR, i + 2, L001);
+    } else {
+    }
+    return (T_INT, j, val);
+}
+
+// Number literal at `i` → (tag, end, value). Decimal/hex IntLit carries its decoded
+// i64 value; FloatLit (a digit run, then `.`, then >=1 digit) is span-only (value 0,
+// AG-L3 — no parse_f64). The float test requires a digit AFTER the `.`, so `1..2` is
+// Int·DotDot·Int and `1.foo` is Int·Dot·Ident, exactly as the oracle decides.
+fn scan_number(src: str, i: i64, n: i64) -> (i64, i64, i64) ! { Alloc } {
+    let b0: i64 = src.byte_at(i);
+    let b1: i64 = peek_at(src, i + 1, n);
+    if b0 == 48 {
+        if b1 == 120 {
+            return scan_hex(src, i, n);
+        } else {
+        }
+        if b1 == 88 {
+            return scan_hex(src, i, n);
+        } else {
+        }
+    } else {
+    }
+    let mut j: i64 = i;
+    let mut val: i64 = 0;
+    while j < n {
+        let d: i64 = src.byte_at(j);
+        if is_digit(d) {
+            val = val * 10 + (d - 48);
+            j = j + 1;
+        } else {
+            break;
+        }
+    }
+    let dot: i64 = peek_at(src, j, n);
+    if dot == 46 {
+        let after: i64 = peek_at(src, j + 1, n);
+        if is_digit(after) {
+            let mut k: i64 = j + 1;
+            while k < n {
+                let e: i64 = src.byte_at(k);
+                if is_digit(e) {
+                    k = k + 1;
+                } else {
+                    break;
+                }
+            }
+            return (T_FLOAT, k, 0);
+        } else {
+        }
+    } else {
+    }
+    return (T_INT, j, val);
+}
+
+// UTF-8 codepoint byte-length from its lead byte (1-4), so the string scanner
+// appends a whole codepoint at a time — `substr` traps on a mid-codepoint slice.
+// The source is from_bytes-validated UTF-8, so a literal-content byte is always a
+// lead byte or ASCII; a stray continuation/invalid byte falls to 1 (never stalls).
+fn utf8_len(lead: i64) -> i64 {
+    if lead < 128 {
+        return 1;
+    } else {
+    }
+    if lead < 224 {
+        return 2;
+    } else {
+    }
+    if lead < 240 {
+        return 3;
+    } else {
+    }
+    if lead < 248 {
+        return 4;
+    } else {
+    }
+    return 1;
+}
+
+// String literal at `i` (a `"`) → end (past the closing `"`) + the DECODED value,
+// the byte-for-byte twin of the oracle's StrLit(String). Escapes mirror `lex_string`
+// exactly: `\n`→newline, `\t`→tab, `\"`→`"`, `\\`→`\`, and ANY other `\x` keeps the
+// following char(s) literally (the `\` dropped). Content is appended one codepoint at
+// a time so `substr` only ever slices on a char boundary (never traps). Finding the
+// closing `"` returns ok=1; running to EOF returns ok=0 with the span [start, n] — the
+// oracle's L003 (the lex loop turns it into an error-token; ET-7 still holds, no trap).
+fn scan_string(src: str, i: i64, n: i64) -> StrScan ! { Alloc } {
+    let mut j: i64 = i + 1;
+    let mut text: str = "";
+    while j < n {
+        let c: i64 = src.byte_at(j);
+        if c == 34 {
+            j = j + 1;
+            return StrScan { end: j, text: text, ok: 1 };
+        } else {
+        }
+        if c == 92 {
+            let e: i64 = peek_at(src, j + 1, n);
+            if e < 0 {
+                j = j + 1;
+            } else {
+                if e == 110 {
+                    text = text.concat("\n");
+                    j = j + 2;
+                } else {
+                    if e == 116 {
+                        text = text.concat("\t");
+                        j = j + 2;
+                    } else {
+                        if e == 34 {
+                            text = text.concat("\"");
+                            j = j + 2;
+                        } else {
+                            if e == 92 {
+                                text = text.concat("\\");
+                                j = j + 2;
+                            } else {
+                                let clen: i64 = utf8_len(e);
+                                let piece: str = src.substr(j + 1, j + 1 + clen);
+                                text = text.concat(piece);
+                                j = j + 1 + clen;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            let clen2: i64 = utf8_len(c);
+            let lit: str = src.substr(j, j + clen2);
+            text = text.concat(lit);
+            j = j + clen2;
+        }
+    }
+    return StrScan { end: j, text: text, ok: 0 };
+}
+
+// PR-E3: scan an f-string `f"…{e}…"` starting at `fi` (src[fi]='f', src[fi+1]='"'),
+// pushing the token SEQUENCE into `toks` (@Mut) and returning the index past it. A
+// byte-for-byte mirror of the Rust `lex_fstring`: T_FSTR_BEGIN over `f"`, then per
+// segment (ALWAYS — ET-E3 strict alternation) one T_FSTR_CHUNK (decoded literal run,
+// stop at `{`/`"`/EOF) and, if a hole follows, T_FSTR_HOLE_START over `{`, the hole's
+// own tokens (via lex_step — byte-identical to top-level, ET mirror of lex_one_token),
+// T_FSTR_HOLE_END over `}`, closing T_FSTR_END over the final `"`. Chunk escapes match
+// scan_string (`\n`/`\t`/`\"`/`\\`) plus `{{`/`}}`/`\{`/`\}`→`{`/`}`, lone `}`→`}`, any
+// other `\x`→x; only ASCII `{ } " \` are structural (<0x80) so multi-byte codepoints
+// pass whole (ET-E6). An unterminated f-string / hole emits a T_ERR(L003) token and
+// returns — never traps (ET-E8). Content appends one codepoint at a time so `substr`
+// only slices on a char boundary.
+fn scan_fstring(src: str, fi: i64, n: i64, toks: Vec<Token> @Mut) -> i64 ! { Alloc } {
+    let begin_start: i64 = fi;
+    let mut i: i64 = fi + 2;
+    let tb: Token = Token { kind: T_FSTR_BEGIN, start: begin_start, end: i, value: 0, text: "" };
+    let pb: i64 = toks.push(tb);
+    let mut running: i64 = 1;
+    while running == 1 {
+        let chunk_start: i64 = i;
+        let mut text: str = "";
+        let mut at_hole: i64 = 0;
+        let mut chunk_scanning: i64 = 1;
+        while chunk_scanning == 1 {
+            if i >= n {
+                let tc: Token = Token { kind: T_FSTR_CHUNK, start: chunk_start, end: i, value: 0, text: text };
+                let pc: i64 = toks.push(tc);
+                let te: Token = Token { kind: T_ERR, start: begin_start, end: i, value: L003, text: "" };
+                let pe: i64 = toks.push(te);
+                return i;
+            } else {
+            }
+            let c: i64 = src.byte_at(i);
+            if c == 34 {
+                chunk_scanning = 0;
+            } else {
+                if c == 123 {
+                    let nx: i64 = peek_at(src, i + 1, n);
+                    if nx == 123 {
+                        text = text.concat("{");
+                        i = i + 2;
+                    } else {
+                        at_hole = 1;
+                        chunk_scanning = 0;
+                    }
+                } else {
+                    if c == 125 {
+                        let nx2: i64 = peek_at(src, i + 1, n);
+                        if nx2 == 125 {
+                            text = text.concat("}");
+                            i = i + 2;
+                        } else {
+                            text = text.concat("}");
+                            i = i + 1;
+                        }
+                    } else {
+                        if c == 92 {
+                            let e: i64 = peek_at(src, i + 1, n);
+                            if e < 0 {
+                                i = i + 1;
+                                chunk_scanning = 0;
+                            } else {
+                                if e == 34 {
+                                    text = text.concat("\"");
+                                    i = i + 2;
+                                } else {
+                                    if e == 92 {
+                                        text = text.concat("\\");
+                                        i = i + 2;
+                                    } else {
+                                        if e == 110 {
+                                            text = text.concat("\n");
+                                            i = i + 2;
+                                        } else {
+                                            if e == 116 {
+                                                text = text.concat("\t");
+                                                i = i + 2;
+                                            } else {
+                                                if e == 123 {
+                                                    text = text.concat("{");
+                                                    i = i + 2;
+                                                } else {
+                                                    if e == 125 {
+                                                        text = text.concat("}");
+                                                        i = i + 2;
+                                                    } else {
+                                                        let clen: i64 = utf8_len(e);
+                                                        let piece: str = src.substr(i + 1, i + 1 + clen);
+                                                        text = text.concat(piece);
+                                                        i = i + 1 + clen;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let clen2: i64 = utf8_len(c);
+                            let lit: str = src.substr(i, i + clen2);
+                            text = text.concat(lit);
+                            i = i + clen2;
+                        }
+                    }
+                }
+            }
+        }
+        let tch: Token = Token { kind: T_FSTR_CHUNK, start: chunk_start, end: i, value: 0, text: text };
+        let pch: i64 = toks.push(tch);
+        if at_hole == 1 {
+            let hole_start: i64 = i;
+            i = i + 1;
+            let ths: Token = Token { kind: T_FSTR_HOLE_START, start: hole_start, end: i, value: 0, text: "" };
+            let phs: i64 = toks.push(ths);
+            let mut hole_scanning: i64 = 1;
+            while hole_scanning == 1 {
+                if i >= n {
+                    let teh: Token = Token { kind: T_ERR, start: hole_start, end: i, value: L003, text: "" };
+                    let peh: i64 = toks.push(teh);
+                    return i;
+                } else {
+                }
+                let hc: i64 = src.byte_at(i);
+                if hc == 125 {
+                    let hole_end: i64 = i;
+                    i = i + 1;
+                    let the: Token = Token { kind: T_FSTR_HOLE_END, start: hole_end, end: i, value: 0, text: "" };
+                    let phe: i64 = toks.push(the);
+                    hole_scanning = 0;
+                } else {
+                    i = lex_step(src, i, n, toks);
+                }
+            }
+        } else {
+            let end_start: i64 = i;
+            i = i + 1;
+            let tend: Token = Token { kind: T_FSTR_END, start: end_start, end: i, value: 0, text: "" };
+            let pend: i64 = toks.push(tend);
+            return i;
+        }
+    }
+    return i;
+}
+
+// PR-E3: one tokenization step at byte `i` (i < n). Skips a whitespace byte or a `//`
+// comment (pushing nothing), or pushes exactly one token — or, for `f"`, the whole
+// f-string token sequence via scan_fstring. Returns the next index (always > i, so the
+// caller's loop terminates). Shared by `lex` AND f-string hole scanning so a hole's
+// inner tokens are byte-identical to top-level tokens. `toks` is @Mut (the caller sees
+// every push); extracted verbatim from the old `lex` body + the new `f"` branch.
+fn lex_step(src: str, i: i64, n: i64, toks: Vec<Token> @Mut) -> i64 ! { Alloc } {
+    let b: i64 = src.byte_at(i);
+    if is_ws(b) {
+        return i + 1;
+    } else {
+    }
+    if is_comment_start(src, i, n) {
+        return skip_comment(src, i, n);
+    } else {
+    }
+    if b == 34 {
+        let ss: StrScan = scan_string(src, i, n);
+        if ss.ok == 1 {
+            let t: Token = Token { kind: T_STR, start: i, end: ss.end, value: 0, text: ss.text };
+            let pushed: i64 = toks.push(t);
+        } else {
+            let te: Token = Token { kind: T_ERR, start: i, end: ss.end, value: L003, text: "" };
+            let pushede: i64 = toks.push(te);
+        }
+        return ss.end;
+    } else {
+    }
+    if is_digit(b) {
+        let (ntag, nend, nval) = scan_number(src, i, n);
+        let t: Token = Token { kind: ntag, start: i, end: nend, value: nval, text: "" };
+        let pushed: i64 = toks.push(t);
+        return nend;
+    } else {
+    }
+    if b == 102 {
+        let nx: i64 = peek_at(src, i + 1, n);
+        if nx == 34 {
+            return scan_fstring(src, i, n, toks);
+        } else {
+        }
+    } else {
+    }
+    if is_alpha(b) {
+        let start: i64 = i;
+        let mut j: i64 = i;
+        while j < n {
+            let c: i64 = src.byte_at(j);
+            if is_alnum(c) {
+                j = j + 1;
+            } else {
+                break;
+            }
+        }
+        let lex_view: str = src.substr(start, j);
+        let tag: i64 = ident_tag(lex_view);
+        let mut bval: i64 = 0;
+        if tag == T_BOOL {
+            if lex_view.bytes_eq("true") {
+                bval = 1;
+            } else {
+            }
+        } else {
+        }
+        let t: Token = Token { kind: tag, start: start, end: j, value: bval, text: "" };
+        let pushed: i64 = toks.push(t);
+        return j;
+    } else {
+    }
+    let (otag, olen) = scan_op(src, i, n);
+    let mut ekind: i64 = otag;
+    let mut eval: i64 = 0;
+    if otag == T_UNKNOWN {
+        ekind = T_ERR;
+        eval = L004;
+    } else {
+    }
+    let t: Token = Token { kind: ekind, start: i, end: i + olen, value: eval, text: "" };
+    let pushed: i64 = toks.push(t);
+    return i + olen;
+}
+
+// ── the scan ─────────────────────────────────────────────────────────────────
+pub fn lex(src: str) -> Vec<Token> ! { Alloc } {
+    let mut toks: Vec<Token> = Vec::new();
+    let n: i64 = src.len();
+    let mut i: i64 = 0;
+    while i < n {
+        i = lex_step(src, i, n, toks);
+    }
+    let eof: Token = Token { kind: T_EOF, start: n, end: n, value: 0, text: "" };
+    let last: i64 = toks.push(eof);
+    return toks;
+}
+
+// ── harness encoder (not part of the lexer proper) ───────────────────────────
+// Serialize a token stream as `records|pool` and ship it via `encode(lex(src)).as_output()`.
+//   records: `tag,start,end,f4;…` — f4 is the decoded IntLit i64 / BoolLit 1|0, or for a
+//            StrLit the decoded byte-length; 0 otherwise. All four fields are non-negative
+//            integers, so the `,`-delimited record stays unambiguous.
+//   pool:    the StrLit decoded values, concatenated in token order. A `|` (which never
+//            appears in records) separates the two; the host splits on the FIRST `|` and
+//            length-walks the pool, so arbitrary value bytes (`,`/`;`/`|`/newline) are safe.
+// The host parses + compares against `lex_with_id` (ET-2/ET-3). Each per-token record is a
+// small fresh string; they accumulate in a `Vec<str>` and a single `join` (one allocation
+// from a pre-summed length) emits the whole buffer — O(tokens), not O(tokens²) re-copying.
+pub fn encode(toks: Vec<Token>) -> str ! { Alloc } {
+    let mut recs: Vec<str> = Vec::new();
+    let mut pieces: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    let n: i64 = toks.len();
+    while i < n {
+        let t: Token = toks.get(i);
+        let kstr: str = t.kind.itoa();
+        let c1: str = kstr.concat(",");
+        let sstr: str = t.start.itoa();
+        let c2: str = c1.concat(sstr);
+        let c3: str = c2.concat(",");
+        let estr: str = t.end.itoa();
+        let c4: str = c3.concat(estr);
+        let c5: str = c4.concat(",");
+        let mut f4: i64 = t.value;
+        if t.kind == T_STR {
+            let tlen: i64 = t.text.len();
+            f4 = tlen;
+            let pushedp: i64 = pieces.push(t.text);
+        } else {
+            if t.kind == T_FSTR_CHUNK {
+                // PR-E3: an f-string chunk carries its decoded text exactly like a
+                // StrLit — f4 = byte-length, the bytes go to the pool in token order.
+                let tlen2: i64 = t.text.len();
+                f4 = tlen2;
+                let pushedc: i64 = pieces.push(t.text);
+            } else {
+            }
+        }
+        let vstr: str = f4.itoa();
+        let c6: str = c5.concat(vstr);
+        let c7: str = c6.concat(";");
+        let pushedr: i64 = recs.push(c7);
+        i = i + 1;
+    }
+    let empty: str = "";
+    let recjoined: str = empty.join(recs);
+    let pooljoined: str = empty.join(pieces);
+    let withbar: str = recjoined.concat("|");
+    let full: str = withbar.concat(pooljoined);
+    return full;
+}

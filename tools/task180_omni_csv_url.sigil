@@ -1,0 +1,74 @@
+// TASK: omni csv url — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read CSV file, extract first column of first data row as URL, fetch it.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Skip header (first line), then extract bytes until ',' or '\n' on second line.
+    let mut line_idx: i64 @Internal = 0;
+    let mut row_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < file_len {
+        let b: i64 @Internal = load8(file_ptr + i);
+        if b == 10 {
+            line_idx = line_idx + 1;
+            if line_idx == 1 {
+                row_start = i + 1;
+                i = file_len;
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+
+    // Find end of URL (comma or newline or EOF)
+    let mut url_end: i64 @Internal = file_len;
+    let mut j: i64 @Internal = row_start;
+    while j < file_len {
+        let b2: i64 @Internal = load8(file_ptr + j);
+        if b2 == 44 {
+            if url_end == file_len {
+                url_end = j;
+            } else {
+            }
+        } else {
+        }
+        if b2 == 10 {
+            if url_end == file_len {
+                url_end = j;
+            } else {
+            }
+        } else {
+        }
+        j = j + 1;
+    }
+
+    let url_len: i64 @Internal = url_end - row_start;
+
+    let zero_i32: i32 @Internal = input_len - input_len;
+    let one_i32: i32 @Internal = input_len / input_len;
+    let mut out_i32: i32 @Internal = zero_i32;
+    let mut k: i64 @Internal = 0;
+    while k < url_len {
+        let bb: i64 @Internal = load8(file_ptr + row_start + k);
+        store8(input_ptr + out_i32, bb);
+        out_i32 = out_i32 + one_i32;
+        k = k + 1;
+    }
+    return http_get(input_ptr, out_i32);
+}

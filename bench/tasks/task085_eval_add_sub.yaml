@@ -1,0 +1,25 @@
+id: task085_eval_add_sub
+source_path: tools/task085_eval_add_sub.sigil
+difficulty: intermediate
+description: |
+  Write a Sigil tool that evaluates a simple arithmetic expression of
+  decimal integers joined by `+` and `-` operators, evaluated strictly
+  left-to-right (no operator precedence, no spaces, no parentheses). For
+  example "3+4" returns "7", "10-3-2" returns "5", "100-50+25" returns
+  "75". The result may be negative (render a leading '-'). Return the
+  packed `(out_ptr * 4294967296 + len)` of the decimal-string buffer.
+signature: "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc }"
+required_attrs: []
+required_effects: ["Alloc"]
+required_grants: {}
+fuel_budget: 200000
+inputs:
+  - name: add
+    value: "3+4"
+  - name: chain_sub
+    value: "10-3-2"
+  - name: chain_add
+    value: "1+2+3+4"
+  - name: mixed
+    value: "100-50+25"
+expected_output_strategy: capture_from_reference

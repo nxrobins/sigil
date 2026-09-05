@@ -1,0 +1,71 @@
+// TASK: sort bytes — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let bins_ptr = alloc(1024);
+    let mut zero_i = 0;
+
+    while zero_i < 1024 {
+        store8(bins_ptr + zero_i, 0);
+        zero_i = zero_i + 1;
+    }
+
+    let mut i = 0;
+    while i < input_len {
+        let b = load8(input_ptr + i);
+        let slot = bins_ptr + b * 4;
+        let c0 = load8(slot);
+
+        if c0 < 255 {
+            store8(slot, c0 + 1);
+        } else {
+            store8(slot, 0);
+            let c1 = load8(slot + 1);
+
+            if c1 < 255 {
+                store8(slot + 1, c1 + 1);
+            } else {
+                store8(slot + 1, 0);
+                let c2 = load8(slot + 2);
+
+                if c2 < 255 {
+                    store8(slot + 2, c2 + 1);
+                } else {
+                    store8(slot + 2, 0);
+                    let c3 = load8(slot + 3);
+                    store8(slot + 3, c3 + 1);
+                }
+            }
+        }
+
+        i = i + 1;
+    }
+
+    let out_ptr = alloc(input_len);
+    let mut out_i = 0;
+    let mut byte = 0;
+
+    while byte < 256 {
+        let slot = bins_ptr + byte * 4;
+        let c0 = load8(slot);
+        let c1 = load8(slot + 1);
+        let c2 = load8(slot + 2);
+        let c3 = load8(slot + 3);
+        let count = c0 + c1 * 256 + c2 * 65536 + c3 * 16777216;
+        let mut k = 0;
+
+        while k < count {
+            store8(out_ptr + out_i, byte);
+            out_i = out_i + 1;
+            k = k + 1;
+        }
+
+        byte = byte + 1;
+    }
+
+    return out_ptr * 4294967296 + input_len;
+}

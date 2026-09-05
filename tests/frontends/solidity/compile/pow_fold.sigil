@@ -1,0 +1,21 @@
+module pow_fold;
+
+record C { __fe_unit: bool }
+
+impl C {
+    pub fn new() -> C {
+        return C { __fe_unit: false };
+    }
+
+    pub fn a(self: C) -> u256 {
+        return 1000000000000000000;
+    }
+
+    pub fn b(self: C) -> u256 {
+        return 512;
+    }
+
+    pub fn c(self: C) -> u256 {
+        return (1000 * 1000000);
+    }
+}

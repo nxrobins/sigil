@@ -1,0 +1,29 @@
+module short_circuit;
+
+record Guards { __fe_unit: bool }
+
+impl Guards {
+    pub fn new() -> Guards {
+        return Guards { __fe_unit: false };
+    }
+
+    pub fn inRange(self: Guards, x: u256) -> bool {
+        let mut __fe_0: bool = (x > 0);
+        if __fe_0 {
+            __fe_0 = (x < 100);
+        }
+        return __fe_0;
+    }
+
+    pub fn either(self: Guards, a: u256, flag: bool) -> u256 {
+        let mut __fe_0: bool = (a > 10);
+        if __fe_0 {
+        } else {
+            __fe_0 = flag;
+        }
+        if __fe_0 {
+            return 1;
+        }
+        return 0;
+    }
+}

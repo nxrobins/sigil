@@ -1,0 +1,31 @@
+description: CLI source for command parsing, compile orchestration, ToolForge, and diagnostic rendering
+includes:
+  - crates/sigil-cli/src/
+excludes:
+  - crates/sigil-cli/target/
+context: |
+  This scope is the implementation-level view of the CLI.
+  Keep it thin: parse arguments, call compiler/runtime APIs, and present
+  diagnostics or compile results clearly.
+
+  Avoid reimplementing language semantics here; if a rule belongs to parsing or
+  type checking, push it back into `sigil-compiler`.
+
+  The current CLI has three orchestration roles:
+  - compile/check and runtime boot for full Sigil modules
+  - ToolForge compilation and ephemeral execution with grants and fuel controls
+  - template-registry management over `sigil-registry`
+
+  It should keep translating user intent into compiler/runtime/registry API calls
+  without rebuilding shared runtime metadata or accumulating host-state logic of
+  its own.
+related:
+  - crates/sigil-cli/.scope
+  - crates/sigil-abi/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-registry/.scope
+tags:
+  - cli
+  - src
+  - diagnostics
+  - toolforge

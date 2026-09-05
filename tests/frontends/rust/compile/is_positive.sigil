@@ -1,0 +1,4 @@
+module is_positive;
+pub fn is_positive(x: i64) -> bool {
+  return (x > 0);
+}

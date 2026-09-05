@@ -1,0 +1,78 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            CrossField {
+                clause: RefinementClause {
+                    field: "lo",
+                    op: Le,
+                    rhs: Field(
+                        "hi",
+                    ),
+                    span: Span {
+                        start: 1244,
+                        end: 1258,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                lhs_value: 5,
+                rhs_value: 10,
+                site: Span {
+                    start: 1325,
+                    end: 1348,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "cross-field refinement violated at construction: predicate `lo <= hi` is refutable at the supplied values lhs = 5, rhs = 10",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1325,
+                            end: 1348,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging cross-field refinement `lo <= hi` at lhs = 5, rhs = 10",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 1325,
+                            end: 1348,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

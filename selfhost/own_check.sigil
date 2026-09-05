@@ -1,0 +1,533 @@
+// SH-OWN self-hosted ownership shadow; see docs/specs/self-hosting-completion-ladder.md.
+// (This leading comment lets the differential's `\nmodule own_check;\n` strip match, exactly like
+// lexer.sigil/parser.sigil/typecheck.sigil — keeping all fns in the merged `module tool;`.)
+module own_check;
+
+// SH-OWN — self-hosted ownership shadow (prefix own_). Composed (module header stripped) into
+// own_check_differential alongside lexer + parser + typecheck; reuses PNode + P_K_* (parser) and
+// tc_seg_at, tc_cap_name_of_typenode, tc_fn_body, tc_build_caps/tc_build_recs, TcRec/TcCap
+// (typecheck). Mirrors the oracle ownership::verify's O001 (use-after-move) + O007
+// (move-while-borrowed) over LINEAR CAPS on a STRAIGHT-LINE, cap-only corpus. The production oracle
+// propagates may-moved/may-borrowed state across AIR CFG edges; this parse-tree shadow's flat per-fn
+// sets are compared only on the declared straight-line subset.
+// The sink taxonomy has TWO disjoint roles:
+//   MOVE sites (check-then-mark): Call arg, Spawn cap/fuel arg, CapRestrict/CapSplit receiver,
+//     Send/Ask message cap.
+//   USE-CHECK-ONLY (check, never mark): Return value, CapDraw receiver, Borrow src.
+// O007: a `&c` records c BORROWED; every modeled consuming call/spawn/send/restrict/split/return
+// site checks that set before applying O001 move state. Output = a `;`-joined `O001;`/`O007;`
+// stream in program (pre-order-DFS) order, with O007 before O001 at one consume site.
+
+const OWN_MODE_USE: i64 = 0;
+const OWN_MODE_MOVE: i64 = 1;
+
+// Module ids under `root`: a P_K_PROGRAM wrapper's children, or the bare P_K_MODULE root.
+fn own_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i64> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    if rn.kind == P_K_PROGRAM {
+        let mut i: i64 = 0;
+        while i < rn.child_count {
+            let cid: i64 = kids.get(rn.child_start + i);
+            let pushed: i64 = out.push(cid);
+            i = i + 1;
+        }
+    } else {
+        let pushed: i64 = out.push(root);
+    }
+    return 0;
+}
+
+// The cap type a var is bound to, or "" (not a cap). Most-recent-first (a shadowing re-`let` wins
+// for later uses). Mirrors cap_env_find.
+fn own_env_find(env_names: Vec<str>, env_caps: Vec<str>, name: str) -> str {
+    let n: i64 = env_names.len();
+    let mut i: i64 = n - 1;
+    let mut found: str = "";
+    let mut scanning: bool = true;
+    while scanning {
+        if i < 0 {
+            scanning = false;
+        } else {
+            let cand: str = env_names.get(i);
+            if cand.bytes_eq(name) {
+                found = env_caps.get(i);
+                scanning = false;
+            } else {
+                i = i - 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Has `name` been recorded moved in this fn (straight-line block)?
+fn own_is_moved(moved: Vec<str>, name: str) -> bool {
+    let n: i64 = moved.len();
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let cand: str = moved.get(i);
+            if cand.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Has `name` been borrowed earlier in this straight-line function? The production oracle carries
+// active borrows over CFG edges; the shadow is intentionally compared only where flat source order
+// and CFG order coincide. OWN-2.
+fn own_is_borrowed(borrowed: Vec<str>, name: str) -> bool {
+    let n: i64 = borrowed.len();
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= n {
+            scanning = false;
+        } else {
+            let cand: str = borrowed.get(i);
+            if cand.bytes_eq(name) {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// The cap type a `let` binds, or "" (not cap-typed). Annotated `let x: T = …` → the annotation's cap
+// name; un-annotated `let x = recv.restrict/split/draw(…)` → the receiver's cap type (the ops
+// preserve cap type). Mirrors cap_let_type.
+fn own_let_type(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, env_names: Vec<str>, env_caps: Vec<str>) -> str ! { Alloc } {
+    let ln: PNode = nodes.get(letid);
+    if ln.child_count == 2 {
+        let tid: i64 = kids.get(ln.child_start);
+        let capn: str = tc_cap_name_of_typenode(nodes, tid, rdefs, cdefs);
+        return capn;
+    } else {
+    }
+    if ln.child_count == 1 {
+        let rid: i64 = kids.get(ln.child_start);
+        let rn: PNode = nodes.get(rid);
+        let mut isop: bool = false;
+        if rn.kind == P_K_CAP_RESTRICT {
+            isop = true;
+        } else {
+        }
+        if rn.kind == P_K_CAP_RESTRICT_DEADLINE {
+            isop = true;
+        } else {
+        }
+        if rn.kind == P_K_CAP_SPLIT {
+            isop = true;
+        } else {
+        }
+        if rn.kind == P_K_CAP_DRAW {
+            isop = true;
+        } else {
+        }
+        if isop {
+            let recv: str = tc_seg_at(rn.text, 0);
+            let capn: str = own_env_find(env_names, env_caps, recv);
+            return capn;
+        } else {
+        }
+    } else {
+    }
+    return "";
+}
+
+// One cap use: if `name` is a linear cap that was already moved → emit O001. At a MOVE site, then
+// record it moved (only the first move — a later use produces the O001). A non-cap name is a no-op.
+fn own_use(mode: i64, name: str, env_names: Vec<str>, env_caps: Vec<str>, moved: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let capn: str = own_env_find(env_names, env_caps, name);
+    if capn.len() > 0 {
+        let already: bool = own_is_moved(moved, name);
+        if already {
+            let q: i64 = diags.push("O001;");
+        } else {
+        }
+        if mode == OWN_MODE_MOVE {
+            if already {
+            } else {
+                let qm: i64 = moved.push(name);
+            }
+        } else {
+        }
+    } else {
+    }
+    return 0;
+}
+
+// One consuming cap use: moving a live borrow is O007, then the ordinary O001 use/move logic runs.
+// `mode=USE` is for a return terminator: return consumes for O007 but has no successor on which a
+// newly-recorded move could matter, matching the AIR oracle's terminator treatment.
+fn own_consume(mode: i64, name: str, env_names: Vec<str>, env_caps: Vec<str>, moved: Vec<str> @Mut, borrowed: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let capn: str = own_env_find(env_names, env_caps, name);
+    if capn.len() > 0 {
+        let live: bool = own_is_borrowed(borrowed, name);
+        if live {
+            let q7: i64 = diags.push("O007;");
+        } else {
+        }
+    } else {
+    }
+    return own_use(mode, name, env_names, env_caps, moved, diags);
+}
+
+// The single body walk (pre-order DFS = source order = the oracle's CFG order on straight-line
+// code). Threads the append-only env (cap bindings) + the moved-set. A P_K_LET adds
+// its cap binding AFTER its RHS is walked (the RHS's uses/moves emit first).
+fn own_walk(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, env_names: Vec<str> @Mut, env_caps: Vec<str> @Mut, moved: Vec<str> @Mut, borrowed: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    if n.kind == P_K_LET {
+        let capn: str = own_let_type(nodes, kids, nid, rdefs, cdefs, env_names, env_caps);
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        if capn.len() > 0 {
+            let qn: i64 = env_names.push(n.text);
+            let qc: i64 = env_caps.push(capn);
+        } else {
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_CALL {
+        let mut ai: i64 = 0;
+        while ai < n.child_count {
+            let aid: i64 = kids.get(n.child_start + ai);
+            let an: PNode = nodes.get(aid);
+            if an.kind == P_K_PATH {
+                let e: i64 = own_consume(OWN_MODE_MOVE, an.text, env_names, env_caps, moved, borrowed, diags);
+            } else {
+            }
+            ai = ai + 1;
+        }
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_SPAWN {
+        let mut ai: i64 = 1;
+        while ai < n.child_count {
+            let aid: i64 = kids.get(n.child_start + ai);
+            let an: PNode = nodes.get(aid);
+            if an.kind == P_K_PATH {
+                let e: i64 = own_consume(OWN_MODE_MOVE, an.text, env_names, env_caps, moved, borrowed, diags);
+            } else {
+            }
+            ai = ai + 1;
+        }
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_SEND {
+        let e: i64 = own_walk_msg(nodes, kids, nid, env_names, env_caps, moved, borrowed, diags);
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_ASK {
+        let e: i64 = own_walk_msg(nodes, kids, nid, env_names, env_caps, moved, borrowed, diags);
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_CAP_RESTRICT {
+        let recv: str = tc_seg_at(n.text, 0);
+        let e: i64 = own_consume(OWN_MODE_MOVE, recv, env_names, env_caps, moved, borrowed, diags);
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_CAP_SPLIT {
+        let recv: str = tc_seg_at(n.text, 0);
+        let e: i64 = own_consume(OWN_MODE_MOVE, recv, env_names, env_caps, moved, borrowed, diags);
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_CAP_DRAW {
+        // draw READS the receiver but does NOT consume it (no `apply_moves` arm) — a use-check only.
+        let recv: str = tc_seg_at(n.text, 0);
+        let e: i64 = own_use(OWN_MODE_USE, recv, env_names, env_caps, moved, diags);
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_RETURN {
+        // the terminator's value is CHECKED against moved but never marks (apply_moves skips terminators).
+        if n.child_count >= 1 {
+            let vid: i64 = kids.get(n.child_start);
+            let vn: PNode = nodes.get(vid);
+            if vn.kind == P_K_PATH {
+                let e: i64 = own_consume(OWN_MODE_USE, vn.text, env_names, env_caps, moved, borrowed, diags);
+            } else {
+            }
+        } else {
+        }
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    if n.kind == P_K_BORROW {
+        // `&c` READS c (a use-check) but does NOT consume it; it also records c as BORROWED (OWN-2:
+        // a later move of a borrowed cap as a spawn fuel_cap → O007).
+        if n.child_count >= 1 {
+            let vid: i64 = kids.get(n.child_start);
+            let vn: PNode = nodes.get(vid);
+            if vn.kind == P_K_PATH {
+                let e: i64 = own_use(OWN_MODE_USE, vn.text, env_names, env_caps, moved, diags);
+                let bcap: str = own_env_find(env_names, env_caps, vn.text);
+                if bcap.len() > 0 {
+                    let qb: i64 = borrowed.push(vn.text);
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        let mut ci: i64 = 0;
+        while ci < n.child_count {
+            let cid: i64 = kids.get(n.child_start + ci);
+            let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+            ci = ci + 1;
+        }
+        return 0;
+    } else {
+    }
+    let mut ci: i64 = 0;
+    while ci < n.child_count {
+        let cid: i64 = kids.get(n.child_start + ci);
+        let r: i64 = own_walk(nodes, kids, cid, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+        ci = ci + 1;
+    }
+    return 0;
+}
+
+// A P_K_SEND / P_K_ASK: the child is the message ctor whose OWN args are the serialized caps (each
+// a MOVE). Do NOT recurse — the ctor parses as a P_K_CALL, and the plain walk would double-move it.
+fn own_walk_msg(nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, env_names: Vec<str>, env_caps: Vec<str>, moved: Vec<str> @Mut, borrowed: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let n: PNode = nodes.get(nid);
+    let mut mi: i64 = 0;
+    while mi < n.child_count {
+        let msgid: i64 = kids.get(n.child_start + mi);
+        let msg: PNode = nodes.get(msgid);
+        let mut pi: i64 = 0;
+        while pi < msg.child_count {
+            let pid: i64 = kids.get(msg.child_start + pi);
+            let pn: PNode = nodes.get(pid);
+            if pn.kind == P_K_PATH {
+                let e: i64 = own_consume(OWN_MODE_MOVE, pn.text, env_names, env_caps, moved, borrowed, diags);
+            } else {
+            }
+            pi = pi + 1;
+        }
+        mi = mi + 1;
+    }
+    return 0;
+}
+
+// True iff `fnid` (a P_K_FN) is generic — skipped (the oracle only ownership-checks monomorphized
+// instances; uncalled generics lower to zero AirFunctions).
+fn own_is_generic_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    let mut found: bool = false;
+    let mut scanning: bool = true;
+    while scanning {
+        if i >= fnn.child_count {
+            scanning = false;
+        } else {
+            let cid: i64 = kids.get(fnn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_TYPE_PARAM {
+                found = true;
+                scanning = false;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    return found;
+}
+
+// Check one fn/handler/init: seed the pre-env (actor state cap fields — empty for a module fn) +
+// cap params into a fresh env, fresh moved-set, then walk.
+fn own_check_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, seed_names: Vec<str>, seed_caps: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let mut env_names: Vec<str> = Vec::new();
+    let mut env_caps: Vec<str> = Vec::new();
+    let mut moved: Vec<str> = Vec::new();
+    let mut borrowed: Vec<str> = Vec::new();
+    let mut si: i64 = 0;
+    while si < seed_names.len() {
+        let sn: str = seed_names.get(si);
+        let sc: str = seed_caps.get(si);
+        let sq1: i64 = env_names.push(sn);
+        let sq2: i64 = env_caps.push(sc);
+        si = si + 1;
+    }
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            if cn.child_count >= 1 {
+                let tid: i64 = kids.get(cn.child_start);
+                let capn: str = tc_cap_name_of_typenode(nodes, tid, rdefs, cdefs);
+                if capn.len() > 0 {
+                    let qn: i64 = env_names.push(cn.text);
+                    let qc: i64 = env_caps.push(capn);
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        i = i + 1;
+    }
+    let body: i64 = tc_fn_body(nodes, kids, fnid);
+    if body >= 0 {
+        let r: i64 = own_walk(nodes, kids, body, rdefs, cdefs, env_names, env_caps, moved, borrowed, diags);
+    } else {
+    }
+    return 0;
+}
+
+// Walk an actor's ACTOR_INIT + HANDLER children as functions, pre-seeding the cap-typed state
+// fields (P_K_FIELD children) into every handler/init env.
+fn own_check_actor(nodes: Arena<PNode>, kids: Vec<i64>, actid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let an: PNode = nodes.get(actid);
+    let mut sfnames: Vec<str> = Vec::new();
+    let mut sfcaps: Vec<str> = Vec::new();
+    let mut fi: i64 = 0;
+    while fi < an.child_count {
+        let fcid: i64 = kids.get(an.child_start + fi);
+        let fcn: PNode = nodes.get(fcid);
+        if fcn.kind == P_K_FIELD {
+            if fcn.child_count >= 1 {
+                let ftid: i64 = kids.get(fcn.child_start);
+                let fcap: str = tc_cap_name_of_typenode(nodes, ftid, rdefs, cdefs);
+                if fcap.len() > 0 {
+                    let sq1: i64 = sfnames.push(fcn.text);
+                    let sq2: i64 = sfcaps.push(fcap);
+                } else {
+                }
+            } else {
+            }
+        } else {
+        }
+        fi = fi + 1;
+    }
+    let mut i: i64 = 0;
+    while i < an.child_count {
+        let cid: i64 = kids.get(an.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_ACTOR_INIT {
+            let r: i64 = own_check_fn(nodes, kids, cid, rdefs, cdefs, sfnames, sfcaps, diags);
+        } else {
+            if cn.kind == P_K_HANDLER {
+                let r: i64 = own_check_fn(nodes, kids, cid, rdefs, cdefs, sfnames, sfcaps, diags);
+            } else {
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Emit the `;`-joined O001 stream for the parsed program. The cap/record tables are built once
+// across all modules; every module fn + actor handler/init is checked in program order.
+pub fn own_encode(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { Alloc } {
+    let mut diags: Vec<str> = Vec::new();
+
+    let mut mods: Vec<i64> = Vec::new();
+    let cm: i64 = own_collect_modules(nodes, kids, root, mods);
+    let nmod: i64 = mods.len();
+
+    let mut cdefs: Vec<TcCap> = Vec::new();
+    let mut rdefs: Vec<TcRec> = Vec::new();
+    let mut bi: i64 = 0;
+    while bi < nmod {
+        let mid: i64 = mods.get(bi);
+        let bc: i64 = tc_build_caps(nodes, kids, mid, cdefs);
+        let br: i64 = tc_build_recs(nodes, kids, mid, rdefs);
+        bi = bi + 1;
+    }
+
+    let mut mi: i64 = 0;
+    while mi < nmod {
+        let mid: i64 = mods.get(mi);
+        let mn: PNode = nodes.get(mid);
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                let gen: bool = own_is_generic_fn(nodes, kids, cid);
+                if gen {
+                } else {
+                    let empty_names: Vec<str> = Vec::new();
+                    let empty_caps: Vec<str> = Vec::new();
+                    let rf: i64 = own_check_fn(nodes, kids, cid, rdefs, cdefs, empty_names, empty_caps, diags);
+                }
+            } else {
+                if cn.kind == P_K_ACTOR {
+                    let ra: i64 = own_check_actor(nodes, kids, cid, rdefs, cdefs, diags);
+                } else {
+                }
+            }
+            i = i + 1;
+        }
+        mi = mi + 1;
+    }
+
+    let empty: str = "";
+    let diagj: str = empty.join(diags);
+    return diagj;
+}

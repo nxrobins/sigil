@@ -1,0 +1,14 @@
+// Attack: out-of-bounds array access triggers TrapIf -> Wasm unreachable
+// expect-error: T278
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let arr = [1, 2, 3];
+        let x = arr[5]; // MUTATION_SITE
+        return 0;
+    }
+}

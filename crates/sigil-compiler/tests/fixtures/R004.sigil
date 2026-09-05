@@ -1,0 +1,8 @@
+// R004: cross-ring call without trust escalation.
+#[ring(outer)] #[trusted]
+module outer_lib;
+pub fn helper(x: i64) -> i64 ! { Alloc } { return x + 1; }
+
+module main;
+use sigil::outer_lib;
+fn boot() -> i64 ! { Alloc } { return outer_lib::helper(41); }

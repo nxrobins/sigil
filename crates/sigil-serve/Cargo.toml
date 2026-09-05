@@ -1,0 +1,28 @@
+[package]
+name = "sigil-serve"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sigil-serve"
+path = "src/main.rs"
+
+[lib]
+name = "sigil_serve"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+sigil-compiler = { path = "../sigil-compiler", default-features = false, features = ["json"] }
+sigil-runtime = { path = "../sigil-runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+# Build a solver-verifying serve host: cert-gated tools then pass the
+# fresh-verification check without SIGIL_ALLOW_UNVERIFIED_CERT=1.
+solver = ["sigil-compiler/solver"]

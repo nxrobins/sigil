@@ -1,0 +1,54 @@
+// TASK: omni config http — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { FsIO, NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+// Read a URL from a config file on disk, then HTTP GET that URL.
+// Note: we stay in i32 ptr space throughout so fs_read / http_get args match.
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = fs_read(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+
+    // fs_read returns ptr|len in i64. Sigil lacks an i64->i32 cast, so we
+    // route the URL through the original input buffer: write the URL bytes
+    // starting at input_ptr, then call http_get(input_ptr, new_len). This
+    // keeps all http_get arguments in i32 space.
+
+    let file_ptr: i64 @Internal = raw / 4294967296;
+    let file_len: i64 @Internal = raw - file_ptr * 4294967296;
+
+    // Strip trailing newline from file content
+    let mut url_end: i64 @Internal = file_len;
+    if url_end > 0 {
+        let last: i64 @Internal = load8(file_ptr + url_end - 1);
+        if last == 10 {
+            url_end = url_end - 1;
+        } else {
+        }
+    } else {
+    }
+
+    // Copy the URL bytes INTO the original input buffer region. input_ptr is
+    // an i32 address — we walk using i32 counters so the final http_get call
+    // can accept the original input_ptr directly.
+    let zero_i32: i32 @Internal = input_len - input_len;
+    let one_i32: i32 @Internal = input_len / input_len;
+    let mut out_i32: i32 @Internal = zero_i32;
+    let mut in_i64: i64 @Internal = 0;
+    while in_i64 < url_end {
+        let b: i64 @Internal = load8(file_ptr + in_i64);
+        store8(input_ptr + out_i32, b);
+        out_i32 = out_i32 + one_i32;
+        in_i64 = in_i64 + 1;
+    }
+
+    return http_get(input_ptr, out_i32);
+}

@@ -1,0 +1,15 @@
+.env
+.venv/
+# Run payloads stay local by default. Published evidence manifests are tracked.
+runs/
+!runs/
+runs/*
+!runs/*/
+runs/*/*
+!runs/*/transcripts.sha256
+!runs/*/transcripts.archive.json
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/

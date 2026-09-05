@@ -1,0 +1,16 @@
+// A `fn` item inside an actor body, where only `state`, `init`, or `on` belong.
+// Before the recovery-progress guard this did not merely reject: item recovery
+// parked on `fn` without consuming it, so `check` never returned. SR-016.
+// expect-error: P011
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    fn misplaced() -> i64 { return 1; } // MUTATION_SITE
+
+    on Start() -> i64 {
+        return 0;
+    }
+}

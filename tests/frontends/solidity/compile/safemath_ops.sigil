@@ -1,0 +1,33 @@
+module safemath_ops;
+
+record C { __fe_unit: bool }
+
+impl C {
+    pub fn new() -> C {
+        return C { __fe_unit: false };
+    }
+
+    pub fn fadd(self: C, a: u256, b: u256) -> u256 {
+        return (a + b);
+    }
+
+    pub fn fsub(self: C, a: u256, b: u256) -> u256 {
+        return (a - b);
+    }
+
+    pub fn fmul(self: C, a: u256, b: u256) -> u256 {
+        return (a * b);
+    }
+
+    pub fn fdiv(self: C, a: u256, b: u256) -> u256 {
+        return (a / b);
+    }
+
+    pub fn fmod(self: C, a: u256, b: u256) -> u256 {
+        return (a % b);
+    }
+
+    pub fn chain(self: C, a: u256, b: u256, c: u256) -> u256 {
+        return ((a + b) - c);
+    }
+}

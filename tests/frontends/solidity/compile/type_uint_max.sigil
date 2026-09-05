@@ -1,0 +1,17 @@
+module type_uint_max;
+
+record C { allowance: BoundedMap_u256_u256_64 }
+
+impl C {
+    pub fn new() -> C {
+        return C { allowance: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn setInfinite(self: C @Mut, s: u256) {
+        self.allowance.insert(s, 115792089237316195423570985008687907853269984665640564039457584007913129639935);
+    }
+
+    pub fn isInfinite(self: C, s: u256) -> bool {
+        return (self.allowance.get_or(s, 0) == 115792089237316195423570985008687907853269984665640564039457584007913129639935);
+    }
+}

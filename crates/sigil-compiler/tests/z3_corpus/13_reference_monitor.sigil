@@ -1,0 +1,77 @@
+// expect-ok
+// Z3 corpus #13: axis-1 — Reference Monitor pattern via actor encapsulation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Trustless delegation is expressible TODAY using existing primitives:
+// actors + caps + linear move + non-consuming `.draw()` (step 10).
+// No new language constructs needed.
+//
+// A `FuelMonitor` actor owns a Fuel cap in its state and exposes a
+// single narrow operation `Burn(amount)` as a message. Clients hold
+// `ActorRef<FuelMonitor>`, never the underlying cap — they cannot
+// split, restrict, send, or otherwise manipulate the raw fuel. Their
+// only authority is to invoke the monitor's narrow interface, which
+// the monitor's handler implementation gates with its own logic
+// (`.draw(amount)` — non-consuming, so the monitor's state cap
+// persists across many `Burn` calls).
+//
+// WHY THIS MATTERS
+//
+// "Caps are first-class linear values, anyone holding them can split
+// and restrict" is a design choice that maximizes composability. But
+// some policies want STRICTER delegation: "I'll let actor X spend up
+// to 50 fuel units, but only via the narrow operations I define." A
+// raw Fuel cap given to X would let X split it further, send it to
+// other actors, or restrict and re-share — none of which the
+// delegator wants. The Reference Monitor pattern enforces the
+// narrower interface by NEVER exposing the raw cap: X gets an
+// ActorRef<Monitor>, the monitor holds the cap.
+//
+// This is a meaningful axis-1 expressibility result: a pattern that
+// many policy authors will reach for is writable today with
+// provable-safety guarantees inherited from the actor + cap system.
+// Without `.draw()` (pre-step-10), the Burn handler couldn't be
+// invoked more than once, since `.split()` consumes the parent —
+// fixture 09 documents that closure.
+//
+// END-TO-END SHAPE
+//
+// 1. `Main` holds the full Fuel cap in state.
+// 2. `Main.on Start` carves 50 units off via `fuel.draw(50)` — non-
+//    consuming, so Main keeps the rest.
+// 3. `Main` spawns `FuelMonitor` with the 50-unit sub-cap.
+// 4. FuelMonitor's `init(f: Fuel)` stores it as state.
+// 5. FuelMonitor's `on Burn(amount)` handler invokes
+//    `fuel.draw(amount)` to consume amount units. The sub-cap
+//    returned by draw falls out of scope at handler end (Sigil's
+//    drop semantics for linear caps).
+// 6. Clients with `ActorRef<FuelMonitor>` can `monitor.send(Burn(N))`
+//    or `monitor.ask(Burn(N)) -> i64` but cannot access the raw cap.
+//
+// MUTATION CONTRACT: not applicable. This is an `expect-ok` fixture
+// (positive evidence of expressibility). Removing any line would
+// break compilation, not flip a verdict.
+module sigil;
+cap type Fuel {}
+
+actor FuelMonitor {
+    state { fuel: Fuel }
+
+    init(f: Fuel) {}
+
+    on Burn(amount: i64) -> i64 {
+        let _consumed = fuel.draw(amount);
+        return amount;
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let monitor_fuel = fuel.draw(50);
+        let _monitor = spawn::<FuelMonitor>(monitor_fuel);
+        return 1;
+    }
+}

@@ -1,0 +1,42 @@
+// expect-ok
+// Z3 corpus #35: axis-1 — Wall 4 Step 3 semantic equivalence over i64.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `value > -1` and `copy >= 0` define the same integer set on i64
+// (since x > -1 ⇔ x >= 0 for integers). Step 2 emitted T215 here
+// because `(Gt, -1) != (Ge, 0)` syntactically. Step 3's V14 amendment
+// (via V33) admits Z3-backed implication: `∃x. (x > -1) ∧ ¬(x >= 0)`
+// has no integer solution → Unsat → subsumption holds → accept.
+//
+// This is the "different op + different literal, semantically
+// equivalent" case. It's the cleanest demonstration that Step 3 is
+// NOT just "syntactic equality with a different shape" but actual
+// semantic implication.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixture 34 — Step 2 attachment + Step 3 V33 dispatcher.
+// The encoding details (operator translation in
+// `check_refinement_subsumption`) carry the semantic equivalence
+// through to Z3 unchanged.
+//
+// MUTATION CONTRACT
+//
+// Not applicable (expect-ok). Replacing the destination with
+// `where copy > 0` (strict positive) would flip this into a T215
+// case because (x > -1) does NOT imply (x > 0); x=0 is a
+// counterexample.
+module sigil;
+
+record Almost { value: i64 } where value > -1
+
+record NonNeg { copy: i64 } where copy >= 0
+
+entry actor Main {
+    on Tick() -> i64 {
+        let a: Almost = Almost { value: 100 };
+        let n: NonNeg = NonNeg { copy: a.value };
+        return 1;
+    }
+}

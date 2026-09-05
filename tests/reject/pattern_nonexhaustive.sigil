@@ -1,0 +1,14 @@
+// Test: missing wildcard on integer match rejects
+// expect-error: T088
+module sigil;
+cap type Fuel {}
+
+fn bad(n: i64) -> i64 {
+    match n { 0 => { return 1; }, 1 => { return 2; } } // MUTATION_SITE
+    return 0;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 { return bad(0); }
+}

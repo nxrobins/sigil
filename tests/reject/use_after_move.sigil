@@ -1,0 +1,18 @@
+// A capability used after it has been moved into `spawn`.
+// expect-error: O001
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(worker: ActorRef<Worker>) {
+        let child1 = spawn::<Worker>(fuel);
+        let child2 = spawn::<Worker>(fuel); // MUTATION_SITE
+    }
+}
+
+actor Worker {
+    init(fuel: Fuel) {}
+    on Ping() {}
+}

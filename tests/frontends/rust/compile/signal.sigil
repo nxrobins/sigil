@@ -1,0 +1,15 @@
+module signal;
+enum Signal { Go, Stop, Wait }
+pub fn is_go(s: Signal) -> bool {
+  match s {
+    Signal::Go => { return true; },
+    _ => { return false; }
+  }
+}
+pub fn bucket(n: i64) -> i64 {
+  match n {
+    0 => { return 10; },
+    1 => { return 20; },
+    _ => { return 99; }
+  }
+}

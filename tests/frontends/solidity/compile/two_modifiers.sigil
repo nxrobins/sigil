@@ -1,0 +1,15 @@
+module two_modifiers;
+
+record C { owner: u256, paused: bool, x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { owner: 0, paused: false, x: 0 };
+    }
+
+    pub fn setX(self: C @Mut, __fe_sender: u256, v: u256) {
+        trap_if(!((__fe_sender == self.owner)));
+        trap_if(!(!(self.paused)));
+        self.x = v;
+    }
+}

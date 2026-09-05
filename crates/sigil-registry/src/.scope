@@ -1,0 +1,26 @@
+description: Registry source for SQLite-backed ToolForge template persistence
+includes:
+  - crates/sigil-registry/src/
+excludes:
+  - crates/sigil-registry/target/
+context: |
+  This scope is the implementation-level view of the registry crate.
+  Keep it focused on persistence, record shaping, and query ergonomics for tool
+  templates.
+
+  The current source owns:
+  - `TemplateRecord`, the in-memory representation of a stored tool template
+  - `TemplateStore`, the SQLite-backed access layer
+  - schema creation plus add/get/search/list/update/count helpers
+  - default template seeding for an empty registry
+
+  Avoid moving compiler validation or runtime execution into this crate; those
+  responsibilities stay in `sigil-compiler` and `sigil-runtime`.
+related:
+  - crates/sigil-registry/.scope
+  - crates/sigil-cli/.scope
+tags:
+  - registry
+  - src
+  - sqlite
+  - toolforge

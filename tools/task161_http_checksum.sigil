@@ -1,0 +1,67 @@
+// TASK: http checksum — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+fn xor_byte_pair(a_in: i64 @Internal, b_in: i64 @Internal) -> i64 @Internal ! {} {
+    let mut a: i64 @Internal = a_in;
+    let mut b: i64 @Internal = b_in;
+    let mut place: i64 @Internal = 1;
+    let mut result: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < 8 {
+        let ah: i64 @Internal = a / 2;
+        let bh: i64 @Internal = b / 2;
+        let ab: i64 @Internal = a - ah * 2;
+        let bb: i64 @Internal = b - bh * 2;
+        let s: i64 @Internal = ab + bb;
+        if s == 1 {
+            result = result + place;
+        } else {
+        }
+        a = ah;
+        b = bh;
+        place = place + place;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn hex_digit(n: i64 @Internal) -> i64 @Internal ! {} {
+    if n < 10 {
+        return 48 + n;
+    } else {
+        return 87 + n;
+    }
+}
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let mut acc: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i < body_len {
+        let b: i64 @Internal = load8(body_ptr + i);
+        acc = xor_byte_pair(acc, b);
+        i = i + 1;
+    }
+
+    let hi: i64 @Internal = acc / 16;
+    let lo: i64 @Internal = acc - hi * 16;
+    let out: i64 @Internal = alloc(4);
+    store8(out, 48);
+    store8(out + 1, 120);
+    store8(out + 2, hex_digit(hi));
+    store8(out + 3, hex_digit(lo));
+    return out * 4294967296 + 4;
+}

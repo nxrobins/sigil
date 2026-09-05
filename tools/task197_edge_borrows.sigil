@@ -1,0 +1,46 @@
+// TASK: edge borrows — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn render_decimal(n_in: i64) -> i64 ! { Alloc } {
+    if n_in == 0 {
+        let out = alloc(1);
+        store8(out, 48);
+        return out * 4294967296 + 1;
+    } else {
+        let scratch = alloc(20);
+        let mut digits = 0;
+        let mut n = n_in;
+        while n > 0 {
+            let q = n / 10;
+            let d = n - q * 10;
+            store8(scratch + digits, 48 + d);
+            digits = digits + 1;
+            n = q;
+        }
+        let out = alloc(digits);
+        let mut i = 0;
+        while i < digits {
+            let b = load8(scratch + digits - 1 - i);
+            store8(out + i, b);
+            i = i + 1;
+        }
+        return out * 4294967296 + digits;
+    }
+}
+
+// Helper that receives ptr/len "by value" (Sigil byte intrinsics use i64).
+// This is the closest to "passing a borrowed reference" in the current surface syntax.
+fn byte_count(p: i64, l: i64) -> i64 {
+    let _ = p;
+    return l;
+}
+
+// Return the byte count of the input (using a helper) as a decimal string.
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let count: i64 = byte_count(input_ptr, input_len);
+    return render_decimal(count);
+}

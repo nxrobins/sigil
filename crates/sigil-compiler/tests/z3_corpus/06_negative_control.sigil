@@ -1,0 +1,29 @@
+// expect-ok
+// Z3 corpus #6: representative-complexity negative control.
+//
+// A safe policy that exercises spawn and message-send with fully-authoritative
+// caps. Verification must pass cleanly. Detects false positives if Z3_RLIMIT
+// is set too tight, if any change makes Z3 over-reject, or if a future
+// refactor breaks an existing safe pattern.
+//
+// Same shape as the existing `tests/compile/cap_pipeline.sigil` plus a
+// fully-authoritative `worker.send` to also exercise the SerializeMessage
+// sink on a safe cap path.
+module sigil;
+cap type Fuel { burn, query }
+
+actor Worker {
+    init(f: Fuel) {}
+    on Burn(f: Fuel) {}
+    on Ping() -> i64 { return 0; }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start(worker: ActorRef<Worker>) -> i64 {
+        let child_fuel = fuel.split(50);
+        let _child = spawn::<Worker>(child_fuel);
+        return 1;
+    }
+}

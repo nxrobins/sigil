@@ -1,0 +1,45 @@
+description: Runtime source for actor hosting, grants, and ephemeral tool execution
+includes:
+  - crates/sigil-runtime/src/
+excludes:
+  - crates/sigil-runtime/target/
+context: |
+  This scope is the implementation-level view of the runtime crate.
+  It owns Wasmtime host wiring, actor lifecycle control, capability enforcement,
+  runtime fuel handling, I/O grants, and ephemeral tool execution.
+
+  Current runtime modules:
+  - `runtime.rs`: Wasmtime instantiation, host imports, bootstrapping, and message dispatch
+  - `actor.rs`: actor identity, lifecycle state, owned capabilities, and fuel
+  - `capability.rs`: runtime capability storage, fuel inspection, and splitting
+  - `message.rs`: queued message records and queue operations with stable handler ids
+  - `audit.rs`: append-only runtime events
+  - `supervisor.rs`: supervision strategy shape
+  - `fuel.rs`: local runtime fuel accounting
+  - `grants.rs`: filesystem and network grant types for ephemeral execution
+  - `ephemeral.rs`: one-shot tool execution with fuel metering and FFI/import wiring
+
+  Current runtime handoff:
+  - the runtime now expects structured module imports, actor specs, and handler specs
+    from `sigil-abi` instead of recovering everything from export names
+  - bootstrap consumes Wasm bytes alongside shared metadata so the host boundary
+    stays typed without duplicating compiler-owned artifacts
+  - host imports now mutate the actor/capability/message state directly, and queue
+    drain dispatches into exported Wasm handlers instead of only recording delivery
+  - runtime execution decodes the currently supported bounded payload types for
+    actor dispatch, while `execute_ephemeral` hosts tool modules without actor
+    machinery and gates I/O through `IoGrants`
+  - runtime init invocation is still bounded to the current cap-based spawn
+    contract; richer bootstrap provisioning and broader value decode remain future work
+
+  Preserve the crate boundary: compiler semantics still belong in
+  `sigil-compiler`, even as this runtime grows more executable.
+related:
+  - crates/sigil-abi/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-compiler/.scope
+tags:
+  - runtime
+  - src
+  - host
+  - toolforge

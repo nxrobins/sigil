@@ -1,0 +1,55 @@
+// TASK: http longest line — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i32) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { NetIO, Alloc, FFI, Unsafe }
+
+#[ring(outer)] #[trusted] module tool;
+
+extern "C" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };
+
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {
+    let raw: i64 @Internal = http_get(input_ptr, input_len);
+    if raw < 0 {
+        return raw;
+    } else {
+    }
+    let body_ptr: i64 @Internal = raw / 4294967296;
+    let body_len: i64 @Internal = raw - body_ptr * 4294967296;
+
+    let mut best_start: i64 @Internal = 0;
+    let mut best_len: i64 @Internal = 0;
+    let mut line_start: i64 @Internal = 0;
+    let mut i: i64 @Internal = 0;
+    while i <= body_len {
+        let mut eol: i64 @Internal = 0;
+        if i == body_len {
+            eol = 1;
+        } else {
+            let b: i64 @Internal = load8(body_ptr + i);
+            if b == 10 {
+                eol = 1;
+            } else {
+            }
+        }
+        if eol == 1 {
+            let ln: i64 @Internal = i - line_start;
+            if ln > best_len {
+                best_len = ln;
+                best_start = line_start;
+            } else {
+            }
+            line_start = i + 1;
+        } else {
+        }
+        i = i + 1;
+    }
+
+    let out: i64 @Internal = alloc(best_len);
+    let mut k: i64 @Internal = 0;
+    while k < best_len {
+        let bb: i64 @Internal = load8(body_ptr + best_start + k);
+        store8(out + k, bb);
+        k = k + 1;
+    }
+    return out * 4294967296 + best_len;
+}

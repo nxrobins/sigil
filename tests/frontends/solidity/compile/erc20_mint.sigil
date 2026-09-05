@@ -1,0 +1,15 @@
+module erc20_mint;
+
+record Token { balances: BoundedMap_u256_u256_64, totalSupply: u256 }
+
+impl Token {
+    pub fn new() -> Token {
+        return Token { balances: BoundedMap_u256_u256_64::new(), totalSupply: 0 };
+    }
+
+    pub fn mint(self: Token @Mut, account: u256, amount: u256) {
+        let mut __fe_w0: u256 = (self.totalSupply + amount);
+        self.balances.insert(account, self.balances.get_or(account, 0) + (amount));
+        self.totalSupply = __fe_w0;
+    }
+}

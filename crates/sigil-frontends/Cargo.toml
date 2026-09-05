@@ -1,0 +1,40 @@
+[package]
+name = "sigil-frontends"
+license.workspace = true
+version = "0.1.0"
+edition = "2024"
+
+# Foreign frontends: untrusted source-to-source translators that emit SIGIL
+# *text*, then let the mature Rust `sigil-compiler` verify it. See
+# `docs/specs/foreign-frontends.md`. The frontend is untrusted; SIGIL is the
+# trust anchor. No heavy parser dependencies — the TS subset is hand-lexed.
+[features]
+# Forward the compiler's Z3 solver. OFF by default — the frontend itself needs no
+# solver. Enabling it lets the RS4 refinement tests (the T224 enforcement demo + the
+# SR-5 fragment-pin round-trip) discharge preconditions; those tests are
+# `#[cfg(feature = "solver")]`. The workspace `--features solver` CI lane turns this
+# on. With it off, an emitted `where` clause still parses/type-checks (SIGIL skips
+# refinement discharge without the solver), so the non-solver tests stay green.
+solver = ["sigil-compiler/solver"]
+
+[dependencies]
+# Only the lexer/parser/source surface is used here (for the parse self-check
+# and keyword test); no solver by default. default-features=false keeps the CLI,
+# which also builds solver-off, from being flipped on via feature unification.
+sigil-compiler = { path = "../sigil-compiler", default-features = false }
+# SOL-ACCESS: compile-time `keccak256("literal")` folding. `Keccak256` is the
+# Ethereum Keccak (the original pre-FIPS padding), NOT `Sha3_256` — they produce
+# DIFFERENT digests. Vector integrity is pinned by named tests against
+# independently published references AND a second implementation (tiny-keccak,
+# dev-dep below) — EX-1: never trust one implementation or a from-memory vector.
+sha3 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# EX-1: the independent second Keccak-256 implementation the fold's emitted
+# constants are cross-checked against (test-only; never on the shipped path).
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+# `syn` is a DEV-ONLY differential oracle (SC-7): a test asserts the hand-rolled
+# RS0 parser agrees with real Rust on every in-subset fixture. It is NEVER on the
+# shipped/liveness path — the translator stays hand-rolled + totality-owned.
+syn = { version = "2", features = ["full"] }

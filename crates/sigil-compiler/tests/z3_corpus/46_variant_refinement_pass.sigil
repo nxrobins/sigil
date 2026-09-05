@@ -1,0 +1,45 @@
+// expect-ok
+// Z3 corpus #46: axis-1 — Wall 4 Step 6 variant refinement (positive).
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Wall 4 Step 6 admits per-variant `where` clauses on fully-named
+// enum-variant payloads. The parser produces `EnumVariant.refinements`
+// referencing the variant's named payload fields. The construction-site
+// dispatcher at `infer_call_expr`'s enum-variant branch consults
+// `universe.enum_variant_refinements` and `universe.enum_variant_field_names`
+// to map the i-th positional argument (per N9-S6) to the i-th declared
+// field, then runs the Step 1-style single-variable Z3 query
+// `check_refinement` for the Literal-RHS path.
+//
+// Construction `Positive(5)` supplies the i64 payload `5`. Z3 proves
+// `x > 0` (specifically `5 > 0`) — Unsat on the negation query — and
+// the construction is accepted.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+//   * Step 6 parser extension: named-payload form `V(x: i64)` (N4-S6).
+//   * Step 6 parser extension: per-variant `where` clause grammar.
+//   * Step 6 AST extension: `EnumVariantField { name, ty }` (cert v5).
+//   * `universe.enum_variant_refinements` + `enum_variant_field_names`
+//     lookup tables (N9-S6).
+//   * `check_variant_refinements_at_construction` dispatcher routing.
+//
+// MUTATION CONTRACT
+//
+// Swapping `5` for `-1` (any value `<= 0`) flips this to T220 (fixture
+// 47 demonstrates the rejecting half).
+module sigil;
+
+enum SignedInt {
+    Positive(x: i64) where x > 0,
+    Zero,
+    Negative(x: i64) where x < 0,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let p: SignedInt = Positive(5);
+        return 1;
+    }
+}

@@ -1,0 +1,347 @@
+# SIGIL diagnostic codes
+
+Generated from `crates/sigil-compiler/src/diagnostics/registry.rs` — do not edit by hand.
+Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnostic_doc_pages`.
+
+## Capability
+
+- [C001](C001.md) — Capability forgery
+- [C002](C002.md) — Capability provenance violation
+- [C003](C003.md) — Capability authority escalation
+- [C004](C004.md) — Capability verifier returned unknown
+- [C005](C005.md) — SMT query outside the decidable fragment (internal)
+- [C010](C010.md) — Capability from actor state consumed in a handler
+- [C011](C011.md) — `mut` actor-state field must be plain reassignable data
+- [C012](C012.md) — `mut` actor-state field's element shape is not yet preserved across dispatches
+- [R010](R010.md) — Non-capability spawn argument
+- [R011](R011.md) — Non-capability fuel argument
+- [R012](R012.md) — Non-cap source or destination at restrict/split
+- [R013](R013.md) — Minted capability has a non-matching destination
+- [T272](T272.md) — `mint` of a non-mintable capability type
+- [T273](T273.md) — `mint` site does not hold the minting authority
+- [T277](T277.md) — `mint … for <target>` target is not a resource
+## Effect
+
+- [E001](E001.md) — Undeclared effect required by callee
+- [E002](E002.md) — `handle Unsafe` requires a `#[trusted]` module
+- [E003](E003.md) — Inner-ring function declares a privilege effect
+- [E004](E004.md) — Effect-handler form not yet supported
+- [E005](E005.md) — Unknown effect operation in `perform`
+- [E006](E006.md) — Unknown effect in `perform`
+- [E007](E007.md) — Wrong argument count in `perform`
+- [E008](E008.md) — Handle does not cover the effect's operations
+- [E009](E009.md) — Bare `handle` on an effect with operations
+- [E010](E010.md) — Orphan `perform` of an undeclared effect
+- [E011](E011.md) — Invalid effect-row variable
+- [T001](T001.md) — Taint downgrade without declassification
+- [T020](T020.md) — Secret-dependent branch (CT001)
+- [T021](T021.md) — Secret-dependent loop (CT002)
+- [T022](T022.md) — Secret-dependent iteration (CT003)
+- [T023](T023.md) — Secret-dependent dispatch (CT004)
+- [T024](T024.md) — Secret-dependent array index (CT005)
+- [T025](T025.md) — Secret-dependent memory address (CT006)
+- [T026](T026.md) — Variable-time division (CT007)
+- [T027](T027.md) — `@SecretCT` value passed to extern function (CT010)
+- [T028](T028.md) — `@SecretCT` payload across actor boundary (CT014)
+- [T029](T029.md) — Secret-dependent allocation size (CT015)
+- [T030](T030.md) — `@Internal`/`@Secret` → `@SecretCT` upcast forbidden (CT016)
+- [T031](T031.md) — `declassify` rejects `@SecretCT` input (CT017)
+- [T032](T032.md) — `declassify_ct` input must be `@SecretCT`
+- [T033](T033.md) — Secret-dependent string content comparison
+## Internal
+
+- [I001](I001.md) — Internal compiler invariant violation
+- [I010](I010.md) — Internal compiler error: source-name attribution lost
+- [I011](I011.md) — Internal compiler error: impl method missing from generic_impl_methods
+- [I012](I012.md) — Internal compiler error: substituted_params arity mismatch with method AST
+- [I013](I013.md) — Internal compiler error: formal CSIR verification failed
+- [R800](R800.md) — Runtime error
+- [R801](R801.md) — Fuel exhausted
+- [R802](R802.md) — Missing Wasm export
+- [R803](R803.md) — Tool trapped during execution
+- [R804](R804.md) — Tool module missing `tool_main` entry point
+- [R806](R806.md) — Capability table error
+- [R807](R807.md) — Wasm validation or instantiation error
+- [R808](R808.md) — I/O grant set exceeds per-category cap
+- [R809](R809.md) — Verification certificate did not validate
+- [R810](R810.md) — Certificate file unreadable, not a regular file, or over 1 MB
+- [R811](R811.md) — Certificate JSON parse failure
+- [R812](R812.md) — Certificate schema version unsupported by gate
+- [R813](R813.md) — Source fingerprint mismatch
+- [R814](R814.md) — WASM inner-module fingerprint mismatch
+- [R815](R815.md) — WASM outer-module fingerprint mismatch or missing
+- [R816](R816.md) — Effect set mismatch between certificate and runtime
+- [R817](R817.md) — Certificate not solver-verified (Z3 proofs did not run)
+- [R818](R818.md) — Persistent heap exhausted
+- [R819](R819.md) — Formal security report or CSIR fingerprint mismatch
+## Lexer
+
+- [L001](L001.md) — Invalid integer literal
+- [L002](L002.md) — Invalid float literal
+- [L003](L003.md) — Unterminated string literal
+- [L004](L004.md) — Unexpected character
+- [L010](L010.md) — Source file is not valid UTF-8
+## ModuleSet
+
+- [M001](M001.md) — Filename does not match first module declaration
+- [M002](M002.md) — Duplicate module name across project
+- [M003](M003.md) — No entry point found in project
+- [M004](M004.md) — Multiple entry points found
+- [M005](M005.md) — Module declares both `tool_main` and `entry actor`
+- [M006](M006.md) — Project mixes tool entry and actor entry
+- [M007](M007.md) — Duplicate source-file name
+- [M008](M008.md) — Empty compilation set
+- [M009](M009.md) — Invalid source-file name
+- [M010](M010.md) — `--entry` references unknown module
+- [M011](M011.md) — Tool project declares an actor
+## NameResolution
+
+- [N001](N001.md) — Duplicate module
+- [N002](N002.md) — Duplicate item definition
+- [N003](N003.md) — Duplicate actor handler
+- [N004](N004.md) — Duplicate actor state field
+- [N005](N005.md) — Duplicate parameter name
+- [N006](N006.md) — Binding shadows actor state field
+- [N007](N007.md) — Unresolved `use` path
+- [N008](N008.md) — Ambiguous symbol from multiple `use` aliases
+- [N009](N009.md) — Cyclic module dependency
+- [N011](N011.md) — Invalid module name
+- [N012](N012.md) — Module-name case collision
+- [N013](N013.md) — Duplicate record field
+- [N014](N014.md) — Duplicate enum variant
+- [N015](N015.md) — Duplicate capability authority
+- [N016](N016.md) — Duplicate protocol state
+- [N017](N017.md) — Duplicate type parameter
+## Ownership
+
+- [O001](O001.md) — Use after move (or duplicate linear use)
+- [O006](O006.md) — Compatibility alias for T254 region escape
+- [O007](O007.md) — Move while borrowed
+## Parser
+
+- [P001](P001.md) — Expected token
+- [P002](P002.md) — Expected `module` declaration
+- [P003](P003.md) — Unknown ring annotation
+- [P004](P004.md) — Expected `}` to close module body
+- [P005](P005.md) — Expected `;` or `{` after module name
+- [P006](P006.md) — Expected item declaration
+- [P007](P007.md) — Expected ABI string after `extern`
+- [P008](P008.md) — Expected `fn` after extern ABI
+- [P009](P009.md) — Duplicate `state` block in actor
+- [P010](P010.md) — Duplicate `init` block in actor
+- [P011](P011.md) — Expected `state`, `init`, or `on` inside actor body
+- [P012](P012.md) — Expected `fn` inside `impl` block
+- [P013](P013.md) — Expected `,`, `;`, or `}` after field declaration
+- [P014](P014.md) — Expected literal value
+- [P015](P015.md) — Expected statement
+- [P017](P017.md) — Expected `in` after `for` loop variable
+- [P018](P018.md) — Expected `,`, `;`, or `}` after match arm
+- [P019](P019.md) — Expected pattern
+- [P020](P020.md) — Expected expression
+- [P021](P021.md) — Unknown taint label
+- [P022](P022.md) — Expected `Stop` or `Restart(n)` after `supervision:`
+- [P023](P023.md) — Expected `actor` keyword
+- [P024](P024.md) — `@in` must name a `Region` parameter
+- [P025](P025.md) — `where region(...)` must name `Region` parameters
+- [P026](P026.md) — Reserved keyword used as a name
+- [P027](P027.md) — Malformed higher-kinded type-parameter kind
+- [P028](P028.md) — Malformed state-kinded type-parameter binder
+- [P029](P029.md) — Inclusive range `..=` in a `for` header
+- [P030](P030.md) — `mut` on a non-state field
+- [P031](P031.md) — Effect row after a `Fn`-typed return binds to the declaration
+- [T213](T213.md) — Refinement RHS literal out of i32 range
+- [T214](T214.md) — Excess refinement clauses in a `where` position
+- [T218](T218.md) — Cross-field refinement self-references the same field
+- [T221](T221.md) — Pattern-narrowing or variant-refinement field-resolution conflict
+- [T223](T223.md) — Variant payload shape error
+- [T226](T226.md) — Refinement on generic function / closure / no-return function — rejected
+- [T228](T228.md) — Method-level type parameter shadows impl-block-level type parameter
+- [T229](T229.md) — Impl block declares duplicate type parameter names
+- [T230](T230.md) — Method `self`-param type-args don't mirror impl block's type parameters
+- [T239](T239.md) — Array-type size is out of range or not an integer literal
+## Ring
+
+- [R001](R001.md) — Outer-ring code cannot own capabilities
+- [R002](R002.md) — Capability reference returned from an outer-ring function
+- [R003](R003.md) — Inner-ring code cannot call `extern` functions
+- [R004](R004.md) — Direct cross-ring call requires a grant
+- [R005](R005.md) — Compatibility alias for T109 ring-error sanitization
+- [R006](R006.md) — `#[trusted]` requires `#[ring(outer)]`
+## SourceLimit
+
+- [S001](S001.md) — Source exceeds maximum byte size
+- [S002](S002.md) — Tool module missing `tool_main`
+- [S003](S003.md) — Source must not be empty
+- [S004](S004.md) — Too many modules in compilation unit
+- [S005](S005.md) — Source byte cap exceeded
+- [S006](S006.md) — Function count cap exceeded
+- [S007](S007.md) — Nesting depth cap exceeded (expression, block, or type)
+## TypeCheck
+
+- [T040](T040.md) — Constant value type mismatch
+- [T041](T041.md) — Let binding type mismatch
+- [T042](T042.md) — Cannot assign to immutable variable
+- [T043](T043.md) — Reassignment forbidden — value owns a linear or scope-tied resource
+- [T044](T044.md) — Missing return value
+- [T045](T045.md) — Assignment value type mismatch
+- [T046](T046.md) — Unsupported let binding annotation
+- [T047](T047.md) — `return` requires a value
+- [T048](T048.md) — Unit-returning function cannot return a value
+- [T049](T049.md) — Return value type mismatch
+- [T050](T050.md) — `if` condition must be `bool`
+- [T051](T051.md) — `while` condition must be `bool`
+- [T052](T052.md) — `for-in` requires an array
+- [T053](T053.md) — `match` arm guard must be `bool`
+- [T054](T054.md) — Numeric operator requires matching operands
+- [T055](T055.md) — Comparison operator requires comparable operands
+- [T060](T060.md) — Undefined local
+- [T062](T062.md) — Undefined function
+- [T064](T064.md) — Unknown actor
+- [T065](T065.md) — Actor has no such handler
+- [T066](T066.md) — Unknown type
+- [T067](T067.md) — Unknown actor in `ActorRef<T>`
+- [T068](T068.md) — Control-flow statement in `handle`/`region` body
+- [T069](T069.md) — Unknown effect
+- [T070](T070.md) — Function call arity mismatch
+- [T071](T071.md) — Function argument type mismatch
+- [T072](T072.md) — Enum variant constructed with wrong arity
+- [T073](T073.md) — Function returning `()` used as a value
+- [T074](T074.md) — Intrinsic call arity mismatch
+- [T075](T075.md) — Intrinsic argument type mismatch
+- [T080](T080.md) — Match arm after catch-all is unreachable
+- [T081](T081.md) — Match pattern type does not match scrutinee
+- [T082](T082.md) — Duplicate match pattern
+- [T083](T083.md) — Duplicate `_` match arm
+- [T084](T084.md) — Variant pattern against non-enum scrutinee
+- [T085](T085.md) — Enum variant pattern arity mismatch
+- [T086](T086.md) — Enum has no such variant
+- [T087](T087.md) — Non-exhaustive match (missing variants)
+- [T088](T088.md) — Non-exhaustive match (add `_` arm)
+- [T089](T089.md) — Cannot infer type of empty array literal
+- [T090](T090.md) — Entry actor must be named `Main`
+- [T091](T091.md) — Multiple entry actors
+- [T092](T092.md) — Actor capability state must be in `init`
+- [T093](T093.md) — `ask` timeout must be `i64`
+- [T094](T094.md) — Spawn init argument arity mismatch
+- [T095](T095.md) — Spawn init argument type mismatch
+- [T096](T096.md) — Spawn supports cap-typed init args only
+- [T097](T097.md) — Message target must be `ActorRef<T>`
+- [T098](T098.md) — `ask` requires handler to return a value
+- [T099](T099.md) — `ask` return type must be `Send`
+- [T100](T100.md) — `.restrict()` requires a capability
+- [T101](T101.md) — Unknown authority on `.restrict()`
+- [T102](T102.md) — `.split()` requires a capability
+- [T103](T103.md) — `.split()` amount must be `i64`
+- [T104](T104.md) — `grant` requires `&cap T`, not a slice
+- [T105](T105.md) — `grant` requires `&cap T`
+- [T106](T106.md) — `grant` closure parameter type mismatch
+- [T107](T107.md) — `grant` closure parameter arity
+- [T108](T108.md) — `grant` body must be a closure
+- [T109](T109.md) — Cross-ring return error must be `ErrorCode`
+- [T110](T110.md) — `declassify` requires `Cap<Declassify>`
+- [T111](T111.md) — `region` size limit must be numeric
+- [T112](T112.md) — `ask` return type currently restricted
+- [T113](T113.md) — Message constructor required
+- [T114](T114.md) — Message constructor must be a simple call
+- [T115](T115.md) — Send/ask handler arity mismatch
+- [T116](T116.md) — Send/ask handler argument type mismatch
+- [T117](T117.md) — Send/ask argument is not `Send`
+- [T118](T118.md) — Send/ask argument type currently restricted
+- [T120](T120.md) — Type has no such field
+- [T121](T121.md) — Type is not a record
+- [T122](T122.md) — Cannot access field on non-record value
+- [T123](T123.md) — Cannot assign to actor state in a handler
+- [T124](T124.md) — Actor state field assigned more than once in `init`
+- [T125](T125.md) — Actor state field not definitely assigned in `init`
+- [T126](T126.md) — An `init` block must not `return`
+- [T127](T127.md) — Closure cannot capture actor state
+- [T128](T128.md) — Cannot reassign a `mut` aggregate state field wholesale in a handler
+- [T130](T130.md) — Cannot call method on this type
+- [T131](T131.md) — Method call arity mismatch
+- [T132](T132.md) — No such method on type
+- [T133](T133.md) — Cannot borrow primitive type
+- [T140](T140.md) — Array element type mismatch
+- [T141](T141.md) — Cannot index non-array value
+- [T142](T142.md) — Array index must be integer
+- [T150](T150.md) — Could not infer type parameter
+- [T151](T151.md) — Monomorphization depth exceeded
+- [T155](T155.md) — Cross-module call to private function
+- [T156](T156.md) — Module name shadowed by local variable
+- [T160](T160.md) — Extern function must declare `FFI` effect
+- [T161](T161.md) — Extern function must declare `Unsafe` effect
+- [T170](T170.md) — Supervision `max_restarts` out of range
+- [T171](T171.md) — Supervision `max_restarts` must be integer literal
+- [T172](T172.md) — Supervision `max_restarts` must be compile-time literal
+- [T180](T180.md) — `?` error type mismatch
+- [T181](T181.md) — `?` requires `Result` return type
+- [T182](T182.md) — `?` requires a `Result` value
+- [T183](T183.md) — Record field cannot be capability-typed
+- [T184](T184.md) — Enum variant payload cannot be capability-typed
+- [T185](T185.md) — Cap type declares too many authorities
+- [T186](T186.md) — Array element cannot be capability-typed
+- [T190](T190.md) — Range pattern: lower bound greater than upper bound
+- [T191](T191.md) — `Slot<T>` requires T to be a capability type
+- [T192](T192.md) — `slot_new` requires a type argument
+- [T193](T193.md) — Type name `Slot` is reserved
+- [T195](T195.md) — Deadline-typed capability subtype mismatch
+- [T196](T196.md) — Parametric capability requires a deadline literal at this position
+- [T197](T197.md) — Non-parametric capability cannot accept a deadline literal
+- [T198](T198.md) — Invalid parametric capability declaration
+- [T199](T199.md) — Parametric capability literal is past the build-time deadline
+- [T200](T200.md) — `restrict_deadline` cannot extend, run on non-parametric, or narrow a multi-parameter cap
+- [T201](T201.md) — Parametric capability used with wrong number of values
+- [T210](T210.md) — Record construction violates a declared refinement predicate
+- [T211](T211.md) — Refinement check requires a literal field value
+- [T212](T212.md) — Refinement predicate references a non-i64 field
+- [T215](T215.md) — Refinement supplied does not match destination's required predicate
+- [T216](T216.md) — Cross-field refinement references a field missing or unsuppliable at construction
+- [T217](T217.md) — Refinement RHS `.length()` references a non-array field
+- [T219](T219.md) — Cross-field refinement RHS field is not `Type::I64`
+- [T220](T220.md) — Variant refinement predicate violated at construction
+- [T222](T222.md) — Variant refinement references a non-`Type::I64` payload field
+- [T224](T224.md) — Call-site argument violates declared parameter refinement
+- [T225](T225.md) — Function body `return` expression violates declared return refinement
+- [T227](T227.md) — Array size mismatch
+- [T231](T231.md) — Method dispatch arity mismatch with impl block's type parameters
+- [T232](T232.md) — Method dispatch receiver carries unresolved generic
+- [T233](T233.md) — Type parameter cannot be inferred at generic record construction
+- [T234](T234.md) — Conflicting type-parameter inferences across construction fields
+- [T236](T236.md) — Ambiguous bare enum variant constructor
+- [T237](T237.md) — Linear closure passed to non-linear `Fn(T) -> U` parameter
+- [T238](T238.md) — Slice operator requires a borrow
+- [T240](T240.md) — `.contains()` not admitted for this element type
+- [T241](T241.md) — `?` operator used across mismatched carriers (Option vs Result)
+- [T242](T242.md) — Generic aggregate instantiated with a capability-typed argument
+- [T243](T243.md) — Invalid assignment target
+- [T244](T244.md) — Ambiguous cross-module impl member
+- [T245](T245.md) — Type does not satisfy a trait bound
+- [T246](T246.md) — Trait method signature mismatch
+- [T248](T248.md) — Unknown trait in a type-parameter bound
+- [T249](T249.md) — Orphan trait impl
+- [T250](T250.md) — Conflicting trait impls
+- [T251](T251.md) — Mutation of a @ReadOnly value
+- [T252](T252.md) — Partial @ReadOnly guarantee on a reference/view type
+- [T253](T253.md) — Escape of a @ReadOnly value
+- [T254](T254.md) — Escape of a region-allocated value
+- [T255](T255.md) — Conflicting frozen and mutable arguments alias the same object
+- [T257](T257.md) — Private `str_from_raw` called outside module `string`
+- [T258](T258.md) — Cannot construct a sealed bounded collection outside its module
+- [T259](T259.md) — `for-in` iterator has a `next` of the wrong shape
+- [T260](T260.md) — `break` / `continue` outside a loop
+- [T261](T261.md) — Malformed tuple
+- [T262](T262.md) — Interpolation hole is not stringifiable
+- [T263](T263.md) — Cyclic type alias
+- [T264](T264.md) — Array pattern requires an array or slice scrutinee
+- [T265](T265.md) — Array pattern length cannot match fixed-size array
+- [T266](T266.md) — Wrong-state operation
+- [T269](T269.md) — Typestate construction has no pinned state
+- [T270](T270.md) — Constructor arity does not match the trait's higher-kinded `Self`
+- [T271](T271.md) — Type name contains `__`, reserved for monomorphization names
+- [T275](T275.md) — Typestate value stored in an aggregate
+- [T276](T276.md) — Undeclared state marker
+- [T278](T278.md) — Array index provably out of bounds
+- [T279](T279.md) — Diverging value (`never`) used as a value
+- [T280](T280.md) — Range-for bound is not `i64`
+- [T281](T281.md) — Unsupported reference or slice element type
+- [T282](T282.md) — Range pattern bound is not an integer literal
+- [T283](T283.md) — `tool_main` is not `pub`

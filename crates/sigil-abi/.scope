@@ -1,0 +1,33 @@
+description: Shared ABI crate for compiler/runtime host imports and runtime metadata
+includes:
+  - crates/sigil-abi/
+  - Cargo.toml
+excludes:
+  - crates/sigil-abi/target/
+context: |
+  This crate owns the shared runtime ABI boundary between compiler and runtime.
+  Put stable metadata types and import-name constants here when both the compiler
+  and runtime need the same shape.
+
+  Keep this crate intentionally small and dependency-light. It should not absorb
+  compiler passes, runtime execution logic, or CLI orchestration.
+
+  Current responsibilities:
+  - shared host import names for actor/runtime operations and outer-ring helpers:
+    `fuel_decrement`, `send`, `ask`, `spawn`, `alloc`, `cap_restrict`,
+    `cap_split`, and `fuel_exhausted`
+  - shared runtime metadata structs for modules, actors, handlers, and runtime
+    type descriptions
+  - small helper methods for entry actor discovery, handler lookup, and export counting
+related:
+  - crates/.scope
+  - crates/sigil-compiler/.scope
+  - crates/sigil-runtime/.scope
+  - crates/sigil-cli/.scope
+  - crates/sigil-abi/src/.scope
+tags:
+  - abi
+  - rust
+  - runtime
+  - shared
+  - host

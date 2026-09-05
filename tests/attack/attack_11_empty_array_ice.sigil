@@ -1,0 +1,13 @@
+// Attack: empty array literal should produce clean error, not ICE/panic
+// expect-error: T089
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let arr = []; // MUTATION_SITE
+        return 0;
+    }
+}

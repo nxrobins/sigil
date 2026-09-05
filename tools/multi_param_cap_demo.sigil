@@ -1,0 +1,25 @@
+// DEMONSTRATES: multi-parameter parametric capability types (Wall 3). A cap
+// type can compose multiple type-level constraints — here a deadline AND a
+// rate-limit — into one declaration. Subtyping is all-positions covariance:
+// `Limited(2031, 6) <: Limited(2030, 5)` because every position is strictly
+// larger (longer deadline + more uses = more permissive). Arity mismatch
+// at the usage site fires T201; any-position regression fires T195.
+// The helper fn below shows the call-site narrowing pattern; tool_main is
+// unchanged from the canonical echo shape.
+// INPUT: input_ptr (i64), input_len (i64). Echoed back as a packed result.
+// OUTPUT: i64 packed (len << 32) | ptr.
+// EFFECTS: ! { Alloc } on tool_main; helper fn has no effects.
+// SEE ALSO: tests/z3_corpus/23_multi_param_cap.sigil (expect-ok positive),
+// tests/z3_corpus/24_multi_param_arity_mismatch.sigil (expect-error T201).
+
+module tool;
+
+cap type Limited(deadline_ms: i64, max_uses: i64) {}
+
+fn settle_with_limited(c: Limited(2030, 5)) -> i64 {
+    return 1;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    return (input_len * 4294967296) + input_ptr;
+}

@@ -1,0 +1,17 @@
+name = "lambda-sigil"
+defaultTargets = ["LambdaSigil"]
+
+# λ-SIGIL — a mechanized core calculus of the SIGIL language, proving type safety +
+# capability-safety + effect-safety. See proofs/lean/README.md and the plan doc.
+#
+# Mathlib is pinned to a specific commit so that `lake exe cache get` finds prebuilt
+# .olean artifacts (Mathlib CI builds a cache for every master commit) and the build is
+# reproducible.  The lean-toolchain file matches this commit's required Lean version.
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "aaedc74a09fbe1da58b11cf4d27806a6fa1a86eb"
+
+[[lean_lib]]
+name = "LambdaSigil"

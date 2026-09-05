@@ -1,0 +1,32 @@
+// expect-ok
+// Z3 corpus #95: axis-2 — independent cap types don't interfere.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// Two different cap types (Fuel and Token) are independently tracked
+// by Z3. Restricting Fuel to {burn} does NOT affect Token's authority.
+// This verifies that the Z3 authority model is per-cap-type and
+// per-variable, not a single global authority state.
+//
+// Flow:
+//   fuel → restrict(burn) → restricted_fuel ({burn only})
+//   token → full authority unchanged
+//   needs_full_token(token) → OK (token is unrestricted)
+//
+// Without proper per-type tracking, restricting one cap type might
+// pollute the authority state of unrelated cap types. This fixture
+// pins that each cap variable's authority is tracked independently.
+module sigil;
+cap type Fuel { burn, query }
+cap type Token { read, write }
+
+fn needs_full_token(t: Token) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel, token: Token }
+
+    on Start() -> i64 {
+        let restricted_fuel: Fuel = fuel.restrict(burn);
+        return needs_full_token(token);
+    }
+}

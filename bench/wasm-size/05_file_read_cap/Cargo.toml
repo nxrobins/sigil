@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "file_read_cap_rust"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "main.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+panic = "abort"
+lto = true
+strip = true
+codegen-units = 1

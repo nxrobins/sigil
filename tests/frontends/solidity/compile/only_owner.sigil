@@ -1,0 +1,14 @@
+module only_owner;
+
+record C { owner: u256, x: u256 }
+
+impl C {
+    pub fn new() -> C {
+        return C { owner: 0, x: 0 };
+    }
+
+    pub fn setX(self: C @Mut, __fe_sender: u256, v: u256) {
+        trap_if(!((__fe_sender == self.owner)));
+        self.x = v;
+    }
+}

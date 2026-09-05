@@ -1,0 +1,41 @@
+// expect-error: T220
+// Z3 corpus #47: axis-1 — Wall 4 Step 6 variant refinement violation.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The rejecting counterpart of fixture #46. The variant `Positive(x: i64)`
+// declares `where x > 0`; the construction supplies `x: 0`. Z3 returns
+// `Sat` for `not(0 > 0)`, so T220 fires at the construction site with
+// the variant-qualified name `SignedInt::Positive`.
+//
+// Per V11 (inherited from Step 1), the dispatch maps Z3's `Sat` outcome
+// to a T220 with the violated predicate and the supplied literal.
+//
+// Positive-literal comparison chosen to avoid SIGIL's binary-subtraction
+// shape (`0 - 1`) which would be a `TypedExprKind::Binary` and fail
+// V1's literal-only check with T211 rather than the intended T220.
+//
+// THE LANGUAGE PRIMITIVES THIS NEEDED
+//
+// Same as fixture #46 — this is the negative-evidence half of the pair.
+// The verifier MUST reject; fixture #46 MUST accept.
+//
+// MUTATION CONTRACT
+//
+// Changing `0` to `5` (or any literal `> 0`) flips this fixture to
+// the expect-ok side and drops T220. Removing the `where x > 0` clause
+// weakens the contract entirely and drops T220.
+module sigil;
+
+enum SignedInt {
+    Positive(x: i64) where x > 0,
+    Zero,
+    Negative(x: i64) where x < 0,
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let p: SignedInt = Positive(0);  // MUTATION_SITE
+        return 1;
+    }
+}

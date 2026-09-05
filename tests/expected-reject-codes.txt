@@ -1,0 +1,25 @@
+# Code-coverage pin for the reject + attack fixture corpora: the exact set
+# of diagnostic codes carried by their expect-error headers. Checked by
+# set-equality in crates/sigil-cli/tests/harness.rs
+# (reject_and_attack_corpora_cover_the_pinned_code_set).
+#
+# Deleting the last fixture that witnesses a code fails the pin; a new code
+# entering the corpus is a visible diff here. Lives at the repo root (not as
+# constants in the harness) because the diagnostic census counts code-shaped
+# tokens in crates/**/tests files, comments and strings included.
+O001
+P001
+P002
+P011
+R001
+R002
+T043
+T054
+T088
+T089
+T094
+T095
+T096
+T120
+T133
+T278

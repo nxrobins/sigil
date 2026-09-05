@@ -1,0 +1,42 @@
+// expect-error: T184
+//
+// T184 — enum variant payload cannot be capability-typed.
+//
+// Companion to T183 (record fields). Before step 27 of the supremum
+// loop (axis 6, "fewer escape hatches") this source compiled cleanly.
+// A restricted cap could be wrapped in an enum variant payload, then
+// pattern-matched out — and the destructure binding `extracted` lost
+// its restriction provenance. Z3's authority tracker treated the
+// extracted cap as full authority by default (the same LoadField →
+// full_mask gap T183 closes for records, but reached via a different
+// AIR channel: EnumConstruct + match-bindings instead of field access).
+//
+// ABUSE VECTOR (verified live against the pre-step-27 commit):
+// `Wrapped(restricted)` constructed the variant; the match arm bound
+// the payload as `extracted`; `needs_full(extracted)` passed the
+// Call-sink check because Z3 saw the binding as a fresh
+// full-authority cap. The whole pipeline compiled to a 411-byte WASM
+// module with the unsafe flow live at runtime.
+//
+// AFTER STEP 27: T184 fires on the enum declaration itself. The
+// downstream attack code (wrapped/match/needs_full) is unreachable
+// because the enum definition is rejected first. Companion to T183
+// in `tests/attack/KNOWN_GAPS.md` "Attack 06b".
+module sigil;
+cap type Fuel { burn, query }
+
+enum CapBox { Wrapped(Fuel), Empty }
+
+fn needs_full(f: Fuel) -> i64 { return 1; }
+
+entry actor Main {
+    state { fuel: Fuel }
+    on Start() -> i64 {
+        let restricted: Fuel = fuel.restrict(burn);
+        let wrapped = Wrapped(restricted);
+        match wrapped {
+            Wrapped(extracted) => { needs_full(extracted); return 1; },
+            Empty => { return 0; },
+        }
+    }
+}

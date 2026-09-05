@@ -1,0 +1,69 @@
+// TASK: prime — agent-targeted demonstration tool.
+// INPUT: `input_ptr`/`input_len` (i64) point at the host-allocated input buffer.
+// OUTPUT: `i64` — packed result. Most tools pack `(len << 32) | ptr` for a buffer result, or return a single integer for arithmetic/counting tools. See the body for the exact encoding.
+// EFFECTS: ! { Alloc }
+
+module tool;
+
+fn parse_decimal(input_ptr: i64, input_len: i64) -> i64 {
+    let mut n = 0;
+    let mut i = 0;
+
+    while i < input_len {
+        let b = load8(input_ptr + i);
+        n = n * 10 + b - 48;
+        i = i + 1;
+    }
+
+    return n;
+}
+
+fn render_bool(flag: i64) -> i64 ! { Alloc } {
+    if flag == 1 {
+        let out_ptr = alloc(4);
+        store8(out_ptr, 116);
+        store8(out_ptr + 1, 114);
+        store8(out_ptr + 2, 117);
+        store8(out_ptr + 3, 101);
+        return out_ptr * 4294967296 + 4;
+    } else {
+        let out_ptr = alloc(5);
+        store8(out_ptr, 102);
+        store8(out_ptr + 1, 97);
+        store8(out_ptr + 2, 108);
+        store8(out_ptr + 3, 115);
+        store8(out_ptr + 4, 101);
+        return out_ptr * 4294967296 + 5;
+    }
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let n = parse_decimal(input_ptr, input_len);
+
+    if n < 2 {
+        return render_bool(0);
+    } else {
+        if n == 2 {
+            return render_bool(1);
+        } else {
+            let half = n / 2;
+            if half + half == n {
+                return render_bool(0);
+            } else {
+                let mut d = 3;
+                let mut prime = 1;
+
+                while d * d <= n {
+                    let q = n / d;
+                    if q * d == n {
+                        prime = 0;
+                    } else {
+                    }
+                    d = d + 2;
+                }
+
+                return render_bool(prime);
+            }
+        }
+    }
+}

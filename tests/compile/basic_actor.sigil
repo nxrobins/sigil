@@ -1,0 +1,10 @@
+module sigil;
+cap type Fuel {}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        return 42;
+    }
+}

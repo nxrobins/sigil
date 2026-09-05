@@ -1,0 +1,183 @@
+---
+source: crates/sigil-compiler/tests/snap_typecheck.rs
+expression: "&typed"
+---
+TypedProgram {
+    modules: [
+        TypedModule {
+            def_id: DefId(
+                0,
+            ),
+            name: "m",
+            ring: Inner,
+            trusted: false,
+            span: Span {
+                start: 0,
+                end: 117,
+                source: SourceId(
+                    4294967295,
+                ),
+            },
+            functions: [
+                TypedFunction {
+                    name: "m::pin_i64",
+                    export_name: "m__pin_i64",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [],
+                    captures: [],
+                    ret: I64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: I64,
+                                            kind: Call(
+                                                TypedCallExpr {
+                                                    callee: "m::identity__i64",
+                                                    args: [
+                                                        TypedExpr {
+                                                            ty: I64,
+                                                            kind: Literal(
+                                                                Int(
+                                                                    42,
+                                                                ),
+                                                            ),
+                                                            span: Span {
+                                                                start: 111,
+                                                                end: 113,
+                                                                source: SourceId(
+                                                                    4294967295,
+                                                                ),
+                                                            },
+                                                            refinement: None,
+                                                        },
+                                                    ],
+                                                },
+                                            ),
+                                            span: Span {
+                                                start: 95,
+                                                end: 114,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 88,
+                                        end: 115,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 82,
+                            end: 117,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 58,
+                        end: 117,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                TypedFunction {
+                    name: "m::identity__i64",
+                    export_name: "identity__i64",
+                    kind: ModuleFunction,
+                    externally_callable: true,
+                    params: [
+                        TypedParam {
+                            name: "x",
+                            ty: I64,
+                            taint: Public,
+                            flow: false,
+                            mutability: Default,
+                        },
+                    ],
+                    captures: [],
+                    ret: I64,
+                    ret_taint: Public,
+                    ret_flow: false,
+                    effects: EffectSet {
+                        effects: {},
+                    },
+                    body: TypedBlock {
+                        statements: [
+                            Return(
+                                TypedReturnStmt {
+                                    value: Some(
+                                        TypedExpr {
+                                            ty: I64,
+                                            kind: Local(
+                                                "x",
+                                            ),
+                                            span: Span {
+                                                start: 53,
+                                                end: 54,
+                                                source: SourceId(
+                                                    4294967295,
+                                                ),
+                                            },
+                                            refinement: None,
+                                        },
+                                    ),
+                                    span: Span {
+                                        start: 46,
+                                        end: 55,
+                                        source: SourceId(
+                                            4294967295,
+                                        ),
+                                    },
+                                },
+                            ),
+                        ],
+                        span: Span {
+                            start: 40,
+                            end: 57,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                        guaranteed_return: true,
+                    },
+                    span: Span {
+                        start: 10,
+                        end: 57,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+            ],
+        },
+    ],
+    records: {},
+    enums: {},
+    effect_registry: EffectRegistry {
+        effects: {
+            "FFI": 0,
+            "Unsafe": 1,
+        },
+        next_id: 2,
+    },
+    effect_ops: {},
+}

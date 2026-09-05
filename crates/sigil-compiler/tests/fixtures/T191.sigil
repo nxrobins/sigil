@@ -1,0 +1,16 @@
+// expect-error: T191
+//
+// T191 — `Slot<T>` requires T to be a capability type. The built-in
+// Slot exists specifically for capability accumulation; instantiating
+// it with a primitive bypasses the soundness reasoning that makes the
+// SlotPut / SlotTake Z3 source rule equivalent to direct cap flow.
+//
+// MUTATION_SITE: line 14. Change `i64` to a cap type declared in
+// scope and the fixture compiles cleanly — proving the test pins
+// T191's "T must be cap" requirement, not an incidental property.
+module main;
+
+fn boot() -> i64 {
+    let s = slot_new::<i64>();  // MUTATION_SITE — T must be a cap type
+    return 0;
+}

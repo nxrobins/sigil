@@ -1,0 +1,17 @@
+module caller_balance;
+
+record Wallet { balances: BoundedMap_u256_u256_64 }
+
+impl Wallet {
+    pub fn new() -> Wallet {
+        return Wallet { balances: BoundedMap_u256_u256_64::new() };
+    }
+
+    pub fn myBalance(self: Wallet, __fe_sender: u256) -> u256 {
+        return self.balances.get_or(__fe_sender, 0);
+    }
+
+    pub fn credit(self: Wallet @Mut, __fe_sender: u256, amount: u256) {
+        self.balances.insert(__fe_sender, (self.balances.get_or(__fe_sender, 0) + amount));
+    }
+}
