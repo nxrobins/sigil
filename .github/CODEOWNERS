@@ -1,0 +1,4 @@
+# Every path routes review to the maintainer. The public repository's "main: pull requests"
+# ruleset requires one approving review from a code owner for changes from anyone else; the
+# maintainer's own pull requests merge on green checks alone (GitHub forbids self-approval).
+* @nxrobins

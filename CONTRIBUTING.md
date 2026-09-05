@@ -64,6 +64,17 @@ fixture corpus and `crates/sigil-compiler/tests/parity_manifest.rs` enforces it.
   rather than a bare `.unwrap()`, and LF line endings for `.sigil`, `.tsv`, and the other
   text files `.gitattributes` pins.
 
+## How changes land
+
+Every change reaches `main` through a pull request; nobody pushes to it directly, the
+maintainer included. A pull request merges when the six required lanes are green (the build
+and test lane, formatting and clippy, the solver lane, hygiene — which includes the DCO
+sign-off check and the token sweep — the interpreter double-compilation, and workflow
+validity) and, for changes from anyone other than the maintainer, one approving review from a
+code owner (`.github/CODEOWNERS`). Workflow runs for pull requests from forks wait for the
+maintainer's approval before they execute, and the workflow token is read-only; no lane uses a
+secret. Release tags are created by the maintainer only.
+
 ## Proofs
 
 The Lean development under `proofs/lean` is gated by `scripts/check-no-sorry.sh`: no `sorry`,
