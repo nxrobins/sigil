@@ -9,7 +9,7 @@ identifier's SHA-256 is in tools/forbidden-token-hashes.txt, this script hashes 
 own words and word-sequences, and a match is a refusal. A grep for an identifier finds
 nothing; a commit that carries one still fails the hygiene lane.
 
-Matching. A word is a maximal run of ASCII letters and digits. A candidate is one to four
+Matching. A word is a maximal run of ASCII letters and digits. A candidate is one to five
 consecutive words joined by the exact separator text between them, provided no separator
 contains whitespace -- so `a/b`, `a-b-c`, `a_b`, and `a@b.c` are candidates exactly as
 written, and an identifier with different punctuation is a different identifier. Matching
@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HASHES = ROOT / "tools" / "forbidden-token-hashes.txt"
 PRIVATE_MANIFEST = ROOT / "export" / "keep-manifest.tsv"
 WORD = re.compile(r"[A-Za-z0-9]+")
-MAX_WORDS = 4
+MAX_WORDS = 5
 MIN_FILES = 50
 SKIP_DIRS = {".git", "target", ".lake", "node_modules", "__pycache__", ".venv"}
 # The campaign rule: the bare substring hits TAINT, MAIN, and DOMAIN, so it is a whole word.
