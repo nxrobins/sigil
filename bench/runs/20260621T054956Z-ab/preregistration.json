@@ -1,0 +1,29 @@
+{
+  "control_arm": "bare",
+  "decision_rule": {
+    "attempts_margin": 1,
+    "global_min_wins": 3,
+    "global_win_ratio": 2,
+    "pass_delta_threshold": 2
+  },
+  "git_sha": "1e36f2f436f287ce685ee3438bc1a63479a52c76",
+  "kind": "ab_preregistration",
+  "live": true,
+  "max_attempts": 5,
+  "model": "claude-sonnet-4-6",
+  "primary_metric": "pass_rate + median_attempts_passers (within-task paired)",
+  "repeats": 5,
+  "task_ids": [
+    "task001_echo",
+    "task011_palindrome",
+    "task020_rot13",
+    "task028_count_lines",
+    "task029_count_lines_via_stdlib",
+    "task032_sha256_hex",
+    "task045_http_size_via_stdlib",
+    "task061_json_field",
+    "task151_http_size"
+  ],
+  "treatment_arm": "full",
+  "variable": "diagnostic_detail"
+}

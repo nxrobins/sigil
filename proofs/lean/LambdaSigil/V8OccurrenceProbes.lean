@@ -1,4 +1,5 @@
 import LambdaSigil.CombinedSecurity
+import LambdaSigil.DecoderStream
 
 /-!
 # Retained v8 occurrence-policy counterexamples
@@ -107,7 +108,9 @@ theorem acyclic_backward_escape_retained_verifier_rejects :
   decide +kernel
 
 theorem acyclic_backward_escape_shared_bytes_decode :
-    decode acyclicBackwardEscapeBytes = some acyclicBackwardEscapeWire := by decide +kernel
+    decode acyclicBackwardEscapeBytes = some acyclicBackwardEscapeWire := by
+  -- Through the sequential twin (DecoderStream): 6.9 GB before, under 2 GB after.
+  exact (DecoderStream.decode_eq_decodeList _).trans (by decide +kernel)
 
 /-- The linked native verdict for the shared fixture bytes is the packed flow violation at node
     21 with detail 1: node-id in the high word, detail in bits 16..31, kind code 2 in the low
@@ -117,8 +120,10 @@ theorem acyclic_backward_escape_shared_bytes_rejected :
   have hverdict := acyclic_backward_escape_retained_verifier_rejects.2.2.1
   have hmanifest : semanticProgramNode? acyclicBackwardEscapeWire =
       some (semanticManifest 1 2 5 5 8) := by decide +kernel
-  simp only [verifyBytesWithRawSemantics, acyclic_backward_escape_shared_bytes_decode,
-    hmanifest, hverdict, Option.map_some, Option.getD_some]
+  -- `rw`, not `unfold` or `simp`: those reduce the match on the fixture's `decode` by
+  -- evaluating the indexed decoder in the elaborator (see PublicRegionProbes).
+  rw [verifyBytesWithRawSemantics, acyclic_backward_escape_shared_bytes_decode]
+  simp only [hmanifest, hverdict, Option.map_some, Option.getD_some]
   decide +kernel
 
 theorem acyclic_backward_escape_decoded_labels :

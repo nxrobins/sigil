@@ -1,4 +1,5 @@
 import LambdaSigil.CombinedSecurity
+import LambdaSigil.DecoderStream
 
 /-!
 Executable feasibility probes for the Public structured-region theorem. These are not a
@@ -107,7 +108,9 @@ theorem loop_header_wire_accepted : ProgramSafe loopHeaderWire := by
   decide +kernel
 
 theorem loop_header_shared_bytes_decode : decode loopHeaderBytes = some loopHeaderWire := by
-  decide +kernel
+  -- Through the sequential twin: the kernel walks the fixture's byte list once instead of
+  -- once per indexed read (14.7 GB before, under 2 GB after; DecoderStream).
+  exact (DecoderStream.decode_eq_decodeList _).trans (by decide +kernel)
 
 theorem loop_header_shared_bytes_accepted : verifyBytesWithRawSemantics loopHeaderBytes = 0 := by
   have hcheck := (linked_raw_semantic_verifier_acceptance_iff loopHeaderWire).mp
@@ -115,8 +118,11 @@ theorem loop_header_shared_bytes_accepted : verifyBytesWithRawSemantics loopHead
   have hmanifest : semanticProgramNode? loopHeaderWire =
       some (node .semProgram 1 1 3 6 17 4) := by
     decide +kernel
-  simp only [verifyBytesWithRawSemantics, loop_header_shared_bytes_decode, hmanifest,
-    hcheck, Option.map_none, Option.getD_none]
+  -- `rw`, not `unfold` or `simp`: those reduce the match on `decode loopHeaderBytes` by
+  -- evaluating the indexed decoder in the elaborator (6 GB); the equation lemma plus the decode
+  -- theorem leave `some loopHeaderWire` for simp to reduce by iota (1.4 GB).
+  rw [verifyBytesWithRawSemantics, loop_header_shared_bytes_decode]
+  simp only [hmanifest, hcheck, Option.map_none, Option.getD_none]
 
 theorem loop_header_start_well_formed (limit : Int) :
     StateWellFormed loopHeaderProgram (loopHeaderState limit) := by

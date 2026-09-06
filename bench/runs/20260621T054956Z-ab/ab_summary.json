@@ -1,0 +1,121 @@
+{
+  "variable": "diagnostic_detail",
+  "control_arm": "bare",
+  "treatment_arm": "full",
+  "model": "claude-sonnet-4-6",
+  "live": true,
+  "git_sha": "1e36f2f436f287ce685ee3438bc1a63479a52c76",
+  "repeats": 5,
+  "max_attempts": 5,
+  "n_tasks": 9,
+  "arms_complete": true,
+  "control_summary": {
+    "arm": "bare",
+    "n_results": 45,
+    "passed": 39,
+    "pass_rate": 0.8666666666666667,
+    "median_attempts_passers": 1.0
+  },
+  "treatment_summary": {
+    "arm": "full",
+    "n_results": 45,
+    "passed": 42,
+    "pass_rate": 0.9333333333333333,
+    "median_attempts_passers": 1.0
+  },
+  "per_task": [
+    {
+      "task_id": "task001_echo",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 1.0,
+      "treatment_median_attempts": 1.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task011_palindrome",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 1.0,
+      "treatment_median_attempts": 1.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task020_rot13",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 1.0,
+      "treatment_median_attempts": 1.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task028_count_lines",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 3.0,
+      "treatment_median_attempts": 2.0,
+      "verdict": "treatment"
+    },
+    {
+      "task_id": "task029_count_lines_via_stdlib",
+      "control_passed": 1,
+      "treatment_passed": 5,
+      "control_median_attempts": 3.0,
+      "treatment_median_attempts": 3.0,
+      "verdict": "treatment"
+    },
+    {
+      "task_id": "task032_sha256_hex",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 2.0,
+      "treatment_median_attempts": 2.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task045_http_size_via_stdlib",
+      "control_passed": 3,
+      "treatment_passed": 2,
+      "control_median_attempts": 2.0,
+      "treatment_median_attempts": 3.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task061_json_field",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 1.0,
+      "treatment_median_attempts": 1.0,
+      "verdict": "tie"
+    },
+    {
+      "task_id": "task151_http_size",
+      "control_passed": 5,
+      "treatment_passed": 5,
+      "control_median_attempts": 1.0,
+      "treatment_median_attempts": 1.0,
+      "verdict": "tie"
+    }
+  ],
+  "wins": {
+    "treatment": 2,
+    "control": 0,
+    "tie": 7
+  },
+  "verdict": "no_significant_difference",
+  "decision_rule": {
+    "pass_delta_threshold": 2,
+    "attempts_margin": 1,
+    "global_min_wins": 3,
+    "global_win_ratio": 2
+  },
+  "suggested_edits_presence": {
+    "with_edits": 0.0,
+    "total": 141.0,
+    "fraction": 0.0
+  },
+  "caveats": [
+    "Underpowered: 9 tasks × 5 repeats; temp≈1.0, no seed. Directional evidence, not proof.",
+    "suggested_edits appeared on 0/141 treatment diagnostics; the envelope-level verdict is not attributable to that one field."
+  ]
+}

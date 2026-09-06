@@ -6358,8 +6358,9 @@ mod tests {
             "rebuilding graph adjacency inside every cell is quadratic"
         );
 
-        let semantic_verifier =
-            lean_source_between("def semanticFunctionRecordOK", "private def readU8?");
+        // The verifier region ends where the wire decoder begins (`readU8?`, public since the
+        // kernel-cheap twin in DecoderStream.lean relates it to its stream reader).
+        let semantic_verifier = lean_source_between("def semanticFunctionRecordOK", "def readU8?");
         for cached_consumer in [
             "firstSemanticViolationList p index p.nodes.toList",
             "firstSemanticMetadataViolationList p index p.nodes.toList",

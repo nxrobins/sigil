@@ -114,21 +114,26 @@ private structure FixtureRecord where
   labelB : UInt8 := 0
   deriving Inhabited
 
-private def fixtureWord (bytes : ByteArray) (word : UInt32) : ByteArray :=
-  (List.range 4).foldl (fun bytes shift =>
-    bytes.push (UInt8.ofNat ((word.toNat / 2 ^ (8 * shift)) % 256))) bytes
+private def fixtureWord (bytes : List UInt8) (word : UInt32) : List UInt8 :=
+  bytes ++ (List.range 4).map fun shift => UInt8.ofNat ((word.toNat / 2 ^ (8 * shift)) % 256)
 
-private def fixtureName (bytes : ByteArray) (name : String) : ByteArray :=
-  fixtureWord bytes (UInt32.ofNat name.utf8ByteSize) ++ name.toUTF8
+private def fixtureName (bytes : List UInt8) (name : String) : List UInt8 :=
+  fixtureWord bytes (UInt32.ofNat name.utf8ByteSize) ++ name.toUTF8.data.toList
 
-private def fixtureWire (wireVersion : UInt32) (records : Array FixtureRecord) : ByteArray := Id.run do
-  let mut bytes := fixtureWord (fixtureWord "CSIR".toUTF8 wireVersion) (UInt32.ofNat records.size)
-  for i in [0:records.size] do
-    let record := records[i]!
-    bytes := bytes ++ ByteArray.mk #[record.tag, record.labelA, record.labelB, record.flags]
-    for word in record.fields do bytes := fixtureWord bytes word
-    bytes := fixtureWord (fixtureWord bytes (UInt32.ofNat (i + 1))) 0
-  return bytes
+/-- Fixture bytes are assembled as a list and wrapped once. `ByteArray.append` and `push` are
+    `copySlice` copies, which the kernel evaluates as indexed walks over the growing array: one
+    400-byte fixture cost 0.6 GB under `decide +kernel` (measured 2026-09-05). -/
+private def fixtureWire (wireVersion : UInt32) (records : Array FixtureRecord) : ByteArray :=
+  Id.run do
+    -- `CSIR`, the bytes of `"CSIR".toUTF8`.
+    let mut bytes := fixtureWord (fixtureWord [0x43, 0x53, 0x49, 0x52] wireVersion)
+      (UInt32.ofNat records.size)
+    for i in [0:records.size] do
+      let record := records[i]!
+      bytes := bytes ++ [record.tag, record.labelA, record.labelB, record.flags]
+      for word in record.fields do bytes := fixtureWord bytes word
+      bytes := fixtureWord (fixtureWord bytes (UInt32.ofNat (i + 1))) 0
+    return ⟨⟨bytes⟩⟩
 
 private def fixtureChunks (bytes : ByteArray) : Array FixtureRecord := Id.run do
   let mut records := #[]
@@ -172,17 +177,18 @@ private def ffiRecords (profile : ByteArray := ByteArray.empty) (operation : UIn
   ffiBase functionId ++ #[manifestRecord 5 profile.size 1 0 1] ++ fixtureChunks profile ++
     #[⟨46, #[2, operation, 3, 0, 0], 0, 0, 0⟩, rootRecord] ++ fixtureChunks "run".toUTF8
 
-private def profileBytes (name : String := "tick") (result : Bool := false) : ByteArray := Id.run do
-  let mut bytes := fixtureWord HostProfile.magic 1
-  bytes := fixtureName bytes "provider"
-  bytes := fixtureWord (fixtureWord bytes 1) 0
-  bytes := fixtureWord (fixtureWord bytes 0) 1
-  bytes := fixtureName (fixtureName bytes "ffi") name
-  bytes := bytes.push 0
-  bytes := fixtureWord bytes 0
-  bytes := fixtureWord bytes (if result then 1 else 0)
-  if result then bytes := bytes ++ ByteArray.mk #[0, 0]
-  return fixtureWord bytes 0
+private def profileBytes (name : String := "tick") (result : Bool := false) : ByteArray :=
+  Id.run do
+    let mut bytes := fixtureWord HostProfile.magic.data.toList 1
+    bytes := fixtureName bytes "provider"
+    bytes := fixtureWord (fixtureWord bytes 1) 0
+    bytes := fixtureWord (fixtureWord bytes 0) 1
+    bytes := fixtureName (fixtureName bytes "ffi") name
+    bytes := bytes ++ [0]
+    bytes := fixtureWord bytes 0
+    bytes := fixtureWord bytes (if result then 1 else 0)
+    if result then bytes := bytes ++ [0, 0]
+    return ⟨⟨fixtureWord bytes 0⟩⟩
 
 private def zeroArgumentLegacyBindingPreservesExactIdentity : Bool :=
     (decode (fixtureWire 9 (ffiRecords))).map (fun program =>
@@ -197,21 +203,50 @@ private def canonicalProfileBytesAndOperationBindingSurvive : Bool :=
       some (profileBytes, #[1])
 
 set_option maxRecDepth 100000 in
+private theorem profile_mode_identity_and_signature_mutants_are_refused_operation_without_profile :
+    decode (fixtureWire 9 (ffiRecords ByteArray.empty 1)) = none := by decide +kernel
+
+set_option maxRecDepth 100000 in
+private theorem profile_mode_identity_and_signature_mutants_are_refused_profile_without_operation :
+    decode (fixtureWire 9 (ffiRecords profileBytes 0)) = none := by decide +kernel
+
+set_option maxRecDepth 100000 in
+private theorem profile_mode_identity_and_signature_mutants_are_refused_wrong_identity :
+    decode (fixtureWire 9 (ffiRecords (profileBytes "tock") 1)) = none := by decide +kernel
+
+set_option maxRecDepth 100000 in
+private theorem profile_mode_identity_and_signature_mutants_are_refused_wrong_signature :
+    decode (fixtureWire 9 (ffiRecords (profileBytes "tick" true) 1)) = none := by decide +kernel
+
+/-- One kernel decision per conjunct: the kernel's caches accumulate across a conjunction,
+    so deciding the parts as separate declarations divides the peak (measured 2026-09-05). -/
 theorem profile_mode_identity_and_signature_mutants_are_refused :
     decode (fixtureWire 9 (ffiRecords ByteArray.empty 1)) = none ∧
       decode (fixtureWire 9 (ffiRecords profileBytes 0)) = none ∧
       decode (fixtureWire 9 (ffiRecords (profileBytes "tock") 1)) = none ∧
-      decode (fixtureWire 9 (ffiRecords (profileBytes "tick" true) 1)) = none := by decide +kernel
+      decode (fixtureWire 9 (ffiRecords (profileBytes "tick" true) 1)) = none :=
+  ⟨profile_mode_identity_and_signature_mutants_are_refused_operation_without_profile, profile_mode_identity_and_signature_mutants_are_refused_profile_without_operation, profile_mode_identity_and_signature_mutants_are_refused_wrong_identity, profile_mode_identity_and_signature_mutants_are_refused_wrong_signature⟩
 
 set_option maxRecDepth 100000 in
 theorem zero_argument_orphan_cannot_hide_missing_function_ownership :
     decode (fixtureWire 9 (ffiRecords ByteArray.empty 0 0)) = none := by decide +kernel
 
 set_option maxRecDepth 100000 in
+private theorem missing_binding_and_changed_operand_owner_are_refused_missing_binding :
+    decode (fixtureWire 9 ((ffiRecords).set! 5 (manifestRecord 5 0 0 0 1))) = none := by decide +kernel
+
+set_option maxRecDepth 100000 in
+private theorem missing_binding_and_changed_operand_owner_are_refused_changed_operand_owner :
+    decode (fixtureWire 9 ((ffiRecords).set! 4
+        ⟨38, #[3, 2, 0x6b636974, 0, 0], 3, 0, 0⟩)) = none := by decide +kernel
+
+/-- One kernel decision per conjunct: the kernel's caches accumulate across a conjunction,
+    so deciding the parts as separate declarations divides the peak (measured 2026-09-05). -/
 theorem missing_binding_and_changed_operand_owner_are_refused :
     decode (fixtureWire 9 ((ffiRecords).set! 5 (manifestRecord 5 0 0 0 1))) = none ∧
       decode (fixtureWire 9 ((ffiRecords).set! 4
-        ⟨38, #[3, 2, 0x6b636974, 0, 0], 3, 0, 0⟩)) = none := by decide +kernel
+        ⟨38, #[3, 2, 0x6b636974, 0, 0], 3, 0, 0⟩)) = none :=
+  ⟨missing_binding_and_changed_operand_owner_are_refused_missing_binding, missing_binding_and_changed_operand_owner_are_refused_changed_operand_owner⟩
 
 private def actorRecords : Array FixtureRecord :=
   #[functionRecord] ++
@@ -226,10 +261,21 @@ private def allActorSubtypesAreRetainedWithoutShapeInference : Bool :=
       program.actorBindings.map (·.subtype)) == some #[1, 2, 3, 4, 5]
 
 set_option maxRecDepth 100000 in
+private theorem unknown_actor_subtype_and_nonzero_root_padding_are_refused_unknown_actor_subtype :
+    decode (fixtureWire 9 (actorRecords.set! 7 ⟨47, #[2, 0, 0, 0, 0], 0, 0, 0⟩)) = none := by decide +kernel
+
+set_option maxRecDepth 100000 in
+private theorem unknown_actor_subtype_and_nonzero_root_padding_are_refused_nonzero_root_padding :
+    decode (fixtureWire 9 (tinyRecords.set! 3 ⟨45, #[0x6e7572, 0, 0, 0, 1], 0, 0, 0⟩)) =
+        none := by decide +kernel
+
+/-- One kernel decision per conjunct: the kernel's caches accumulate across a conjunction,
+    so deciding the parts as separate declarations divides the peak (measured 2026-09-05). -/
 theorem unknown_actor_subtype_and_nonzero_root_padding_are_refused :
     decode (fixtureWire 9 (actorRecords.set! 7 ⟨47, #[2, 0, 0, 0, 0], 0, 0, 0⟩)) = none ∧
       decode (fixtureWire 9 (tinyRecords.set! 3 ⟨45, #[0x6e7572, 0, 0, 0, 1], 0, 0, 0⟩)) =
-        none := by decide +kernel
+        none :=
+  ⟨unknown_actor_subtype_and_nonzero_root_padding_are_refused_unknown_actor_subtype, unknown_actor_subtype_and_nonzero_root_padding_are_refused_nonzero_root_padding⟩
 
 private def rootOccurrenceIsSeparateFromPayloadAndRejectsCt : Bool :=
     ((decode (fixtureWire 9 (tinyRecords.set! 2

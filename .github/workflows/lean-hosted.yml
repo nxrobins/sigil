@@ -1,0 +1,103 @@
+name: Lean (hosted)
+
+# The public development's Lean gate on a hosted runner: the Lean workflow the
+# public tree ships (docs/specs/open-source-split.md, OSS-7). lean.yml runs the
+# same three commands on the private Lean host and stays the private required
+# check, because a warm incremental run there is seconds and free while this is
+# a cold build on billed minutes; this job is the one a fork's pull request can
+# run, and it is the public repository's required check.
+#
+# It fits since 2026-09-05. The three modules that peaked at 14.7 / 10.6 / 7.2 GB
+# in one lean process (PublicRegionProbes, OccurrenceWireSecurity,
+# V8OccurrenceProbes; `/usr/bin/time -l lake env lean`, max RSS) now peak at
+# 1.8 / 3.2 / 1.6 GB. The production decoders are unchanged: kernel-decided
+# fixture theorems go through a sequential twin of the decoder with a proven
+# equivalence (proofs/lean/LambdaSigil/DecoderStream.lean), the v9 envelope
+# decodes its old prefix in place and checks its magic byte by byte instead of
+# copying, its fixtures are assembled as lists, and its conjunction theorems
+# are decided one conjunct per declaration. Every other module was under
+# 2.1 GB already, so Lake's default four-way schedule on a 16 GB runner has
+# headroom. Re-measure with the recipe above before adding a kernel-decided
+# fixture theorem: an indexed `get`, a `ByteArray.extract` or `append` under
+# `decide +kernel`, or an `unfold`/`simp` that reduces a match on a fixture's
+# `decode` in the elaborator, is what put the old peaks where they were.
+#
+# Gating. On the public repository this job ALWAYS runs. On the private
+# repository it runs only for a pull request labelled `ci-lean-hosted` (the
+# label takes effect immediately: `labeled` is a trigger) or a manual dispatch,
+# so private minutes are not spent duplicating the Mac lane. It is therefore a
+# required check ONLY on the public repository: a job skipped by `if:` reports
+# "skipped", which branch protection treats as satisfied, so requiring it where
+# it can skip would be a fail-open gate.
+#
+# No Actions cache, deliberately. Mathlib's prebuilt oleans come from
+# `lake exe cache get` on every run and the development builds cold. The last
+# hosted Lean lane saved `.lake` under a per-run key and evicted every Rust
+# cache in the repository (measured 2026-08-23); the 10 GB cache belongs to the
+# Rust lanes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lean-hosted:
+    # NAME IS PINNED: this exact string is the public repository's required
+    # status check, asserted by crates/sigil-runtime/tests/preserve_pins.rs
+    # (PIN-5) and installed by export/public_repo_protection.sh.
+    name: λ-SIGIL soundness (Lean 4, hosted)
+    if: >-
+      github.repository == 'nxrobins/sigil'
+      || github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'ci-lean-hosted')
+    runs-on: ubuntu-latest
+    # Measured budget: Mathlib's cache fetch, the cold build of the development
+    # on four cores, and the two gate passes, each of which re-elaborates the
+    # environment. Raise only with a timing from the Actions log.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: proofs/lean
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free up disk space
+        # The toolchain and Mathlib's olean store together need several GB on
+        # the root volume; the preinstalled SDKs are not used by this job.
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          df -h /
+
+      - name: Install pinned Lean verifier toolchain
+        uses: ./.github/actions/setup-lean
+
+      - name: Fetch prebuilt Mathlib oleans
+        run: lake exe cache get
+
+      - name: Build the Lambda-SIGIL development
+        run: lake build
+
+      - name: Gate self-test (fail-closed fence)
+        # Exercise every failure mode before trusting the no-sorry verdict, including a planted
+        # theorem whose clean-looking name hides a transitive safeMode dependency.
+        run: bash scripts/check-no-sorry.sh --self-test
+
+      - name: No-sorry / axiom-clean gate
+        # Reject sorry/admit and undeclared axioms, then traverse the production raw claim's
+        # elaborated dependency closure to reject sanitized or assumed-policy helpers.
+        run: bash scripts/check-no-sorry.sh
