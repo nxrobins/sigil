@@ -268,14 +268,15 @@ private def readRoot (function : Node) : Parser FunctionRootContract := do
   pure ⟨record.nodeId, record.w0, record.w1, record.w2, exportName, record.w4 == 1,
     record.flags, entryOccurrence, returnOccurrence⟩
 
-private def appendWord (bytes : ByteArray) (word : UInt32) : ByteArray :=
-  (List.range 4).foldl (fun bytes shift =>
-    bytes.push (UInt8.ofNat ((word.toNat / 2 ^ (8 * shift)) % 256))) bytes
-
-/-- Reconstruct only the old prefix header. The payload and old decoder are unchanged. -/
+/-- The old prefix, decoded in place. This is exactly what `Combined.decode` computes on the
+    reconstructed old header followed by the first `count` records: every header check of that
+    decoder holds by construction (the magic and old version would be written here, `count` is
+    at most the envelope's, and the envelope's size check guarantees the records are present),
+    so only its node loop remains, and it runs at the same offsets on the same bytes. The
+    prefix is not copied: a copy is a `copySlice`, which the kernel evaluates as an indexed
+    walk (1.6 GB for 400 bytes under `decide +kernel`, measured 2026-09-05). -/
 private def oldPrefix? (bytes : ByteArray) (count : Nat) : Option Combined.Program :=
-  let header := appendWord (appendWord "CSIR".toUTF8 Combined.wireVersion) (UInt32.ofNat count)
-  Combined.decode (header ++ bytes.extract headerBytes (headerBytes + count * nodeBytes))
+  (Combined.decodeNodes bytes count).map (⟨·⟩)
 
 private structure Declarations where
   hostProfileBytes : ByteArray
@@ -302,8 +303,11 @@ private def readBody (base : Combined.Program) (manifest : Record) : Parser Decl
 
 /-- Bounded canonical framing and declaration binding only. No accepted-policy bit is returned. -/
 def decode (bytes : ByteArray) : Option Program := do
-  if bytes.size > maxWireBytes || bytes.size < headerBytes ||
-      bytes.extract 0 4 != "CSIR".toUTF8 then none
+  if bytes.size > maxWireBytes || bytes.size < headerBytes then none
+  -- `CSIR`, read byte by byte: an `extract` is a copy, and the kernel evaluates a copy as an
+  -- indexed walk over the whole array (see `oldPrefix?`); four reads are four short walks.
+  if (← byte? bytes 0) != 0x43 || (← byte? bytes 1) != 0x53 ||
+      (← byte? bytes 2) != 0x49 || (← byte? bytes 3) != 0x52 then none
   if (← word? bytes 4) != version then none
   let count := (← word? bytes 8).toNat
   if count > maxNodes || bytes.size != headerBytes + count * nodeBytes then none

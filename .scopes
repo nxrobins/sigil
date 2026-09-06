@@ -1,0 +1,23 @@
+version: 1
+total_repo_tokens: 356
+
+scopes:
+  workspace:
+    path: crates/.scope
+    keywords: [workspace, cargo, crates, compiler, runtime, cli]
+  compiler:
+    path: crates/sigil-compiler/.scope
+    keywords: [compiler, parser, type-checker, air, z3, wasm]
+  runtime:
+    path: crates/sigil-runtime/.scope
+    keywords: [runtime, wasmtime, host, actors, dispatch, capabilities]
+  cli:
+    path: crates/sigil-cli/.scope
+    keywords: [cli, command-line, commands, compile, run]
+  mcp:
+    path: crates/sigil-mcp/.scope
+    keywords: [mcp, json-rpc, agent, server, sigil-check, sigil-forge]
+
+defaults:
+  max_tokens: 8000
+  include_related: false

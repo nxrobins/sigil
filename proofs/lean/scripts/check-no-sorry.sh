@@ -32,7 +32,7 @@ readonly ROOT_MODULE="LambdaSigil"
 readonly SOURCE_DIR="LambdaSigil"
 readonly AXIOM_TARGETS="axiom-targets.txt"
 readonly AXIOM_ALLOWLIST="axiom-allowlist.txt"
-readonly PIN_AXIOM_TARGETS=1297
+readonly PIN_AXIOM_TARGETS=1298
 readonly PIN_ALLOWED_AXIOMS=3
 # Zero, and confined nowhere: the public development carries no kernel-external proof. The
 # seventeen legacy `example` witnesses of the first interaction-net campaign live in the research

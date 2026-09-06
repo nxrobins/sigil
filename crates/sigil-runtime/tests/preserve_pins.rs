@@ -22,6 +22,7 @@ mod test_source;
 fn pin5_required_check_names_match_workflow_jobs() {
     const CI_YML: &str = include_str!("../../../.github/workflows/ci.yml");
     const WORKFLOW_LINT_YML: &str = include_str!("../../../.github/workflows/workflow-lint.yml");
+    const LEAN_HOSTED_YML: &str = include_str!("../../../.github/workflows/lean-hosted.yml");
     let required = [
         // Release-evidence validation lives in `hygiene`. A pending template that starts making
         // completion claims must block the same merge as a compiler or proof regression.
@@ -35,6 +36,15 @@ fn pin5_required_check_names_match_workflow_jobs() {
         // decoration, so the lane joins the required set here and on GitHub.
         ("interp-ddc", CI_YML, "  interp-ddc:"),
         ("workflows-parse", WORKFLOW_LINT_YML, "  workflows-parse:"),
+        // The public development's Lean gate on a hosted runner: the public repository's
+        // required check (export/public_repo_protection.sh installs it). Its context is the job
+        // NAME, not the job id. Its self-hosted twin, `lean.yml`, is the private required check
+        // and is pinned in `private_ci_pins.rs`, which does not ship.
+        (
+            "λ-SIGIL soundness (Lean 4, hosted)",
+            LEAN_HOSTED_YML,
+            "    name: λ-SIGIL soundness (Lean 4, hosted)",
+        ),
     ];
 
     for (context, workflow, declaration) in required {
@@ -45,9 +55,32 @@ fn pin5_required_check_names_match_workflow_jobs() {
         );
     }
 
-    // The Lean lanes are pinned in `private_ci_pins.rs`: they run on a self-hosted host and
-    // do not ship in the public tree yet (docs/specs/open-source-split.md, OSS-7).
-    for (name, workflow) in [("CI", CI_YML), ("workflow lint", WORKFLOW_LINT_YML)] {
+    // The hosted Lean lane's proof and audit commands: dropping one leaves a green check that
+    // proves less than the ledger says (docs/CLAIMS.md claim 26 cites the gate).
+    for command in [
+        "run: lake build",
+        "run: bash scripts/check-no-sorry.sh --self-test",
+        "run: bash scripts/check-no-sorry.sh",
+    ] {
+        assert!(
+            LEAN_HOSTED_YML.lines().any(|line| line.trim() == command),
+            "PIN-5: required hosted Lean proof/audit command {command:?} is no longer active"
+        );
+    }
+    // On the public repository the hosted Lean job must be unconditional: an `if:` that can
+    // skip there would report "skipped", which branch protection treats as satisfied.
+    assert!(
+        LEAN_HOSTED_YML.contains("github.repository == 'nxrobins/sigil'"),
+        "PIN-5: the hosted Lean lane no longer runs unconditionally on the public repository"
+    );
+
+    // The two self-hosted Lean lanes are pinned in `private_ci_pins.rs`, which does not ship
+    // (docs/specs/open-source-split.md, OSS-7).
+    for (name, workflow) in [
+        ("CI", CI_YML),
+        ("workflow lint", WORKFLOW_LINT_YML),
+        ("hosted Lean", LEAN_HOSTED_YML),
+    ] {
         let triggers = workflow
             .split_once("\non:")
             .map(|(_, rest)| rest.split("\njobs:").next().unwrap_or_default())
