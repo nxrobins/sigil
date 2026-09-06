@@ -60,7 +60,7 @@ PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 454798
 PIN_FLOOR_SRC_CHARS = 1000000
 PIN_FLOOR_MODULE_BYTES = 400000
 PIN4_KNOWN_DIVERGENCES = 0
-PIN_AXIOM_TARGETS = 1297
+PIN_AXIOM_TARGETS = 1298
 PIN_DIAGNOSTIC_TEST_GAPS = 62
 PIN_STRIP_LIST_ENTRIES = 6
 ```
@@ -135,9 +135,10 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
 ### CI gating (PIN-5)
 
 15. **`main` is protected and requires green CI.** Required status checks: `test`, `checks`,
-    `solver`, `hygiene`, `interp-ddc`, `workflows-parse`, and the two Lean lanes (the public
-    development and the research overlay) — enforced on admins, so no one (human or agent) can
-    merge red. The required-check NAMES are pinned to the workflow jobs that produce them, and
+    `solver`, `hygiene`, `interp-ddc`, `workflows-parse`, and the Lean lanes (privately the
+    public development on the Lean host and the research overlay; on the public repository the
+    public development's hosted twin, `lean-hosted.yml`) — enforced on admins, so no one (human
+    or agent) can merge red. The required-check NAMES are pinned to the workflow jobs that produce them, and
     every workflow producing one is asserted to carry no `paths:` filter (a path-filtered
     workflow can never satisfy a required check). @test:pin5_required_check_names_match_workflow_jobs
 

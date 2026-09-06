@@ -2702,10 +2702,18 @@ def verifyProgram (p : Program) : Option Violation :=
                       | some v => some v
                       | none => firstGraphViolation p
 
-private def readU8? (bytes : ByteArray) (offset : Nat) : Option UInt8 :=
+/-! ### Wire decoding
+
+The readers below are indexed on purpose. The compiled verifier runs on every production
+compilation, and a reader over a byte list would cost a cell per wire byte there (measured
+2026-09-05: +35% on the self-host trio's compile). Under the kernel the same indexed reads walk
+a fixture's byte literal, so kernel-decided fixture theorems go through
+`DecoderStream.decodeList`, a sequential twin with a proven equivalence, instead of `decode`. -/
+
+def readU8? (bytes : ByteArray) (offset : Nat) : Option UInt8 :=
   if h : offset < bytes.size then some (bytes.get offset h) else none
 
-private def readU32? (bytes : ByteArray) (offset : Nat) : Option UInt32 := do
+def readU32? (bytes : ByteArray) (offset : Nat) : Option UInt32 := do
   let a ← readU8? bytes offset
   let b ← readU8? bytes (offset + 1)
   let c ← readU8? bytes (offset + 2)
@@ -2713,14 +2721,14 @@ private def readU32? (bytes : ByteArray) (offset : Nat) : Option UInt32 := do
   return a.toUInt32 ||| (b.toUInt32 <<< 8) ||| (c.toUInt32 <<< 16) |||
     (d.toUInt32 <<< 24)
 
-private def decodeLabel? : UInt8 → Option Label
+def decodeLabel? : UInt8 → Option Label
   | 0 => some .pub
   | 1 => some .internal
   | 2 => some .secret
   | 3 => some .secretCT
   | _ => none
 
-private def decodeOp? : UInt8 → Option Op
+def decodeOp? : UInt8 → Option Op
   | 0 => some .flow
   | 1 => some .authority
   | 2 => some .declassify
@@ -2767,7 +2775,7 @@ private def decodeOp? : UInt8 → Option Op
   | 43 => some .semRuntimeGuard
   | _ => none
 
-private def decodeNode? (bytes : ByteArray) (offset : Nat) : Option Node := do
+def decodeNode? (bytes : ByteArray) (offset : Nat) : Option Node := do
   let op ← readU8? bytes offset >>= decodeOp?
   let labelA ← readU8? bytes (offset + 1) >>= decodeLabel?
   let labelB ← readU8? bytes (offset + 2) >>= decodeLabel?
@@ -2782,12 +2790,23 @@ private def decodeNode? (bytes : ByteArray) (offset : Nat) : Option Node := do
   if reserved != 0 then none else
     some { op, labelA, labelB, flags, origin, actual, required, ceiling, aux, nodeId }
 
-private def magicOK (bytes : ByteArray) : Bool :=
+def magicOK (bytes : ByteArray) : Bool :=
   bytes.size ≥ 4 &&
     (readU8? bytes 0 == some 0x43) &&
     (readU8? bytes 1 == some 0x53) &&
     (readU8? bytes 2 == some 0x49) &&
     (readU8? bytes 3 == some 0x52)
+
+/-- The node loop of `decode`: every node in order, `none` on the first whose id is not its
+    position. Its own definition so the v9 envelope can decode the old prefix of its own bytes
+    at the same offsets without copying it. -/
+def decodeNodes (bytes : ByteArray) (count : Nat) : Option (Array Node) := do
+  let mut nodes := #[]
+  for i in [0:count] do
+    let n ← decodeNode? bytes (headerBytes + i * nodeBytes)
+    if n.nodeId != UInt32.ofNat (i + 1) then none
+    nodes := nodes.push n
+  return nodes
 
 def decode (bytes : ByteArray) : Option Program := do
   if bytes.size > maxWireBytes || bytes.size < headerBytes || !magicOK bytes then none else
@@ -2797,11 +2816,7 @@ def decode (bytes : ByteArray) : Option Program := do
   let count := count32.toNat
   if count > maxNodes then none else
   if bytes.size != headerBytes + count * nodeBytes then none else
-  let mut nodes := #[]
-  for i in [0:count] do
-    let n ← decodeNode? bytes (headerBytes + i * nodeBytes)
-    if n.nodeId != UInt32.ofNat (i + 1) then none
-    nodes := nodes.push n
+  let nodes ← decodeNodes bytes count
   return ⟨nodes⟩
 
 def ViolationKind.code : ViolationKind → UInt32

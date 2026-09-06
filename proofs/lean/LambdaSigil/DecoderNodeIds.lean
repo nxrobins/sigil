@@ -80,6 +80,11 @@ theorem decode_canonical_node_ids {bytes : ByteArray} {p : Program}
         · rw [Option.bind_eq_some_iff] at hdecode
           obtain ⟨nodes, hloop, hprogram⟩ := hdecode
           cases hprogram
+          unfold decodeNodes at hloop
+          simp only [bind, pure] at hloop
+          -- The loop's trailing `return nodes` is a `bind` with `some`, which is the identity.
+          rw [show ∀ x : Option (Array Node), x.bind (fun nodes => some nodes) = x from
+            fun x => by cases x <;> rfl] at hloop
           rw [Std.Legacy.Range.forIn_eq_forIn_range'] at hloop
           simp only [Std.Legacy.Range.size, Nat.sub_zero, Nat.add_sub_cancel,
             Nat.div_one] at hloop
