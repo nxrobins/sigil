@@ -11,6 +11,8 @@ pub const SCHEMA_VERSION: &str = "1";
 // ── §9 Constraints & Fallbacks: the dumb physical bounds ──────────────────────
 /// Per-record compile budget; a slower compile drops the record (ET-C1).
 pub const VALIDATE_BUDGET_MS: u64 = 5_000;
+/// Stack reserved for the compiler worker that enforces the validation budget.
+pub const VALIDATE_STACK_BYTES: usize = 32 * 1024 * 1024;
 /// Max bytes of any `intent`/`reasoning` field (ET-C3).
 pub const MAX_PROSE_BYTES: usize = 2_048;
 /// Max bytes of a record's `output` — bigger than the biggest single `.sigil`

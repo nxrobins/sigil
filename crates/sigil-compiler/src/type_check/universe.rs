@@ -63,13 +63,86 @@ fn collect_type_aliases(program: &crate::ast::Program, universe: &mut TypeUniver
         edges.insert(name.clone(), refs);
     }
     let cyclic = find_cyclic_aliases(&names, &edges);
+    // Acyclic does not mean cheap: A=(B,B), B=(C,C), ... expands
+    // exponentially. Calculate saturated costs over the DAG before any Type
+    // is allocated. The graph walk is iterative, including long alias chains.
+    let mut costs = HashMap::new();
+    for start in &names {
+        if cyclic.contains(start) || costs.contains_key(start) {
+            continue;
+        }
+        let mut stack = vec![(start.as_str(), false)];
+        while let Some((name, visited)) = stack.pop() {
+            if cyclic.contains(name) || costs.contains_key(name) {
+                continue;
+            }
+            if visited {
+                costs.insert(
+                    name.to_owned(),
+                    alias_expansion_cost(&bodies[name].0, &costs),
+                );
+            } else {
+                stack.push((name, true));
+                for next in &edges[name] {
+                    if !cyclic.contains(next) && !costs.contains_key(next) {
+                        stack.push((next.as_str(), false));
+                    }
+                }
+            }
+        }
+    }
     for (name, (body, span)) in bodies {
         if cyclic.contains(&name) {
             universe.cyclic_aliases.push((name, span));
+        } else if costs[&name].0 > super::MAX_EXPANDED_TYPE_NODES
+            || costs[&name].1 > super::MAX_EXPANDED_TYPE_DEPTH
+        {
+            universe.excessive_aliases.push((name, span));
         } else {
             universe.alias_bodies.insert(name, body);
         }
     }
+    universe.excessive_aliases.sort_by(|a, b| a.0.cmp(&b.0));
+}
+
+/// Walk only the original, parser-depth-bounded syntax. Alias references use
+/// memoized costs, counting repeated occurrences rather than deduplicating them.
+fn alias_expansion_cost(
+    ty: &crate::ast::TypeExpr,
+    aliases: &HashMap<String, (usize, usize)>,
+) -> (usize, usize) {
+    let mut children = Vec::new();
+    if let Some(fnt) = &ty.fn_type {
+        children.extend(fnt.params.iter());
+        children.push(&fnt.return_type);
+    } else if let Some(arr) = &ty.array_type {
+        children.push(&arr.elem);
+    } else if let Some(elems) = &ty.tuple_type {
+        children.extend(elems.iter());
+    } else {
+        children.extend(ty.path.type_args.iter());
+    }
+    let wrapper = 1 + usize::from(ty.ref_kind.is_some());
+    let mut nodes = wrapper;
+    let mut depth = wrapper;
+    let referenced = if ty.fn_type.is_none() && ty.array_type.is_none() && ty.tuple_type.is_none() {
+        aliases.get(&ty.path.display_name()).copied()
+    } else {
+        None
+    };
+    for (n, d) in children
+        .into_iter()
+        .map(|child| alias_expansion_cost(child, aliases))
+        .chain(referenced)
+    {
+        nodes = nodes
+            .saturating_add(n)
+            .min(super::MAX_EXPANDED_TYPE_NODES + 1);
+        depth = depth
+            .max(wrapper.saturating_add(d))
+            .min(super::MAX_EXPANDED_TYPE_DEPTH + 1);
+    }
+    (nodes, depth)
 }
 
 /// PR-E4: append every alias-name (∈ `aliases`) referenced anywhere in `ty` — the
@@ -227,6 +300,7 @@ pub(super) fn collect_type_universe(program: &crate::ast::Program) -> TypeUniver
         consts: HashMap::new(),
         alias_bodies: HashMap::new(),
         cyclic_aliases: Vec::new(),
+        excessive_aliases: Vec::new(),
         record_modules: HashMap::new(),
         record_refinements: HashMap::new(),
         enums: HashMap::new(),

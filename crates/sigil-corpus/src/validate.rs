@@ -11,7 +11,7 @@ use sigil_compiler::Severity;
 use sigil_compiler::compiler::compile_named_module;
 use sigil_compiler::registry::CODES;
 
-use crate::schema::{VALIDATE_BUDGET_MS, Validated, ValidationKind};
+use crate::schema::{VALIDATE_BUDGET_MS, VALIDATE_STACK_BYTES, Validated, ValidationKind};
 
 /// What the compiler said about a candidate, within budget.
 enum Outcome {
@@ -26,19 +26,23 @@ enum Outcome {
 /// a pathological input can never hang the whole run (ET-C1).
 fn compile_within_budget(name: String, src: String) -> Option<Outcome> {
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let outcome = match compile_named_module(name, src) {
-            Ok(_) => Outcome::Clean,
-            Err(e) => Outcome::Errors(
-                e.into_diagnostics()
-                    .iter()
-                    .filter(|d| d.severity() == Severity::Error)
-                    .map(|d| d.code().as_str().to_string())
-                    .collect(),
-            ),
-        };
-        let _ = tx.send(outcome);
-    });
+    thread::Builder::new()
+        .name("sigil-corpus-validate".to_string())
+        .stack_size(VALIDATE_STACK_BYTES)
+        .spawn(move || {
+            let outcome = match compile_named_module(name, src) {
+                Ok(_) => Outcome::Clean,
+                Err(e) => Outcome::Errors(
+                    e.into_diagnostics()
+                        .iter()
+                        .filter(|d| d.severity() == Severity::Error)
+                        .map(|d| d.code().as_str().to_string())
+                        .collect(),
+                ),
+            };
+            let _ = tx.send(outcome);
+        })
+        .ok()?;
     rx.recv_timeout(Duration::from_millis(VALIDATE_BUDGET_MS))
         .ok()
 }

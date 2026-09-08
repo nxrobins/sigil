@@ -24,6 +24,8 @@
 //! recovered parse cannot silently type-check clean
 //! (`tests/reserved_keyword_ident.rs`).
 
+mod limits;
+
 use crate::{
     ast::{
         ActorDef, ArrayElem, ArrayLitExpr, ArrayPattern, ArrayTypeExpr, AskExpr, AssignStmt,
@@ -4016,6 +4018,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
         Some(expr)
     }
@@ -4032,6 +4037,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
         Some(expr)
     }
@@ -4055,6 +4063,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4085,6 +4096,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4106,6 +4120,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4128,6 +4145,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4152,6 +4172,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4176,6 +4199,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4203,6 +4229,9 @@ impl Parser {
                 rhs: Box::new(rhs),
                 span,
             });
+            if !self.check_expression_tree(&expr) {
+                return None;
+            }
         }
 
         Some(expr)
@@ -4246,6 +4275,27 @@ impl Parser {
         true
     }
 
+    fn check_expression_tree(&mut self, expr: &Expr) -> bool {
+        if limits::expression_too_deep(expr, MAX_EXPR_DEPTH) {
+            self.reject_tree_depth(expr.span());
+            false
+        } else {
+            true
+        }
+    }
+
+    fn reject_tree_depth(&mut self, span: Span) {
+        if !self.depth_exceeded {
+            self.depth_exceeded = true;
+            self.diagnostics.push(Diagnostic::error(
+                codes::S007,
+                format!("syntax tree exceeds depth {MAX_EXPR_DEPTH}; split long expressions into intermediate `let` bindings"),
+                Some(span),
+            ));
+        }
+        self.cursor = self.tokens.len().saturating_sub(1);
+    }
+
     fn exit_nesting(&mut self) {
         self.expr_depth = self.expr_depth.saturating_sub(1);
     }
@@ -4259,6 +4309,11 @@ impl Parser {
         }
         let result = self.parse_prefix_expr_inner();
         self.exit_nesting();
+        if let Some(expr) = &result
+            && !self.check_expression_tree(expr)
+        {
+            return None;
+        }
         result
     }
 
@@ -4461,6 +4516,9 @@ impl Parser {
                 }
             } else {
                 break;
+            }
+            if !self.check_expression_tree(&expr) {
+                return None;
             }
         }
 
@@ -5653,6 +5711,12 @@ impl Parser {
         }
         let result = self.parse_braced_block_inner(message);
         self.exit_nesting();
+        if let Some(block) = &result
+            && limits::block_too_deep(block, MAX_EXPR_DEPTH)
+        {
+            self.reject_tree_depth(block.span);
+            return None;
+        }
         result
     }
 

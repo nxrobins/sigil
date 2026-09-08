@@ -20,7 +20,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 # PIN_WITH_DRIVER_SRC_SHA256, from pipeline_differential.rs and seed/PROVENANCE.md.
-PIN_WITH_DRIVER_SRC_SHA256 = "fa69ab5fc7bbd58dba180432fc49d8cc7b7eff29cfdfa48b9ffe38c00d0cdc94"
+PIN_WITH_DRIVER_SRC_SHA256 = "2a0acecaff3357b5e1066a74185dda97800a3a469c5317b66e2852db81411b46"
 PIN_WITH_DRIVER_SRC_CHARS = 1_151_054
 
 # `boot_tool` composes these in this order, each with its `module X;` header stripped.

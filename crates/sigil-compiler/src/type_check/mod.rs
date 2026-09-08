@@ -244,6 +244,13 @@ pub fn check_collecting(
     // universe so `validate_lowered_type` can emit T199 when any
     // parametric cap-type literal `Cap(D)` declares `D < BUILD_NOW`.
     universe.build_deadline = options.build_deadline;
+    for (name, span) in &universe.excessive_aliases {
+        diagnostics.push(Diagnostic::error(
+            crate::diagnostics::codes::T151,
+            format!("type alias `{name}` exceeds the expanded type size or depth limit"),
+            Some(*span),
+        ));
+    }
     // PR-E4: report cyclic type aliases. They are collected diagnostics-free during
     // the universe build (which has no channel) and excluded from `alias_bodies`, so
     // they resolve to an opaque type rather than expanding — emit T263 here.

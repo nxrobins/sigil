@@ -14,6 +14,12 @@ unsafe extern "C" {
     fn sigil_host_profile_validate_raw(bytes: *const u8, len: usize) -> u64;
     fn sigil_csir_v9_validate_declarations_raw(bytes: *const u8, len: usize) -> u64;
     fn sigil_csir_v9_verify_raw(bytes: *const u8, len: usize) -> u64;
+    fn sigil_csir_validate_projection_raw(
+        bytes: *const u8,
+        len: usize,
+        obligations: *const u8,
+        obligations_len: usize,
+    ) -> u64;
 }
 
 static INITIALIZED: OnceLock<Result<(), InitializeError>> = OnceLock::new();
@@ -92,6 +98,24 @@ fn initialize() -> Result<(), InitializeError> {
         (status == 0).then_some(()).ok_or(InitializeError)
     });
     *initialized
+}
+
+/// Check APC-1 predecessor-transfer witnesses against the exact serialized v9 program.
+/// Zero validates only the supplied transfers; the compiler independently enumerates them
+/// from AIR and checks local renaming. Full program authorization still requires `verify_v9`.
+pub fn validate_projection(bytes: &[u8], obligations: &[u8]) -> Result<u64, InitializeError> {
+    initialize()?;
+    // SAFETY: both live immutable slices are copied into owned Lean arrays during the call;
+    // the shim bounds their sizes and does not retain either Rust pointer.
+    let verdict = unsafe {
+        sigil_csir_validate_projection_raw(
+            bytes.as_ptr(),
+            bytes.len(),
+            obligations.as_ptr(),
+            obligations.len(),
+        )
+    };
+    verdict_result(verdict)
 }
 
 fn verdict_result(verdict: u64) -> Result<u64, InitializeError> {

@@ -497,9 +497,9 @@ Array indices must be integer types (`i32`/`u32`/`i64`/`u64`). Cast or change th
 
 Use turbofish syntax to specify the type parameter explicitly: `f::<i64>(x)`.
 
-### T151 — Monomorphization depth exceeded
+### T151 — Type expansion limit exceeded
 
-A generic function instantiates itself (or its callees) too deeply. Restructure to break the recursion or simplify the generic chain.
+Generic specialization or type-alias expansion exceeded the compiler's work bound. Break the recursion, simplify the type chain, or add concrete annotations.
 
 ### T160 — Extern function must declare `FFI` effect
 
@@ -672,6 +672,7 @@ diagnostic envelope (so the agent loop sees a uniform shape).
 | R814 | WASM inner-module fingerprint mismatch |
 | R815 | WASM outer-module fingerprint mismatch or missing |
 | R816 | Effect set mismatch between certificate and runtime |
+| R820 | Certificate provenance did not validate |
 
 ---
 

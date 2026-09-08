@@ -20,9 +20,10 @@ use crate::json_envelope::{
 use crate::args::{CommandKind, CompileCommand};
 
 use crate::cert_gate::{
-    GateFailure, certificate_from_compilation, emit_gate_failure, gate_cert, load_cert_file,
-    require_solver_verified_from_env,
+    GateFailure, certificate_from_compilation, emit_gate_failure, gate_cert,
+    load_cert_file_with_policy, require_solver_verified_from_env,
 };
+use crate::cert_provenance::serialize_certificate_document;
 
 use crate::translate::translate_command_source;
 
@@ -141,10 +142,12 @@ pub(crate) fn run_check_or_run(
         // print a one-line stderr nudge so users discover the gate.
         match &command.cert_path {
             Some(cert_path) => {
-                let cert = match load_cert_file(cert_path) {
-                    Ok(c) => c,
-                    Err(failure) => return emit_gate_failure(kind, fmt, failure),
-                };
+                let loaded =
+                    match load_cert_file_with_policy(cert_path, &command.cert_provenance_policy) {
+                        Ok(loaded) => loaded,
+                        Err(failure) => return emit_gate_failure(kind, fmt, failure),
+                    };
+                let cert = loaded.certificate;
                 // `run` has no grant-style flags; effects check is skipped
                 // (cert.effects_required is informational). Iteration 38
                 // adds the bidirectional effects check on `forge`.
@@ -162,6 +165,15 @@ pub(crate) fn run_check_or_run(
                 }
             }
             None => {
+                if command.cert_provenance_policy.requires_authenticated() {
+                    return emit_gate_failure(
+                        kind,
+                        fmt,
+                        GateFailure::ProvenanceMismatch {
+                            reason: "authenticated certificate provenance is required, but no --cert was supplied".to_owned(),
+                        },
+                    );
+                }
                 // Adversarial-review fix MC-8: opt-in stays optional in
                 // this PR, but a stderr nudge makes the gate discoverable.
                 // Suppressed in JSON mode (output is structured; nudges
@@ -204,8 +216,7 @@ fn emit_check_success(
     // Same flag name, different read/write semantics per command kind.
     if let Some(out) = &command.cert_path {
         let cert = certificate_from_compilation(compilation, &command.source_text);
-        let cert_json = serde_json::to_string_pretty(&cert)
-            .context("failed to serialize certificate to JSON")?;
+        let cert_json = serialize_certificate_document(&cert, &command.cert_signing)?;
         fs::write(out, cert_json)
             .with_context(|| format!("failed to write cert to `{}`", out.display()))?;
     }
@@ -323,8 +334,7 @@ fn run_package_check(
             .with_context(|| format!("failed to write inner wasm to `{}`", out.display()))?;
     }
     let certificate = package.certificate();
-    let certificate_json = serde_json::to_string_pretty(&certificate)
-        .context("failed to serialize package certificate")?;
+    let certificate_json = serialize_certificate_document(&certificate, &command.cert_signing)?;
     if let Some(out) = &command.cert_path {
         fs::write(out, &certificate_json)
             .with_context(|| format!("failed to write package cert to `{}`", out.display()))?;

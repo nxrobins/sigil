@@ -1810,6 +1810,7 @@ dependencies = [
  "anyhow",
  "libc",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
  "sigil-abi",

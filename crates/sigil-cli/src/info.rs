@@ -71,10 +71,13 @@ USAGE:
 COMMANDS:
   check <FILE...>        Compile and verify; emits no artifact by default
     --package <ROOT>       Check one explicit offline locked package root (no FILE args)
-    --host-profile <NAME>  Compile against a declared host profile (`ephemeral` = the built-in host)
-    --entry <MODULE>       Entry module for a multi-file compile
-    --cert                 Emit the verification certificate as JSON
-    --emit-wasm <FILE>     Write the inner-module WASM to FILE
+	    --host-profile <NAME>  Compile against a declared host profile (`ephemeral` = the built-in host)
+	    --entry <MODULE>       Entry module for a multi-file compile
+	    --cert                 Emit the verification certificate as JSON
+	    --cert-signer <ID>     Sign the emitted cert envelope with signer ID
+	    --cert-sign-key-hex <HEX>  32-byte Ed25519 signing seed for --cert
+	    --cert-context <CTX>   Deployment context string covered by the cert signature
+	    --emit-wasm <FILE>     Write the inner-module WASM to FILE
     --wat                  Print the module as WebAssembly text
     --from <LANG>          Translate a foreign frontend first (see `translate`)
     --build-deadline <MS>  Reject parametric caps whose deadline has passed
@@ -88,17 +91,28 @@ COMMANDS:
     --fuel <N>             Fuel budget for the run
     --fs <DIR>             Grant filesystem access rooted at DIR (repeatable)
     --net <HOST>           Grant network access to HOST (repeatable)
-    --template <ID>        Forge from a registry template (with --patch FIND=REPLACE)
-    --cert <FILE>          Refuse to run unless the cert matches
-    --frozen-time <MS>     Pin the clock for a reproducible run
+	    --template <ID>        Forge from a registry template (with --patch FIND=REPLACE)
+	    --cert <FILE>          Refuse to run unless the cert matches
+	    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
+	    --cert-context <CTX>   Required signed deployment context
+	    --revoke-cert-signer <ID>  Reject this signer even if the signature verifies
+	    --frozen-time <MS>     Pin the clock for a reproducible run
     --random-seed <N>      Pin the RNG (nonzero)
 
   verify-cert            Check a certificate against source, WASM, and policy
     --cert <FILE>          The certificate to verify (required)
     --source <FILE>        Re-derive from source
     --package <ROOT>       Re-resolve/recompile a package and verify its graph cert
-    --wasm <FILE>          Compare against a built artifact
-    --forbid-effect <NAME> / --allow-effect <NAME>   Effect policy gates
+	    --wasm <FILE>          Compare against a built artifact
+	    --forbid-effect <NAME> / --allow-effect <NAME>   Effect policy gates
+	    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
+	    --cert-context <CTX> / --revoke-cert-signer <ID>  Provenance policy gates
+
+  package-lock          Create a root-only offline lock (--root <DIR>); never overwrite
+  package-evidence      Emit solver-backed compiler artifacts, not an admission verdict
+    --root <DIR>          Explicit locked package materialization
+    --output-dir <DIR>    New directory disjoint from the package; manifest written last
+    --host-profile <NAME> Optional declared host profile, as for check
 
   translate <FILE>       Foreign DSL -> SIGIL source (--from <LANG>, --emit <FILE>)
   registry               Template store: `add` (--task, --tags), `search`, `list`

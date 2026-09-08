@@ -213,8 +213,8 @@ fn package_certificate_duplicate_keys_fail_closed_at_every_depth() {
         (
             "top-level",
             baseline.replacen(
-                "\"schema_version\": \"1\",",
-                "\"schema_version\": \"1\",\n  \"schema_version\": \"1\",",
+                "\"schema_version\": \"2\",",
+                "\"schema_version\": \"2\",\n  \"schema_version\": \"2\",",
                 1,
             ),
         ),

@@ -1275,7 +1275,8 @@ fn compile_ast_with_options(
     let formal_security_report = formal_security_verdict.map_err(to_err)?;
     let (air, memory_report) = memory::lower(air);
     let (air, fuel_plan) = fuel::insert(air);
-    let runtime_module = build_runtime_module(&typed, &air, fuel_plan.recommended_budget);
+    let runtime_module = build_runtime_module(&typed, &air, fuel_plan.recommended_budget)
+        .map_err(|diagnostic| to_err(vec![*diagnostic]))?;
     let mut wasm_output = wasm::emit(&air);
     if let Some(requirement) = context.host_requirement() {
         wasm::append_host_profile_requirement(&mut wasm_output, requirement);
@@ -1367,7 +1368,7 @@ fn build_runtime_module(
     typed: &TypedProgram,
     air: &AirProgram,
     fuel_budget: u64,
-) -> RuntimeModuleSpec {
+) -> Result<RuntimeModuleSpec, Box<Diagnostic>> {
     #[derive(Debug, Default)]
     struct ActorBuilder {
         actor_type_id: u32,
@@ -1408,7 +1409,7 @@ fn build_runtime_module(
                         .params
                         .iter()
                         .map(|param| runtime_type(&param.ty))
-                        .collect();
+                        .collect::<Result<Vec<_>, _>>()?;
                     // Two gates, both fail-closed: the effects row is the
                     // TRANSITIVE summary (a cap-arg-free helper doing extern/
                     // unsafe work still surfaces here — only `Alloc` is
@@ -1449,8 +1450,8 @@ fn build_runtime_module(
                             .params
                             .iter()
                             .map(|param| runtime_type(&param.ty))
-                            .collect(),
-                        ret: runtime_type(&function.ret),
+                            .collect::<Result<Vec<_>, _>>()?,
+                        ret: runtime_type(&function.ret)?,
                     });
                     if entry.state_captures.is_empty() {
                         entry.state_captures = function.captures.clone();
@@ -1474,13 +1475,15 @@ fn build_runtime_module(
                 .fields
                 .iter()
                 .zip(&actor.state_captures)
-                .map(|((fname, offset, _air_ty), cap)| RuntimeStateFieldSpec {
-                    name: fname.clone(),
-                    offset: *offset,
-                    ty: runtime_type(&cap.ty),
+                .map(|((fname, offset, _air_ty), cap)| {
+                    Ok(RuntimeStateFieldSpec {
+                        name: fname.clone(),
+                        offset: *offset,
+                        ty: runtime_type(&cap.ty)?,
+                    })
                 })
-                .collect::<Vec<_>>();
-            RuntimeActorSpec {
+                .collect::<Result<Vec<_>, Box<Diagnostic>>>()?;
+            Ok(RuntimeActorSpec {
                 name,
                 actor_type_id: actor.actor_type_id,
                 is_entry: actor.is_entry,
@@ -1490,11 +1493,11 @@ fn build_runtime_module(
                 state_layout,
                 state_size: layout.size,
                 init_replay_safe: actor.init_replay_safe,
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, Box<Diagnostic>>>()?;
 
-    RuntimeModuleSpec {
+    Ok(RuntimeModuleSpec {
         module_name: typed
             .modules
             .first()
@@ -1503,7 +1506,7 @@ fn build_runtime_module(
         fuel_budget,
         imports: RuntimeImportSpec::phase_one(),
         actors,
-    }
+    })
 }
 
 /// PPS-4 (restart-as-GC): is this actor `init` body faithfully REPLAYABLE?
@@ -1587,9 +1590,9 @@ fn expr_replay_safe(expr: &crate::typed_ast::TypedExpr) -> bool {
     }
 }
 
-fn runtime_type(ty: &Type) -> RuntimeTypeSpec {
-    match ty {
-        Type::Unit | Type::Error => RuntimeTypeSpec::Unit,
+fn runtime_type(ty: &Type) -> Result<RuntimeTypeSpec, Box<Diagnostic>> {
+    Ok(match ty {
+        Type::Unit => RuntimeTypeSpec::Unit,
         Type::Bool => RuntimeTypeSpec::Bool,
         Type::I32 | Type::U32 | Type::I64 | Type::U64 | Type::F64 => RuntimeTypeSpec::I64,
         // u256/i256: a pointer-backed 32-byte aggregate at the runtime ABI, like
@@ -1601,7 +1604,6 @@ fn runtime_type(ty: &Type) -> RuntimeTypeSpec {
         Type::Cap(name, _) => RuntimeTypeSpec::Cap(name.clone()),
         Type::ActorRef(actor) => RuntimeTypeSpec::ActorRef(actor.clone()),
         Type::Array { .. } => RuntimeTypeSpec::Named("Array".to_owned()),
-        Type::Generic(_) => RuntimeTypeSpec::Named("Generic".to_owned()),
         // PIL: IntLit should be resolved before reaching runtime_type
         // (which feeds runtime ABI spec). If it does, treat it as I64
         // (the eventual default-fallback target). Defensive — the
@@ -1616,29 +1618,20 @@ fn runtime_type(ty: &Type) -> RuntimeTypeSpec {
         Type::Tuple(_) => RuntimeTypeSpec::Named("Tuple".to_owned()),
         // Regions (DEF-2b): a region handle is an i64 token at the runtime ABI.
         Type::Region => RuntimeTypeSpec::I64,
-        // HKT (EX-4): a higher-kinded var/app/ctor must have been erased to a
-        // concrete Type::Named before AIR — and runtime_type runs over the lowered
-        // program — so any residual here is a compiler-internal invariant violation.
-        Type::HktVar { name, .. } => {
-            panic!("ICE: unresolved higher-kinded var `{name}` reached runtime_type")
+        Type::Generic(_)
+        | Type::Error
+        | Type::HktVar { .. }
+        | Type::HktApp { .. }
+        | Type::TypeCtor(_)
+        | Type::StateMarker(_)
+        | Type::Never => {
+            return Err(Box::new(Diagnostic::error(
+                codes::I001,
+                "internal: unresolved type reached the runtime ABI; compilation rejected",
+                None,
+            )));
         }
-        Type::HktApp { ctor, .. } => {
-            panic!("ICE: unresolved higher-kinded application `{ctor}<…>` reached runtime_type")
-        }
-        Type::TypeCtor(name) => {
-            panic!("ICE: bare type-constructor `{name}` reached runtime_type (should be erased)")
-        }
-        // Typestate (ST-1 backstop): a state marker is type-level only and erases
-        // before AIR; `runtime_type` runs over the lowered program, so any residual
-        // here is a compiler-internal invariant violation.
-        Type::StateMarker(name) => {
-            panic!("ICE: state marker `{name}` reached runtime_type (should be erased)")
-        }
-        // Effect Handlers (C-NEVER): the abortive bottom type is gated before AIR.
-        Type::Never => {
-            panic!("ICE: Type::Never reached runtime_type (must be erased / gated before AIR)")
-        }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1646,9 +1639,11 @@ mod tests {
     use sigil_abi::RuntimeTypeSpec;
 
     use crate::air::{AirFunctionKind, AirStmt, AirTerminator};
+    use crate::type_check::Type;
 
     use super::{
-        CompileLimits, compile_module, compile_named_module, compile_tool, compile_tool_with_limits,
+        CompileLimits, compile_module, compile_named_module, compile_tool,
+        compile_tool_with_limits, runtime_type,
     };
 
     #[test]
@@ -1703,6 +1698,36 @@ actor Worker {
         assert!(exports.contains(&"sigil__boot"));
         assert!(exports.contains(&"Main__Start"));
         assert!(exports.contains(&"Worker__Ping"));
+    }
+
+    #[test]
+    fn runtime_type_rejects_unresolved_internal_types_without_panicking() {
+        let rejected = [
+            Type::Generic("T".into()),
+            Type::Error,
+            Type::HktVar {
+                name: "F".into(),
+                arity: 1,
+            },
+            Type::HktApp {
+                ctor: "F".into(),
+                args: vec![Type::I64],
+            },
+            Type::TypeCtor("Box".into()),
+            Type::StateMarker("Open".into()),
+            Type::Never,
+        ];
+
+        for ty in rejected {
+            let err = runtime_type(&ty).expect_err("unresolved type must be rejected");
+            assert_eq!(err.code(), crate::diagnostics::codes::I001);
+        }
+
+        assert_eq!(runtime_type(&Type::I64).unwrap(), RuntimeTypeSpec::I64);
+        assert_eq!(
+            runtime_type(&Type::ActorRef("Worker".into())).unwrap(),
+            RuntimeTypeSpec::ActorRef("Worker".into())
+        );
     }
 
     #[test]

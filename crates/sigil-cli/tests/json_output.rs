@@ -53,6 +53,143 @@ fn run_cli_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
 }
 
 #[test]
+fn json_forge_rejects_oversized_source_before_execution() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock must be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "sigil_forge_source_cap_{}_{}",
+        std::process::id(),
+        nonce
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp directory");
+
+    let source_path = dir.join("oversized.sigil");
+    std::fs::write(&source_path, "x".repeat(70 * 1024)).expect("write oversized source");
+    let source_arg = source_path.to_str().expect("source path is UTF-8");
+
+    let (exit, stdout, _stderr) = run_cli_env(&["forge", source_arg, "--json"], &[]);
+    assert_ne!(exit, 0, "oversized forge source must fail before execution");
+
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("forge error stdout is JSON");
+    assert_eq!(envelope["schema_version"], 2);
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["command"], "forge");
+    let diagnostics = envelope["diagnostics"]
+        .as_array()
+        .expect("diagnostics must be an array on error");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "S001"),
+        "expected S001 source-cap diagnostic, got {diagnostics:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn verify_cert_accepts_signed_provenance_profile_and_rejects_replay() {
+    const TEST_SEED: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const CONTEXT: &str = "sigil://release/test-linux-x86_64";
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock must be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "sigil_signed_cert_{}_{}",
+        std::process::id(),
+        nonce
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp directory");
+
+    let source_path = dir.join("signed.sigil");
+    let cert_path = dir.join("signed.cert.json");
+    std::fs::write(
+        &source_path,
+        "module sigil; fn boot() -> i64 { return 42; }",
+    )
+    .expect("write signed source");
+    let source_arg = source_path.to_str().expect("source path is UTF-8");
+    let cert_arg = cert_path.to_str().expect("cert path is UTF-8");
+
+    let (check_exit, _check_out, check_err) = run_cli(&[
+        "check",
+        source_arg,
+        "--cert",
+        cert_arg,
+        "--cert-signer",
+        "sigil-ci",
+        "--cert-sign-key-hex",
+        TEST_SEED,
+        "--cert-context",
+        CONTEXT,
+        "--cert-issued-at-ms",
+        "1804000000000",
+    ]);
+    assert_eq!(
+        check_exit, 0,
+        "signed certificate creation failed: {check_err}"
+    );
+
+    let envelope: Value =
+        serde_json::from_slice(&std::fs::read(&cert_path).expect("read signed certificate"))
+            .expect("signed certificate envelope is JSON");
+    assert_eq!(envelope["envelope_version"], 1);
+    assert_eq!(envelope["profile"], "authenticated-release");
+    let public_key = envelope["provenance"]["public_key"]
+        .as_str()
+        .expect("signed envelope includes public key")
+        .to_owned();
+    let trusted = format!("sigil-ci={public_key}");
+
+    let (verify_exit, verify_out, verify_err) = run_cli(&[
+        "verify-cert",
+        "--cert",
+        cert_arg,
+        "--source",
+        source_arg,
+        "--require-cert-provenance",
+        trusted.as_str(),
+        "--cert-context",
+        CONTEXT,
+        "--json",
+    ]);
+    assert_eq!(verify_exit, 0, "trusted signed cert failed: {verify_err}");
+    let verified: Value =
+        serde_json::from_str(verify_out.trim()).expect("verify-cert stdout is JSON");
+    assert_eq!(verified["status"], "ok");
+    assert_eq!(verified["data"]["provenance"]["signer_id"], "sigil-ci");
+    assert_eq!(verified["data"]["provenance"]["context"], CONTEXT);
+    assert_eq!(verified["data"]["provenance"]["trusted"], true);
+
+    let (replay_exit, replay_out, _replay_err) = run_cli(&[
+        "verify-cert",
+        "--cert",
+        cert_arg,
+        "--source",
+        source_arg,
+        "--require-cert-provenance",
+        trusted.as_str(),
+        "--cert-context",
+        "sigil://release/other-target",
+        "--json",
+    ]);
+    assert_ne!(
+        replay_exit, 0,
+        "a signed certificate replayed into the wrong context must fail"
+    );
+    let replay: Value =
+        serde_json::from_str(replay_out.trim()).expect("replay failure stdout is JSON");
+    assert_eq!(replay["status"], "error");
+    assert_eq!(replay["diagnostics"][0]["code"], "R820");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn certified_outer_forge_binds_both_modules_and_grants() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

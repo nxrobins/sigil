@@ -21,10 +21,12 @@ use sigil_compiler::diagnostics::codes;
 
 mod args;
 mod cert_gate;
+mod cert_provenance;
 mod check_run;
 mod forge;
 mod info;
 mod json_envelope;
+mod package_artifacts;
 mod registry_cmd;
 mod translate;
 
@@ -81,6 +83,10 @@ fn dispatch_with_context(
     let cmd_name = command.kind().json_name();
 
     let result: anyhow::Result<()> = match command {
+        Command::PackageLock { root, .. } => package_artifacts::lock(root, fmt),
+        Command::PackageEvidence {
+            root, output_dir, ..
+        } => package_artifacts::evidence(root, output_dir, fmt, context),
         Command::Check(args) => run_check_or_run(args, CommandKind::Check, fmt, context),
         Command::Run(args) => run_check_or_run(args, CommandKind::Run, fmt, context),
         Command::Forge(args) => run_forge(args, fmt, context),

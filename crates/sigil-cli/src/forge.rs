@@ -23,7 +23,7 @@ use crate::json_envelope::{
 use crate::args::{CommandKind, ForgeCommand};
 
 use crate::cert_gate::{
-    GateFailure, emit_gate_failure, gate_cert, gate_forge_grants, load_cert_file,
+    GateFailure, emit_gate_failure, gate_cert, gate_forge_grants, load_cert_file_with_policy,
     require_solver_verified_from_env,
 };
 
@@ -134,10 +134,12 @@ pub(crate) fn run_forge(
     // inner artifact.
     match &command.cert_path {
         Some(cert_path) => {
-            let cert = match load_cert_file(cert_path) {
-                Ok(c) => c,
-                Err(failure) => return emit_gate_failure(CommandKind::Forge, fmt, failure),
-            };
+            let loaded =
+                match load_cert_file_with_policy(cert_path, &command.cert_provenance_policy) {
+                    Ok(loaded) => loaded,
+                    Err(failure) => return emit_gate_failure(CommandKind::Forge, fmt, failure),
+                };
+            let cert = loaded.certificate;
             if let Err(failure) = gate_cert(
                 &cert,
                 source_text.as_bytes(),
@@ -159,6 +161,15 @@ pub(crate) fn run_forge(
             }
         }
         None => {
+            if command.cert_provenance_policy.requires_authenticated() {
+                return emit_gate_failure(
+                    CommandKind::Forge,
+                    fmt,
+                    GateFailure::ProvenanceMismatch {
+                        reason: "authenticated certificate provenance is required, but no --cert was supplied".to_owned(),
+                    },
+                );
+            }
             if !fmt.is_json() {
                 eprintln!(
                     "note: running without certificate gate; \
