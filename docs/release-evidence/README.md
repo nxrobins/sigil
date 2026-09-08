@@ -39,8 +39,8 @@ Copy the template into that bundle only when assembling real measured evidence:
   subject must declare CSIR v9 and certificate schema v9. Its pinned Lean
   toolchain must match the record.
 - Retain every mandatory gate as `true`, `retirement_eligible = false`, and the
-  exact unresolved-risk list containing SR-013 and SR-017. A later retirement
-  decision is outside this record format.
+  exact unresolved-risk list containing SR-017. A later retirement decision is
+  outside this record format.
 - Complete every named check with `status = "passed"`, `executed = true`, a
   positive integer `cases`, the identical subject commit, an exact GitHub job
   URL, a canonical bundle-relative artifact path, and its lowercase SHA-256.

@@ -8,10 +8,12 @@ extern lean_object *initialize_lambda_x2dsigil_LambdaSigil_SemanticKernel(uint8_
 extern lean_object *initialize_lambda_x2dsigil_LambdaSigil_HostProfileKernel(uint8_t builtin);
 extern lean_object *initialize_lambda_x2dsigil_LambdaSigil_OccurrenceWire(uint8_t builtin);
 extern lean_object *initialize_lambda_x2dsigil_LambdaSigil_V9OccurrenceKernel(uint8_t builtin);
+extern lean_object *initialize_lambda_x2dsigil_LambdaSigil_ProjectionKernel(uint8_t builtin);
 extern uint64_t sigil_csir_verify_semantic(lean_object *bytes);
 extern uint64_t sigil_host_profile_validate(lean_object *bytes);
 extern uint64_t sigil_csir_v9_validate_declarations(lean_object *bytes);
 extern uint64_t sigil_csir_v9_verify(lean_object *bytes);
+extern uint64_t sigil_csir_validate_projection(lean_object *bytes, lean_object *obligations);
 
 int32_t sigil_csir_initialize(void) {
     lean_initialize_runtime_module();
@@ -36,7 +38,36 @@ int32_t sigil_csir_initialize(void) {
     result = initialize_lambda_x2dsigil_LambdaSigil_V9OccurrenceKernel(1);
     failed = lean_io_result_is_error(result) ? 1 : 0;
     lean_dec_ref(result);
+    if (failed != 0) {
+        return failed;
+    }
+    result = initialize_lambda_x2dsigil_LambdaSigil_ProjectionKernel(1);
+    failed = lean_io_result_is_error(result) ? 1 : 0;
+    lean_dec_ref(result);
     return failed;
+}
+
+uint64_t sigil_csir_validate_projection_raw(const uint8_t *bytes, size_t len,
+                                            const uint8_t *obligations, size_t obligations_len) {
+    if (len > 64u * 1024u * 1024u || obligations_len > 20000008u) {
+        return 1;
+    }
+    lean_object *program = lean_alloc_sarray(1, len, len);
+    if (program == NULL) {
+        return UINT64_MAX;
+    }
+    lean_object *transfers = lean_alloc_sarray(1, obligations_len, obligations_len);
+    if (transfers == NULL) {
+        lean_dec_ref(program);
+        return UINT64_MAX;
+    }
+    if (len != 0) {
+        memcpy(lean_sarray_cptr(program), bytes, len);
+    }
+    if (obligations_len != 0) {
+        memcpy(lean_sarray_cptr(transfers), obligations, obligations_len);
+    }
+    return sigil_csir_validate_projection(program, transfers);
 }
 
 uint64_t sigil_csir_verify_raw(const uint8_t *bytes, size_t len) {

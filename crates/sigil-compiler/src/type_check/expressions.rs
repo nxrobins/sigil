@@ -377,7 +377,15 @@ pub(super) fn infer_expr(
     tracker: &mut MonomorphTracker,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TypedExpr {
-    match expr {
+    if tracker.work_exhausted {
+        return TypedExpr {
+            ty: Type::Error,
+            kind: TypedExprKind::Literal(Literal::Int(0)),
+            span: expr.span(),
+            refinement: None,
+        };
+    }
+    let inferred = match expr {
         Expr::Literal(expr) => TypedExpr {
             ty: infer_literal_type(&expr.literal),
             kind: TypedExprKind::Literal(expr.literal.clone()),
@@ -505,6 +513,20 @@ pub(super) fn infer_expr(
         Expr::FString(expr) => {
             infer_fstring_expr(expr, env, current_return, context, tracker, diagnostics)
         }
+    };
+    if tracker.check_type_work([&inferred.ty], expr.span(), diagnostics) {
+        inferred
+    } else {
+        work_limit_expr(expr.span())
+    }
+}
+
+pub(super) fn work_limit_expr(span: crate::span::Span) -> TypedExpr {
+    TypedExpr {
+        ty: Type::Error,
+        kind: TypedExprKind::Literal(Literal::Int(0)),
+        span,
+        refinement: None,
     }
 }
 
@@ -616,6 +638,9 @@ pub(super) fn infer_path_expr(
                     vec![Type::Error; type_params.len()]
                 };
                 let cty = Type::Named(qualifier.clone(), concrete_args.clone());
+                if !tracker.check_type_work([&cty], expr.span, diagnostics) {
+                    return work_limit_expr(expr.span);
+                }
                 let mangled = mangle_type(&cty);
                 let variants_clone = variants.clone();
                 let type_params_clone = type_params.clone();
@@ -625,6 +650,8 @@ pub(super) fn infer_path_expr(
                     &variants_clone,
                     &type_params_clone,
                     &concrete_args,
+                    expr.span,
+                    diagnostics,
                 );
                 (cty, mangled)
             };
@@ -900,6 +927,9 @@ pub(super) fn infer_path_expr(
                 let lowered_enum_name = if type_params.is_empty() || resolved_args.is_empty() {
                     enum_name.clone()
                 } else {
+                    if !tracker.check_type_work([&concrete_ty], expr.span, diagnostics) {
+                        return work_limit_expr(expr.span);
+                    }
                     let mangled = mangle_type(&concrete_ty);
                     register_concrete_enum(
                         tracker,
@@ -907,6 +937,8 @@ pub(super) fn infer_path_expr(
                         variants,
                         type_params,
                         &resolved_args,
+                        expr.span,
+                        diagnostics,
                     );
                     mangled
                 };
@@ -2110,6 +2142,9 @@ pub(super) fn infer_tuple_expr(
             }
         })
         .collect();
+    if !tracker.check_type_work(&elem_tys, expr.span, diagnostics) {
+        return work_limit_expr(expr.span);
+    }
     let tuple_ty = Type::Tuple(elem_tys);
     // type_name is INERT for tuples (the construct path / `flatten_record`
     // ignore it; the read path keys on `Type::Tuple`, not this string) — but we

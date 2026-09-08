@@ -42,6 +42,23 @@ Cargo.lock text eol=lf
 *.txt text eol=lf
 *.py text eol=lf
 lean-toolchain text eol=lf
+# The CSIR v9 wire fixtures (proofs/lean/fixtures/csir-v9/*.hex) are compared as STRINGS against
+# a generator that terminates every line with \n — `crates/sigil-compiler/tests/
+# formal_v9_declarations.rs::committed_wire_fixtures_match_the_explicit_generator_and_inventory`
+# and the sigil-formal-bridge parity suites read them with `read_to_string`. Measured on the
+# first Windows portability run that ever reached the test step (2026-09-07): the fixture came
+# back with a trailing \r and the assertion failed with a one-character diff. Same reasoning as
+# the parity manifest above; without this rule the whole 84-file set falls through to
+# `* text=auto` and arrives CRLF.
+*.hex text eol=lf
+# Foreign-frontend inputs, pinned for the same reason as the `*.rs` and `*.sigil` fixtures they
+# sit beside: `tests/frontends/{solidity,typescript}/**` are translator sources whose emitted
+# output is compared against LF goldens. These are PREVENTIVE rather than measured — the run
+# that caught the .hex fixtures stopped at that failure, so these never executed on Windows —
+# but they are the same category of byte-exact text input and were unpinned only because no
+# Windows lane had ever got far enough to run them.
+*.sol text eol=lf
+*.ts text eol=lf
 # The committed compiler seed (seed/sigil-seed.wasm) and any future WASM artifact are BINARY:
 # no EOL normalization, ever — one rewritten byte breaks the digest pin and the
 # self-regeneration lane (crates/sigil-runtime/tests/pipeline_differential.rs, seed_* tests).

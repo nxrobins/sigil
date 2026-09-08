@@ -8,10 +8,39 @@ runs:
       run: |
         set -euo pipefail
         if [ ! -x "$HOME/.elan/bin/elan" ] && [ ! -x "$HOME/.elan/bin/elan.exe" ]; then
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/v4.2.3/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
+          # Retried, because this single fetch gates every Rust build in the repository: the
+          # verifier is mandatory, so a dropped connection here reds a lane that has nothing
+          # wrong with it. Observed 2026-09-07 on the interp-ddc lane, `curl: (35) Recv failure:
+          # Connection reset by peer`, 140ms into the job. `--retry-all-errors` is the load-
+          # bearing half: without it curl retries transport-level failures but not a connection
+          # reset mid-body, which is exactly what happened. Still fails closed after 5 attempts.
+          curl -sSfL --retry 5 --retry-delay 2 --retry-all-errors \
+            https://raw.githubusercontent.com/leanprover/elan/v4.2.3/elan-init.sh -o "$RUNNER_TEMP/elan-init.sh"
           sh "$RUNNER_TEMP/elan-init.sh" -y --default-toolchain none
         fi
-        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+        # GITHUB_PATH is consumed by the runner, which hands each line to every LATER
+        # step as a native PATH entry. This step's shell is Git Bash even on Windows,
+        # where `$HOME` is MSYS's POSIX spelling of the profile directory -- a path
+        # only MSYS programs can open -- while the steps that need lake there (pwsh,
+        # cargo, the sigil-formal-bridge build script) are Windows-native. Writing
+        # `$HOME` verbatim was invisible from inside this step, because the
+        # `export PATH` below let elan and lake run here, and surfaced one step later
+        # as `failed to run pinned Lean version probe: program not found` (build.rs
+        # relaying Rust's own PATH-search verdict; Rust appends `.exe` itself) on
+        # every push-to-main Windows portability run from 2026-09-03 through
+        # 2026-09-06, while the macOS leg of the same matrix passed. cygpath
+        # rewrites the entry into the Windows spelling. Fail closed: a Windows runner
+        # without cygpath gets a red step here, never a PATH entry nothing can use.
+        elan_bin="$HOME/.elan/bin"
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          if ! command -v cygpath >/dev/null 2>&1; then
+            echo "::error::cygpath is required to publish $elan_bin to GITHUB_PATH as a Windows path"
+            exit 1
+          fi
+          elan_bin="$(cygpath -w "$elan_bin")"
+        fi
+        echo "$elan_bin" >> "$GITHUB_PATH"
+        echo "elan proxies published to GITHUB_PATH as: $elan_bin (this shell sees $HOME/.elan/bin)"
         export PATH="$HOME/.elan/bin:$PATH"
         toolchain="$(tr -d '\r\n' < proofs/lean/lean-toolchain)"
         elan toolchain install "$toolchain"

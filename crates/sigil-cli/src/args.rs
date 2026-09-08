@@ -13,10 +13,15 @@ use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 
+use crate::cert_provenance::{
+    CertificateProvenancePolicy, CertificateSigningOptions, TrustedSigner,
+};
 use crate::json_envelope::OutputFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandKind {
+    PackageLock,
+    PackageEvidence,
     Check,
     Run,
     Forge,
@@ -88,6 +93,8 @@ mod typed_command_shape_tests {
 impl CommandKind {
     pub(crate) fn json_name(self) -> &'static str {
         match self {
+            Self::PackageLock => "package-lock",
+            Self::PackageEvidence => "package-evidence",
             Self::Check => "check",
             Self::Run => "run",
             Self::Forge => "forge",
@@ -129,6 +136,11 @@ pub(crate) struct CompileCommand {
     /// `--host-profile <NAME>`: compile against a declared host profile (`ephemeral` is the
     /// built-in host); absent means the legacy no-profile context.
     pub(crate) host_profile: Option<String>,
+    /// Optional signing material for `check --cert`; no effect unless a cert is
+    /// written.
+    pub(crate) cert_signing: CertificateSigningOptions,
+    /// Optional authenticated-provenance policy for `run --cert`.
+    pub(crate) cert_provenance_policy: CertificateProvenancePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +164,7 @@ pub(crate) struct ForgeCommand {
     pub(crate) host_profile: Option<String>,
     pub(crate) random_seed: Option<u64>,
     pub(crate) input_bytes_override: Option<Vec<u8>>,
+    pub(crate) cert_provenance_policy: CertificateProvenancePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +191,7 @@ pub(crate) struct VerifyCertCommand {
     pub(crate) forbidden_effects: Vec<String>,
     pub(crate) allowed_effects: Vec<String>,
     pub(crate) package_root: Option<PathBuf>,
+    pub(crate) cert_provenance_policy: CertificateProvenancePolicy,
     pub(crate) json: bool,
 }
 
@@ -199,6 +213,16 @@ pub(crate) struct ExplainCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
+    PackageLock {
+        root: PathBuf,
+        json: bool,
+    },
+    PackageEvidence {
+        root: PathBuf,
+        output_dir: PathBuf,
+        json: bool,
+        host_profile: Option<String>,
+    },
     Check(CompileCommand),
     Run(CompileCommand),
     Forge(ForgeCommand),
@@ -225,6 +249,7 @@ impl Command {
     /// The declared host profile named on the command line, if any.
     pub(crate) fn host_profile(&self) -> Option<&str> {
         match self {
+            Command::PackageEvidence { host_profile, .. } => host_profile.as_deref(),
             Command::Check(args) | Command::Run(args) => args.host_profile.as_deref(),
             Command::Forge(args) => args.host_profile.as_deref(),
             _ => None,
@@ -233,6 +258,8 @@ impl Command {
 
     pub(crate) fn kind(&self) -> CommandKind {
         match self {
+            Self::PackageLock { .. } => CommandKind::PackageLock,
+            Self::PackageEvidence { .. } => CommandKind::PackageEvidence,
             Self::Check(_) => CommandKind::Check,
             Self::Run(_) => CommandKind::Run,
             Self::Forge(_) => CommandKind::Forge,
@@ -249,6 +276,7 @@ impl Command {
 
     pub(crate) fn output_format(&self) -> OutputFormat {
         let json = match self {
+            Self::PackageLock { json, .. } | Self::PackageEvidence { json, .. } => *json,
             Self::Check(args) | Self::Run(args) => args.json,
             Self::Forge(args) => args.json,
             Self::RegistryAdd(args) => args.json,
@@ -364,6 +392,7 @@ impl<'a> ArgCursor<'a> {
 
 pub(crate) fn parse_args(args: &[String]) -> anyhow::Result<Command> {
     match args.first().map(String::as_str) {
+        Some("package-lock" | "package-evidence") => parse_package_artifacts(args),
         None => Ok(Command::Check(CompileCommand {
             source_name: "<inline>".to_owned(),
             source_text: "module sigil;".to_owned(),
@@ -391,6 +420,66 @@ pub(crate) fn parse_args(args: &[String]) -> anyhow::Result<Command> {
                 "unknown command `{other}`. expected `check`, `run`, `check-inline`, `run-inline`, `forge`, `registry`, `verify-cert`, `translate`, or `explain`. run `sigil --help` for usage"
             );
         }
+    }
+}
+
+fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
+    let evidence = args[0] == "package-evidence";
+    let mut root = None;
+    let mut output_dir = None;
+    let mut host_profile = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        if flag == "--json" {
+            if json {
+                bail!("--json may be supplied only once");
+            }
+            json = true;
+            index += 1;
+            continue;
+        }
+        if !matches!(flag, "--root" | "--output-dir" | "--host-profile") {
+            bail!("{}: unexpected argument `{flag}`", args[0]);
+        }
+        let value = args
+            .get(index + 1)
+            .filter(|v| !v.is_empty() && !v.starts_with("--"))
+            .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+        match flag {
+            "--root" => {
+                if root.replace(PathBuf::from(value)).is_some() {
+                    bail!("duplicate --root");
+                }
+            }
+            "--output-dir" if evidence => {
+                if output_dir.replace(PathBuf::from(value)).is_some() {
+                    bail!("duplicate --output-dir");
+                }
+            }
+            "--host-profile" if evidence => {
+                if sigil_runtime::host_profile_by_name(value).is_none() {
+                    bail!("unknown host profile `{value}`");
+                }
+                if host_profile.replace(value.clone()).is_some() {
+                    bail!("duplicate --host-profile");
+                }
+            }
+            _ => bail!("{} does not accept {flag}", args[0]),
+        }
+        index += 2;
+    }
+    let root = root.ok_or_else(|| anyhow::anyhow!("--root is required"))?;
+    if evidence {
+        Ok(Command::PackageEvidence {
+            root,
+            output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("--output-dir is required"))?,
+            json,
+            host_profile,
+        })
+    } else {
+        Ok(Command::PackageLock { root, json })
     }
 }
 
@@ -454,6 +543,7 @@ fn parse_forge_args(args: &[String]) -> anyhow::Result<Command> {
     let mut path: Option<String> = None;
     // Forge certificates also validate the requested filesystem and network grants.
     let mut cert_path: Option<PathBuf> = None;
+    let mut cert_provenance_policy = CertificateProvenancePolicy::default();
     let mut frozen_time_ms: Option<i64> = None;
     let mut random_seed: Option<u64> = None;
     let mut input_bytes_override: Option<Vec<u8>> = None;
@@ -533,6 +623,33 @@ fn parse_forge_args(args: &[String]) -> anyhow::Result<Command> {
                     cursor.require("--cert requires a file path")?,
                 ));
             }
+            "--require-cert-provenance" => {
+                let signer = TrustedSigner::parse_cli(
+                    cursor
+                        .require("--require-cert-provenance requires SIGNER_ID=PUBLIC_KEY_HEX")?,
+                )?;
+                if cert_provenance_policy
+                    .trusted_signer
+                    .replace(signer)
+                    .is_some()
+                {
+                    bail!("--require-cert-provenance may be supplied only once");
+                }
+            }
+            "--cert-context" => {
+                cert_provenance_policy.expected_context = Some(
+                    cursor
+                        .require("--cert-context requires a value")?
+                        .to_owned(),
+                );
+            }
+            "--revoke-cert-signer" => {
+                cert_provenance_policy.revoked_signers.push(
+                    cursor
+                        .require("--revoke-cert-signer requires a signer id")?
+                        .to_owned(),
+                );
+            }
             "--frozen-time" => {
                 let value =
                     cursor.require("--frozen-time requires a value (ms since Unix epoch, i64)")?;
@@ -600,6 +717,7 @@ fn parse_forge_args(args: &[String]) -> anyhow::Result<Command> {
             template_id,
             patches,
             cert_path,
+            cert_provenance_policy,
             frozen_time_ms,
             host_profile: host_profile.clone(),
             random_seed,
@@ -630,6 +748,7 @@ fn parse_forge_args(args: &[String]) -> anyhow::Result<Command> {
         template_id: None,
         patches: vec![],
         cert_path,
+        cert_provenance_policy,
         frozen_time_ms,
         random_seed,
         input_bytes_override,
@@ -755,6 +874,8 @@ fn parse_path_command(
     let mut json = false;
     let mut wasm_out_path: Option<PathBuf> = None;
     let mut cert_path: Option<PathBuf> = None;
+    let mut cert_signing = CertificateSigningOptions::default();
+    let mut cert_provenance_policy = CertificateProvenancePolicy::default();
     let mut build_deadline: Option<i64> = None;
     let mut entry_module: Option<String> = None;
     let mut from: Option<String> = None;
@@ -807,6 +928,57 @@ fn parse_path_command(
                     cursor.require("--cert requires a file path")?,
                 ));
             }
+            "--cert-signer" => {
+                cert_signing.signer_id = Some(
+                    cursor
+                        .require("--cert-signer requires a signer id")?
+                        .to_owned(),
+                );
+            }
+            "--cert-sign-key-hex" => {
+                cert_signing.key_seed_hex = Some(
+                    cursor
+                        .require("--cert-sign-key-hex requires a 32-byte Ed25519 seed as hex")?
+                        .to_owned(),
+                );
+            }
+            "--cert-issued-at-ms" => {
+                let value =
+                    cursor.require("--cert-issued-at-ms requires an i64 millisecond time")?;
+                cert_signing.issued_at_unix_ms = Some(value.parse::<i64>().with_context(|| {
+                    format!("--cert-issued-at-ms value `{value}` is not a valid i64")
+                })?);
+            }
+            "--require-cert-provenance" => {
+                let signer = TrustedSigner::parse_cli(
+                    cursor
+                        .require("--require-cert-provenance requires SIGNER_ID=PUBLIC_KEY_HEX")?,
+                )?;
+                if cert_provenance_policy
+                    .trusted_signer
+                    .replace(signer)
+                    .is_some()
+                {
+                    bail!("--require-cert-provenance may be supplied only once");
+                }
+            }
+            "--cert-context" => {
+                let value = cursor
+                    .require("--cert-context requires a value")?
+                    .to_owned();
+                if kind == CommandKind::Check {
+                    cert_signing.context = Some(value);
+                } else {
+                    cert_provenance_policy.expected_context = Some(value);
+                }
+            }
+            "--revoke-cert-signer" => {
+                cert_provenance_policy.revoked_signers.push(
+                    cursor
+                        .require("--revoke-cert-signer requires a signer id")?
+                        .to_owned(),
+                );
+            }
             "--build-deadline" => {
                 let value = cursor.require("--build-deadline requires an i64 value")?;
                 build_deadline = Some(value.parse::<i64>().with_context(|| {
@@ -841,6 +1013,13 @@ fn parse_path_command(
             "`{command}` requires at least one file path"
         ));
     }
+    validate_cert_provenance_args(
+        command,
+        kind,
+        cert_path.is_some(),
+        &cert_signing,
+        &cert_provenance_policy,
+    )?;
 
     if let Some(package_root) = package_root {
         if kind != CommandKind::Check {
@@ -867,6 +1046,7 @@ fn parse_path_command(
             json,
             wasm_out_path,
             cert_path,
+            cert_signing,
             build_deadline,
             host_profile: host_profile.clone(),
             ..CompileCommand::default()
@@ -903,6 +1083,8 @@ fn parse_path_command(
                     json,
                     wasm_out_path,
                     cert_path,
+                    cert_signing,
+                    cert_provenance_policy,
                     build_deadline,
                     entry_module,
                     from: None,
@@ -932,6 +1114,8 @@ fn parse_path_command(
                 json,
                 wasm_out_path,
                 cert_path,
+                cert_signing,
+                cert_provenance_policy,
                 build_deadline,
                 entry_module,
                 from,
@@ -966,6 +1150,8 @@ fn parse_path_command(
             json,
             wasm_out_path,
             cert_path,
+            cert_signing,
+            cert_provenance_policy,
             build_deadline,
             entry_module,
             source_files,
@@ -975,6 +1161,35 @@ fn parse_path_command(
             ..CompileCommand::default()
         },
     ))
+}
+
+fn validate_cert_provenance_args(
+    command: &str,
+    kind: CommandKind,
+    has_cert_path: bool,
+    signing: &CertificateSigningOptions,
+    policy: &CertificateProvenancePolicy,
+) -> anyhow::Result<()> {
+    if kind == CommandKind::Check {
+        if policy.requires_authenticated() {
+            bail!(
+                "--require-cert-provenance, --revoke-cert-signer, and enforcement use of --cert-context are supported by `run`, `forge`, and `verify-cert`, not `{command}`"
+            );
+        }
+        if signing.is_requested() && !has_cert_path {
+            bail!("certificate signing requires --cert <path>");
+        }
+        if signing.is_requested() && (signing.signer_id.is_none() || signing.key_seed_hex.is_none())
+        {
+            bail!("certificate signing requires both --cert-signer and --cert-sign-key-hex");
+        }
+    } else if signing.signer_id.is_some()
+        || signing.key_seed_hex.is_some()
+        || signing.issued_at_unix_ms.is_some()
+    {
+        bail!("certificate signing flags are supported only by `check --cert`");
+    }
+    Ok(())
 }
 
 fn parse_inline_command(
@@ -1107,6 +1322,7 @@ fn parse_verify_cert_args(args: &[String]) -> anyhow::Result<Command> {
     let mut allowed_effects: Vec<String> = Vec::new();
     let mut json = false;
     let mut package_root: Option<PathBuf> = None;
+    let mut cert_provenance_policy = CertificateProvenancePolicy::default();
 
     let mut cursor = ArgCursor::new(args, 1);
     while let Some(arg) = cursor.next() {
@@ -1141,6 +1357,33 @@ fn parse_verify_cert_args(args: &[String]) -> anyhow::Result<Command> {
                 allowed_effects.push(
                     cursor
                         .require("--allow-effect requires an effect name")?
+                        .to_owned(),
+                );
+            }
+            "--require-cert-provenance" => {
+                let signer = TrustedSigner::parse_cli(
+                    cursor
+                        .require("--require-cert-provenance requires SIGNER_ID=PUBLIC_KEY_HEX")?,
+                )?;
+                if cert_provenance_policy
+                    .trusted_signer
+                    .replace(signer)
+                    .is_some()
+                {
+                    bail!("--require-cert-provenance may be supplied only once");
+                }
+            }
+            "--cert-context" => {
+                cert_provenance_policy.expected_context = Some(
+                    cursor
+                        .require("--cert-context requires a value")?
+                        .to_owned(),
+                );
+            }
+            "--revoke-cert-signer" => {
+                cert_provenance_policy.revoked_signers.push(
+                    cursor
+                        .require("--revoke-cert-signer requires a signer id")?
                         .to_owned(),
                 );
             }
@@ -1180,6 +1423,7 @@ fn parse_verify_cert_args(args: &[String]) -> anyhow::Result<Command> {
         forbidden_effects,
         allowed_effects,
         package_root,
+        cert_provenance_policy,
         json,
     }))
 }

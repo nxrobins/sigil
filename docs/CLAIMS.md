@@ -48,20 +48,20 @@ Mirrored from the Rust constants; a disagreement fails the build. Never hand-edi
 re-measuring (SC-P1: pin the measured value, never the documented one).
 
 ```pins
-PIN_CAP0_SRC_CHARS = 1150219
-PIN_CAP0_MODULE_BYTES = 454099
-PIN_CAP0_RUNNABLE_SRC_CHARS = 1150574
-PIN_CAP0_RUNNABLE_MODULE_BYTES = 454453
-PIN_WITH_DRIVER_SRC_CHARS = 1151054
-PIN_WITH_DRIVER_MODULE_BYTES = 454798
-PIN_STAGE1_CAP0_MODULE_BYTES = 454099
-PIN_STAGE1_RUNNABLE_MODULE_BYTES = 454453
-PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 454798
+PIN_CAP0_SRC_CHARS = 1150294
+PIN_CAP0_MODULE_BYTES = 454195
+PIN_CAP0_RUNNABLE_SRC_CHARS = 1150649
+PIN_CAP0_RUNNABLE_MODULE_BYTES = 454549
+PIN_WITH_DRIVER_SRC_CHARS = 1151129
+PIN_WITH_DRIVER_MODULE_BYTES = 454894
+PIN_STAGE1_CAP0_MODULE_BYTES = 454195
+PIN_STAGE1_RUNNABLE_MODULE_BYTES = 454549
+PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 454894
 PIN_FLOOR_SRC_CHARS = 1000000
 PIN_FLOOR_MODULE_BYTES = 400000
 PIN4_KNOWN_DIVERGENCES = 0
-PIN_AXIOM_TARGETS = 1298
-PIN_DIAGNOSTIC_TEST_GAPS = 62
+PIN_AXIOM_TARGETS = 1304
+PIN_DIAGNOSTIC_TEST_GAPS = 61
 PIN_STRIP_LIST_ENTRIES = 6
 ```
 
@@ -434,8 +434,11 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     Init-only `OccurrenceKernel.exportedVerify`, which first runs
     `SemanticKernel.verifyProgramWithRawSemantics` over the retained prefix and then derives v9
     semantic/dataflow, structured-region, invocation, and boundary facts, at the shared compiler
-    choke point. The declaration decoder is a separate non-authorizing API. Only a zero production
-    v9 verdict constructs a model-9 `FormalSecurityReport`;
+    choke point. The versioned `PLC-2026-09-07` production Lean composition profile pins this
+    typed-program/AIR-to-CSIR abstraction relation to theorem names, positive and negative
+    canaries, and exact production gate tokens. The declaration decoder is a separate
+    non-authorizing API. Only a zero production v9 verdict constructs a model-9
+    `FormalSecurityReport`;
     malformed projection, initialization failure, or disagreement is I013. The verifier's joint
     local-obligation implication is `@thm:Combined.joint_security_of_verified`. Certificates are schema v9 and
     execution compares the complete freshly re-derived report; absence or CSIR/checker/model drift
@@ -515,13 +518,22 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     SecretCT trace theorem. The complete Public proof dependency closure participates in the
     checker-source fingerprint, so its change requires certificate re-derivation through R819.
 
-    This is not yet the retirement boundary. Full semantic origin/authority, slot-meet, affine CFG,
-    and balance-transition derivation still relies on the retained v6 obligations and mandatory
-    Rust/Z3 gates. The relational machine is a security abstraction, not a source/AIR/Wasm
-    adequacy theorem, and tagged cross-platform zero-disagreement evidence has not yet been
-    recorded; the committed v9 evidence record remains explicitly non-retirement-eligible. Those
-    remaining operational and rollout conditions stay in SR-013; source projection and post-CSIR
-    correspondence remain SR-017.
+    APC-1 independently checks local AIR read/write renaming and CFG transfers against emitted
+    records. The linked transfer kernel additionally checks phi witnesses against final model-9
+    bytes; `@thm:Combined.Projection.accepted_bytes_preserve_paths` proves preservation of every
+    extracted finite transfer path. Rust extraction completeness, unreachable-path justification,
+    opcode/metadata semantics, local-read serialization, and execution remain SR-017 assumptions.
+    @test:projection_accepts_source_branches_loops_and_reordered_blocks
+    @test:projection_rejects_missing_branch_and_backedge_inputs_even_when_plan_agrees
+    @test:projection_native_checker_rejects_mutated_phi_records_and_witnesses
+    @test:projection_refuses_truncated_oversized_and_unknown_certificate_shapes
+
+    This is not yet the retirement boundary. `PLC-2026-09-07` closes the current shipped-checker
+    composition boundary by requiring each production-facing obligation to name its abstraction
+    relation, Lean theorem set, executable canaries, and gate tokens. The retained Rust/Z3 gates
+    remain mandatory while source/AIR/Wasm adequacy remains SR-017. The relational machine is a
+    security abstraction, and tagged cross-platform zero-disagreement evidence has not yet been
+    recorded; the committed v9 evidence record remains explicitly non-retirement-eligible.
     Local accepted-corpus parity includes the committed JSON library. Private source helpers are
     represented as internal role-zero semantic functions and are not exposed as Wasm exports;
     the resulting intentional byte changes are pinned by the regenerated parity manifest.
@@ -593,6 +605,8 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     @thm:Combined.divergent_arm_does_not_poison_join
     @test:gate_cert_missing_formal_report_emits_r819
     @test:gate_cert_tampered_csir_fingerprint_emits_r819
+    @test:production_lean_composition_profile_is_complete_and_drift_pinned
+    @test:production_lean_composition_profile_keeps_public_claims_bounded
 
 44. **Malformed generic-call and taint-recovery shapes reject diagnostically instead of aborting.**
     The established generic-call acceptance surface is unchanged, including its certified-selfhost
@@ -733,8 +747,7 @@ pin the check NAMES (claim 15); nothing in-repo can prove protection is still en
 
 ### Lean and the proofs
 
-@unproven **Self-declared unproven, accurately** — M6b scoped/resume-once effect handlers, full
-origin/authority/slot/affine/balance derivation from the production CSIR-v8 semantic instructions,
+@unproven **Self-declared unproven, accurately** — M6b scoped/resume-once effect handlers,
 AIR/Wasm adequacy for the abstract relational machine, and end-to-end hardware constant time.
 
 @unproven **The production theorem begins at CSIR.** Rust source-to-CSIR projection, Lean native

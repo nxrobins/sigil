@@ -44,7 +44,7 @@ Status meanings:
   guards, actor/spawn boundaries, and closure-value taint emit an explicit unsupported verdict,
   which the composed self-host pipeline rejects.
 - **Status:** `bounded`
-- **Residual risk:** SR-013.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
 
 ### SND-CT-001 [P0]
 
@@ -66,7 +66,7 @@ Status meanings:
 - **Self-host status:** Curated T020-T032 parity; actor and unsupported control distinctions reject
   explicitly rather than widening the parity claim.
 - **Status:** `bounded`
-- **Residual risk:** SR-013.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
 
 ### SND-CAP-001 [P0]
 
@@ -87,7 +87,7 @@ Status meanings:
   authority subset; Lean does not model the full `mintable_by` policy.
 - **Self-host status:** Pure workload and verdict parity on a curated cap-only subset.
 - **Status:** `bounded`
-- **Residual risk:** SR-013.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
 
 ### SND-OWN-001 [P0]
 
@@ -109,7 +109,7 @@ Status meanings:
 - **Self-host status:** Curated straight-line O001/O007 parity across every supported consuming site;
   CFG analysis is production-only.
 - **Status:** `bounded`
-- **Residual risk:** SR-013; malformed-AIR closure is recorded as SR-015.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence; malformed-AIR closure is recorded as SR-015.
 
 ### SND-EFFECT-001 [P1]
 
@@ -131,7 +131,7 @@ Status meanings:
   covers E001/E002, not the full handler diagnostic surface.
 - **Self-host status:** Curated E001/E002 parity and a stdlib clean floor.
 - **Status:** `bounded`
-- **Residual risk:** SR-013.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
 
 ### SND-RING-001 [P1]
 
@@ -171,7 +171,7 @@ Status meanings:
 - **Self-host status:** Refinements are absent from the self-hosted checker, as declared in
   `CLAIMS.md` HB-3.
 - **Status:** `bounded`
-- **Residual risk:** SR-013.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
 
 ### SND-MEM-001 [P0]
 
@@ -234,41 +234,46 @@ Status meanings:
 
 ### SND-CERT-001 [P0]
 
-- **Claim:** Certificate-gated commands do not execute when source, Wasm, schema, effects, or fresh
-  solver verification disagrees with the supplied certificate.
+- **Claim:** Certificate-gated commands do not execute when source, Wasm, schema, effects, fresh
+  solver verification, or required authenticated provenance disagrees with the supplied certificate.
 - **Enforcement:** `sigil-cli`/`sigil-mcp` certificate loading, re-derivation, comparison, and gate.
-- **Trusted assumptions:** SHA-256 collision resistance, canonical framing, untampered trusted
-  command binary, and fail-closed default configuration.
-- **Independent oracle/model:** Known-answer digest tests and separate CLI/MCP execution paths.
+- **Trusted assumptions:** SHA-256 collision resistance, Ed25519 unforgeability for trusted
+  release signers, canonical framing, untampered trusted command binary, and fail-closed default
+  configuration.
+- **Independent oracle/model:** Known-answer digest tests, signed-envelope tamper/wrong-key/replay
+  tests, and separate CLI/MCP execution paths.
 - **Negative canary:** @test:gate_cert_tampered_source_emits_r813,
   @test:gate_cert_tampered_wasm_emits_r814,
   @test:gate_cert_fails_closed_when_fresh_unverified_even_if_cert_claims_true.
 - **Composition coverage:** Effects under/over-grant, schema, symlink, missing, oversized, invalid
-  JSON, and solver-claim tamper tests.
-- **Known exclusions:** Certificates are unsigned and bind content but do not authenticate origin.
+  JSON, solver-claim tamper tests, and required signed provenance.
+- **Known exclusions:** The unsigned-local profile remains an integrity-only local workflow.
 - **Self-host status:** The certified self-host emitter does not independently validate this gate.
 - **Status:** `enforced`
-- **Residual risk:** SR-011.
+- **Residual risk:** None for the authenticated-release certificate provenance profile.
 
 ### SND-FRONTEND-001 [P0]
 
 - **Claim:** A supported foreign frontend either emits SIGIL inside its documented subset and passes
-  the production compiler, or rejects the input without silently dropping security-relevant syntax.
-- **Enforcement:** Frontend-specific allow-list parsers/checkers followed by SIGIL compilation.
-- **Trusted assumptions:** The allow-list is exhaustive and rewrites preserve source meaning for
-  every accepted construct.
-- **Independent oracle/model:** Golden emission, round-trip compilation, deterministic translation,
-  adversarial corpora, and selected cross-implementation hashes; no full semantic oracle.
+  the production compiler under `FFC-2026-09-07`, or rejects the input without silently dropping
+  security-relevant syntax.
+- **Enforcement:** Frontend-specific allow-list parsers/checkers followed by SIGIL compilation and
+  the drift-pinned `correspondence_profile.rs` gate.
+- **Trusted assumptions:** The versioned correspondence profile is the authority for the accepted
+  source grammar; behavior outside that profile remains excluded.
+- **Independent oracle/model:** Hand-authored golden emission, round-trip compilation, deterministic
+  translation, adversarial corpora, dev-only Rust parser agreement, Solidity property lowerings, and
+  an independently implemented finite scalar-expression oracle for all shipped frontends.
 - **Negative canary:** @test:reject_fixtures_match_expected_codes and frontend depth/unsupported
   construct tests.
 - **Composition coverage:** Solidity inheritance/modifier/ERC20 adversarial suites and Rust/TypeScript
   security-policy enforcement fixtures.
-- **Known exclusions:** Anything outside each frontend's explicit subset; translated semantics are
-  not formally proved equivalent to the source language.
+- **Known exclusions:** Anything outside each frontend's explicit subset; no claim is made that the
+  whole source language is equivalent to SIGIL.
 - **Self-host status:** Self-hosted SIGIL front-end tests validate emitted SIGIL only where the
   downstream differential corpus reaches it.
-- **Status:** `bounded`
-- **Residual risk:** SR-012.
+- **Status:** `enforced`
+- **Residual risk:** None for `FFC-2026-09-07`.
 
 ### SND-SELFHOST-001 [P1]
 
@@ -323,12 +328,13 @@ Status meanings:
   `OccurrenceKernel.exportedVerify` (which runs the retained semantic/Combined decision first),
   exact model-9 CSIR/report hashing, schema-v9 fresh re-derivation and R819 comparison, host-profile
   Wasm binding before instantiation, exact Rust/Lean opcode parity,
-  compiler-output parity manifest, exported-tree proof/evidence gates, and the Lean no-sorry/axiom
-  gate.
-- **Trusted assumptions:** Rust typed-program-to-CSIR projection, the pinned Lean kernel/toolchain,
-  Lean C/native generation and runtime, and the theorem statement/CSIR model.
+  compiler-output parity manifest, exported-tree proof/evidence gates, the Lean no-sorry/axiom gate,
+  and the versioned [`PLC-2026-09-07`](specs/production-lean-composition.md) composition profile.
+- **Trusted assumptions:** Rust source-to-CSIR projection, the pinned Lean kernel/toolchain, Lean
+  C/native generation and runtime, Wasm/runtime/platform behavior, and the theorem statement/CSIR
+  model remain assumptions tracked by SR-017.
 - **Independent oracle/model:** Existing Rust taint/ownership and AIR capability gates remain
-  mandatory differential oracles for the first dual-gate release.
+  mandatory differential oracles under `PLC-2026-09-07` and through the first dual-gate release.
 - **Negative canary:** @test:planted_bad_authority_is_rejected_by_linked_lean,
   @test:linked_lean_derives_transitive_taint_instead_of_trusting_a_sink_label,
   @test:linked_lean_derives_bv32_attenuation_instead_of_trusting_a_mask,
@@ -383,9 +389,13 @@ Status meanings:
   @thm:Combined.secret_closure_selector_taints_every_callee_entry,
   @thm:Combined.direct_call_only_mutant_omits_the_dynamic_callee_edge,
   @test:linked_lean_rejects_malformed_input,
-  @test:gate_cert_missing_formal_report_emits_r819, and
-  @test:gate_cert_tampered_csir_fingerprint_emits_r819.
-- **Composition coverage:** @thm:Combined.graph_verifier_sound_and_complete equates executable graph
+  @test:gate_cert_missing_formal_report_emits_r819,
+  @test:gate_cert_tampered_csir_fingerprint_emits_r819,
+  @test:production_lean_composition_profile_is_complete_and_drift_pinned, and
+  @test:production_lean_composition_profile_keeps_public_claims_bounded.
+- **Composition coverage:** `PLC-2026-09-07` machine-checks the production abstraction relation,
+  public theorem names, positive and negative canaries, and mandatory gate tokens for every
+  production-facing checker-composition obligation. @thm:Combined.graph_verifier_sound_and_complete equates executable graph
   acceptance with the per-node bounded-reference and derived-label judgment; every accepted edge is checked
   as a post-fixed-point constraint. @thm:Combined.graphLabels_least proves the linked worklist is
   below every algorithm-independent seed/edge solution, so accepted output is the least solution.
@@ -450,28 +460,31 @@ Status meanings:
   the verifier's quantitative node checks; `@thm:Combined.unsupported_cross_cell_constraint_rejects`
   pins the fail-closed boundary. Arbitrary cell-to-cell difference graphs are not a supported or
   claimed v6 feature.
+- **AIR transfer correspondence:** APC-1 checks local definition/use renaming and independently
+  enumerated predecessor transfers against emitted CSIR. The production-linked
+  @thm:Combined.Projection.accepted_bytes_preserve_paths preserves every extracted finite transfer
+  path through actual phi operands. @test:projection_accepts_source_branches_loops_and_reordered_blocks,
+  @test:projection_rejects_missing_branch_and_backedge_inputs_even_when_plan_agrees, and
+  @test:projection_native_checker_rejects_mutated_phi_records_and_witnesses exercise the boundary.
+  Extraction completeness, unreachable-path justification, opcode/metadata semantics, and
+  local-read serialization remain assumptions; the generic rank corollary requires phi closure.
 - **Known exclusions:** The resolved raw semantic machine uses the same closed instruction
   vocabulary as production v8. Its SecretCT finite-prefix result is a corollary of executable
-  verifier acceptance; its Public independent-length result is now a production-linked corollary
-  of model-9 acceptance. The Public result deliberately does not equate ordinary-Secret timing,
-  control, address, allocation, or cost traces. Semantic taint, pc-taint, contracts,
-  policy classes (including assignment/return/call/state-result T030), release stages, guards, and local
-  capability shapes are direct. Full semantic
-  origin/authority propagation, slot meet, affine CFG state, and quantitative balance transitions
-  are not yet the sole source of truth, so the v6 obligation projection remains load-bearing. The
-  machine is a security abstraction rather than a proof of AIR/Wasm adequacy. There is still no
-  mechanized source-to-CSIR correspondence: in particular, security-only SSA versioning, phi
-  placement, and type-proved unreachable-edge projection remain trusted Rust transformations.
-  There is also no proof of Lean native code,
-  Wasm emission, Wasmtime, scheduling/queues, microarchitecture, or hardware timing. The v6 graph projection is
-  intentionally conservative and the legacy Rust taint gate remains mandatory for precision and
-  independently enforced closure/region/early-exit details during parity maturation. No tagged
-  zero-disagreement rollout evidence has been recorded. Local accepted-corpus parity is green,
-  including the committed JSON library; the deliberate Wasm export correction is pinned in the
-  regenerated parity manifest. The v9 dual-gate evidence remains non-retirement-eligible.
+  verifier acceptance; its Public independent-length result is a production-linked corollary of
+  model-9 acceptance. The Public result deliberately does not equate ordinary-Secret timing,
+  control, address, allocation, or cost traces. `PLC-2026-09-07` relates the shipped checker
+  transitions, retained-v6 compatibility layer, Lean theorems, and executable canaries for the
+  current CSIR verifier stack, but it is not a source/AIR/Wasm adequacy proof. Rust source-to-CSIR
+  projection, including security-only SSA versioning, phi placement, and type-proved unreachable
+  fallthrough projection, remains trusted. Lean native generation/runtime, Wasm emission, Wasmtime,
+  scheduling/queues, microarchitecture, hardware timing, platform release evidence, and old-gate
+  retirement are SR-017. Local accepted-corpus parity is green, including the committed JSON
+  library; the deliberate Wasm export correction is pinned in the regenerated parity manifest. The
+  v9 dual-gate evidence remains non-retirement-eligible.
 - **Self-host status:** Separate differential evidence source.
-- **Status:** `bounded`
-- **Residual risk:** SR-013 and SR-017.
+- **Status:** `enforced`
+- **Residual risk:** None for `PLC-2026-09-07`; SR-017 remains open for source-to-CSIR,
+  post-CSIR runtime/lowering, platform, performance, and old-gate retirement adequacy.
 
 ### SND-DIAG-001 [P1]
 

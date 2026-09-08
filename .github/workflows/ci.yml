@@ -433,10 +433,12 @@ jobs:
         run: cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget -- --exact --nocapture
 
       - name: CSIR v9 dual-gate rollout and retained constructor inventory
-        # Pins the complete numeric record/instruction/policy vocabulary and
-        # prevents the integration release from silently retiring v6 or the
-        # Rust/Z3 compatibility gates before schema-v10 evidence exists.
-        run: cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract
+        # Pins the complete numeric record/instruction/policy vocabulary, the
+        # production Lean composition profile, and the non-retirement release
+        # boundary before schema-v10 evidence exists.
+        run: |
+          cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract
+          cargo test -p sigil-runtime --no-default-features --test production_lean_composition_profile
 
       - name: CSIR v9 linked verifier and retained-v8 raw-security parity
         # Exercises the same statically linked CombinedKernel + SemanticKernel entry used by
@@ -1057,18 +1059,39 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             cross_target: x86_64-apple-darwin
+          # GNU, not MSVC, and that is forced rather than preferred. The mandatory Lean
+          # verifier is compiled and linked into every Rust build, and the pinned toolchain
+          # publishes Windows only as `x86_64-w64-windows-gnu`: clang, libc++, mingw. Its
+          # generated C initializes a flexible array member with `= {}`, which ISO C forbids in
+          # every edition and `cl.exe` rejects under every `/std` level (measured 2026-09-07:
+          # 164x C7757, after two `<stdatomic.h>` gates in front of it), and its archives are
+          # Itanium-mangled, which the MSVC C++ runtime can never resolve. The MSVC leg had
+          # therefore never once linked since the verifier became mandatory. build.rs refuses
+          # that ABI by name; this is the target that matches Lean's own.
           - os: windows-latest
-            target: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-gnu
     runs-on: ${{ matrix.os }}
-    # 50, not the 30 the other jobs use. Measured on the first run of this
-    # job: Windows cold-cache spent 11m17s on the release build and 17m32s
-    # on the test step, then tripped the 30m cap during post-job cache save
-    # — every actual step had already passed. macos-14 finished the same
-    # work in 9m11s. Windows is simply the slow target here (MSVC link
-    # times, no sccache, C builds for ring and bundled SQLite), so the cap
-    # has to clear a cold-cache Windows run with room to spare or the lane
-    # reports infrastructure noise instead of portability.
-    timeout-minutes: 50
+    # 50 for macOS, 75 for Windows, against the 30 the other jobs use. Both are
+    # measurements, and the cap has to clear a COLD-cache run with room to spare
+    # or the lane reports infrastructure noise instead of portability.
+    #
+    # macOS keeps the 50 measured on this job's first run, where cold-cache
+    # Windows spent 11m17s on the release build and 17m32s on the test step and
+    # tripped a 30m cap during post-job cache save with every actual step
+    # already passed, while macos-14 finished the same work in 9m11s.
+    #
+    # Windows needs 75 as of 2026-09-07, when the leg moved to the GNU target.
+    # That changed the rust-cache key (it is keyed by target triple), so the
+    # first GNU run was necessarily cold, and it was cancelled at exactly 50m00s
+    # with the last of its seven steps still running: 10.6 min for the release
+    # build, 31.4 min for the CLI/compiler/frontends/serve suite, and 4.7 min
+    # into the host-profile step when the axe fell. The main suite roughly
+    # doubled against the MSVC-era 17m32s, which is what mingw link times over
+    # ~200 test binaries carrying the statically linked Lean verifier cost.
+    # 75 clears the 45.1 min that did complete with half again as much headroom
+    # for the step that did not. Warm runs are far cheaper and unaffected by
+    # this ceiling; it exists only so a cold cache cannot red the lane.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 75 || 50 }}
 
     steps:
       - name: Checkout
@@ -1078,11 +1101,99 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           # `targets` is empty for legs with no cross_target, which the
-          # action treats as "host target only".
+          # action treats as "host target only". Naming a target here only adds
+          # it to `stable`, which rust-toolchain.toml then redirects away from,
+          # so the targets this repository actually builds are listed in that
+          # file instead -- x86_64-pc-windows-gnu included.
           targets: ${{ matrix.cross_target }}
 
       - name: Install pinned Lean verifier toolchain
         uses: ./.github/actions/setup-lean
+
+      - name: Point the GNU-Windows target at a clang/LLD toolchain
+        # Lean's Windows archives are clang output, and their `operator new` /
+        # `operator delete` are LLVM COFF weak externals
+        # (`.weak._ZdlPv.default.__clang_call_terminate`). GNU ld will not extract an archive
+        # member for one, and does not report it as a missing symbol either: it fails with
+        # `relocation truncated to fit: IMAGE_REL_AMD64_REL32 against undefined symbol
+        # 'operator delete(void*)'` at every call site, which reads like an address-range
+        # problem and is not one. ld.lld resolves them. Measured on a cross-link of this
+        # workspace: identical inputs, GNU ld fails and LLD produces a PE32+ binary.
+        #
+        # So the C compiler stays mingw gcc (it compiles Lean's generated C happily) and only
+        # the LINKER moves to clang driving lld. clang on Windows defaults to the MSVC target,
+        # hence the explicit `--target`; Rust's windows-gnu target asks for `-lgcc_eh -lgcc`,
+        # which live in the GCC support directory rather than the sysroot, hence the `-L`.
+        #
+        # Fail closed and by name: every path this step needs is checked here, because the
+        # alternative is discovering a missing MSYS2 or LLVM in the middle of a link.
+        # Everything here is DISCOVERED from the tools themselves rather than hardcoded. The
+        # first attempt hardcoded MSYS2's mingw64 prefix and failed on this image, which ships
+        # MSYS2 without that subsystem while providing gcc 15.2.0 elsewhere; asking gcc where
+        # its own libgcc lives is both shorter and immune to the next image reshuffle.
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc_path="$(command -v gcc || true)"
+          if [ -z "$gcc_path" ]; then
+            for candidate in \
+              "/c/ProgramData/chocolatey/bin/gcc.exe" \
+              "/c/msys64/mingw64/bin/gcc.exe" \
+              "/c/mingw64/bin/gcc.exe"; do
+              if [ -x "$candidate" ]; then gcc_path="$candidate"; break; fi
+            done
+          fi
+          test -n "$gcc_path" \
+            || { echo "::error::the GNU-Windows lane found no gcc on PATH or in any known image location"; exit 1; }
+          machine="$("$gcc_path" -dumpmachine)"
+          case "$machine" in
+            *mingw*) ;;
+            # A Cygwin or MSYS gcc targets a POSIX emulation layer, not native Windows, and
+            # would produce a binary this lane has no interest in proving.
+            *) echo "::error::gcc at $gcc_path targets $machine, not mingw"; exit 1 ;;
+          esac
+          gcc_lib="$(dirname "$("$gcc_path" -print-libgcc-file-name)")"
+          test -f "$gcc_lib/libgcc.a" \
+            || { echo "::error::no libgcc.a beside $gcc_lib"; exit 1; }
+          # Rust's windows-gnu target asks the driver for crt2.o out of the sysroot. The two
+          # mingw layouts in the wild put it either directly under the toolchain root or under
+          # a <triple> subdirectory, so probe for the one that actually holds it.
+          mingw_root="${gcc_lib%/lib/gcc/*}"
+          sysroot=""
+          for candidate in "$mingw_root" "$mingw_root/$machine"; do
+            if [ -f "$candidate/lib/crt2.o" ]; then sysroot="$candidate"; break; fi
+          done
+          test -n "$sysroot" \
+            || { echo "::error::no lib/crt2.o under $mingw_root or $mingw_root/$machine"; exit 1; }
+          clang_path="$(command -v clang || true)"
+          if [ -z "$clang_path" ] && [ -x "/c/Program Files/LLVM/bin/clang.exe" ]; then
+            clang_path="/c/Program Files/LLVM/bin/clang.exe"
+            echo "$(cygpath -w "/c/Program Files/LLVM/bin")" >> "$GITHUB_PATH"
+          fi
+          test -n "$clang_path" \
+            || { echo "::error::the GNU-Windows lane needs clang, which drives ld.lld"; exit 1; }
+          # Check for the ld.lld binary itself. `clang -fuse-ld=lld --version` proves nothing:
+          # --version never links, so it exits 0 with an unused-argument warning even when no
+          # lld is installed, and the lane would then fail much later inside the real link.
+          command -v ld.lld >/dev/null 2>&1 || test -x "$(dirname "$clang_path")/ld.lld.exe" \
+            || { echo "::error::no ld.lld beside $clang_path; GNU ld cannot link Lean's clang archives"; exit 1; }
+          echo "gcc $gcc_path ($machine); libgcc in $gcc_lib; sysroot $sysroot; clang $clang_path"
+          # gcc's own bin directory stays on PATH so the built binaries find libgcc_s_seh-1.dll
+          # and libwinpthread-1.dll when the smoke steps run them.
+          echo "$(cygpath -w "$(dirname "$gcc_path")")" >> "$GITHUB_PATH"
+          {
+            # Every later cargo step in this job builds for the host by default, and the
+            # runner's host toolchain is MSVC -- the one ABI this lane cannot use. Setting the
+            # default target once here keeps those steps identical across the two legs instead
+            # of appending `--target` to each of them and inviting the next added step to
+            # forget it and quietly test the wrong ABI.
+            echo "CARGO_BUILD_TARGET=x86_64-pc-windows-gnu"
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=clang"
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS=-Clink-arg=--target=x86_64-w64-windows-gnu -Clink-arg=--sysroot=$(cygpath -m "$sysroot") -Clink-arg=-fuse-ld=lld -Clink-arg=-L$(cygpath -m "$gcc_lib")"
+            echo "CC_x86_64_pc_windows_gnu=gcc"
+            echo "AR_x86_64_pc_windows_gnu=ar"
+          } >> "$GITHUB_ENV"
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

@@ -274,7 +274,7 @@ source imports—not merely resolver metadata.
 ## 10. Certificates and provenance
 
 Current single-module compiler certificate schema v9 remains unchanged. The explicit package path
-wraps that base certificate in strict `package-graph-v1` schema 1, adding:
+wraps that base certificate in strict `package-graph-v1` schema 2, adding:
 
 - package graph hash and lockfile hash;
 - ordered per-node package id/version/manifest/content hashes;
@@ -283,13 +283,34 @@ wraps that base certificate in strict `package-graph-v1` schema 1, adding:
 - derived ring/effect/host-import/grant/taint/import facts per package plus a separately attributed
   ambient stdlib record;
 - graph-level resource evidence; and
-- the compiler/runtime versions that derived them.
+- the compiler/runtime versions that derived them;
+- the checked callable signatures of package-owned modules and their hash; and
+- an artifact identity, explicit proof tier, and solver witness flag.
+
+Schema 1 is historical. Schema 2 requires the base v9 formal report and rejects
+missing or unknown wrapper fields. The callable inventory is derived from checked
+functions and their validated declarations, including declared effect allowances;
+it is not a fabricated package-specific API or an inventory of every type/constant.
+Nominal definitions and non-callable declarations remain bound through source and
+graph identities. It includes no ambient-library functions or compiler-generated
+module initializers; initializer exports remain bound by the exact Wasm identity.
+
+`sigil package-lock --root DIR` derives a root-only lock from existing source and
+creates it without replacement; it does not compile or admit a package.
+`sigil package-evidence --root DIR --output-dir NEW_DIR` freshly compiles with the
+solver and mandatory formal gate, then emits the exact digest preimages, lock,
+certificate, and Wasm. Structural builds cannot emit this bundle. The output must
+be disjoint from the input root and must not exist. The manifest is written last;
+an interrupted output must be treated as incomplete, not overwritten on retry.
+Both commands support `--json`; evidence also supports `--host-profile NAME`.
+Neither command grants package admission or publisher authentication.
 
 The wrapper also binds the normalized composed-source framing hash and an explicit hash of the
 compiler inputs that implement parsing, package resolution, security analysis, certificates, and
 Wasm emission. The compiler identity covers the workspace manifest/lock, compiler manifest and
 build script, all compiler Rust sources, the `sigil-abi` manifest/source, the exact Rust compiler,
-target/profile/options, enabled compiler features, and the native Z3 identity (or the explicit
+target/profile/options, enabled compiler features, the native formal checker source
+fingerprint and Lean toolchain pin, and the native Z3 identity (or the explicit
 solver-off marker). Its source census therefore binds the package-level solver requirement as well
 as the refinement implementation: changing or removing that requirement, changing solver
 configuration, or changing native solver identity changes `compiler_identity_hash`. A solver-off
@@ -346,10 +367,12 @@ solver-unverified package result to `R817`, write no accepted artifacts, and hav
 override. Malformed/oversized certificate input fails at the CLI certificate gate (including
 `R811` for parse/shape failure) before it can be treated as verified evidence.
 
-The wrapper is `unsigned_local`: SHA-256 proves integrity, not publisher authentication. A later
-authenticated release envelope must name the repository commit, release authority, and evidence
-manifest. No public publication is authorized until that envelope and key/identity lifecycle have
-a separate accepted design.
+The package certificate may be wrapped in the
+[`authenticated-release` certificate provenance envelope](certificate-provenance.md) to authenticate
+the signer and deployment context. That envelope authenticates the certificate payload; it does not
+by itself approve publication or prove the external evidence manifest. Public publication still
+requires the release authority to bind the repository commit and evidence manifest in its deployment
+process.
 
 ## 11. Acceptance corpus
 

@@ -407,6 +407,7 @@ pub(super) struct TypeUniverse {
     /// emitted as T263 by `check_collecting`. Excluded from `alias_bodies`, so a cyclic
     /// alias resolves to an opaque `Named` (never expands) — no infinite recursion.
     pub(super) cyclic_aliases: Vec<(String, crate::span::Span)>,
+    pub(super) excessive_aliases: Vec<(String, crate::span::Span)>,
     /// Wall 4 Step 1: record_name → refinement clauses declared via
     /// `where field RELOP literal`. Empty Vec or missing entry means
     /// the record has no refinements. Populated in pass 2 of
@@ -507,6 +508,9 @@ pub(crate) struct MonomorphTracker {
     pub(super) enums: HashMap<String, Vec<(String, Vec<Type>)>>,
     pub(super) cache: HashSet<String>,
     pub(super) depth: usize,
+    /// Monotone across the entire check, including failed/cache-removed attempts.
+    specialization_attempts: usize,
+    pub(super) work_exhausted: bool,
     /// Current enclosing function's effects — closures inherit this.
     pub(super) current_effects: EffectSet,
     /// Wall 4 Step 7 / N15-S7, N25-S7: declared return refinement for
@@ -735,6 +739,8 @@ impl MonomorphTracker {
             enums: HashMap::new(),
             cache: HashSet::new(),
             depth: 0,
+            specialization_attempts: 0,
+            work_exhausted: false,
             current_effects: EffectSet::empty(),
             current_return_refinement: None,
             workspace_sigs: std::collections::BTreeMap::new(),
@@ -757,6 +763,102 @@ impl MonomorphTracker {
             state_mono_depth: 0,
             body_kind: BodyKind::Free,
         }
+    }
+
+    /// Reserve work before expanding a new specialization. Cache hits retain
+    /// the existing recursive-call behavior; failed attempts never refund work.
+    pub(super) fn reserve_specialization(
+        &mut self,
+        name: &str,
+        span: crate::span::Span,
+        diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+    ) -> bool {
+        if self.work_exhausted || self.cache.contains(name) {
+            return false;
+        }
+        if self.specialization_attempts >= MAX_MONOMORPH_INSTANTIATIONS {
+            self.exhaust_work("specialization count", span, diagnostics);
+            return false;
+        }
+        self.specialization_attempts += 1;
+        self.cache.insert(name.to_owned());
+        true
+    }
+
+    fn exhaust_work(
+        &mut self,
+        reason: &str,
+        span: crate::span::Span,
+        diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+    ) {
+        if !self.work_exhausted {
+            diagnostics.push(crate::diagnostics::Diagnostic::error(
+                crate::diagnostics::codes::T151,
+                format!(
+                    "type expansion work limit exceeded ({reason}); simplify generic expansion"
+                ),
+                Some(span),
+            ));
+            self.work_exhausted = true;
+        }
+    }
+
+    /// Instance counts alone do not bound `f((x, x))`: its type doubles on
+    /// each recursion. Check size and depth before mangling or re-entering a body.
+    /// Iteration avoids making the resource guard itself a recursive walker.
+    pub(super) fn check_type_work<'a>(
+        &mut self,
+        types: impl IntoIterator<Item = &'a Type>,
+        span: crate::span::Span,
+        diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+    ) -> bool {
+        if self.work_exhausted {
+            return false;
+        }
+        let mut stack: Vec<_> = types.into_iter().map(|ty| (ty, 1)).collect();
+        let mut nodes = 0;
+        while let Some((ty, depth)) = stack.pop() {
+            nodes += 1;
+            if nodes > MAX_EXPANDED_TYPE_NODES || depth > MAX_EXPANDED_TYPE_DEPTH {
+                self.exhaust_work("expanded type size or depth", span, diagnostics);
+                return false;
+            }
+            match ty {
+                Type::Named(_, args) | Type::Tuple(args) | Type::HktApp { args, .. } => {
+                    stack.extend(args.iter().map(|arg| (arg, depth + 1)));
+                }
+                Type::Array { elem, .. }
+                | Type::Ref(elem, _)
+                | Type::Slice(elem)
+                | Type::Ptr(elem)
+                | Type::MutPtr(elem) => stack.push((elem, depth + 1)),
+                Type::Fn(params, ret, _, _) => {
+                    stack.push((ret, depth + 1));
+                    stack.extend(params.iter().map(|param| (param, depth + 1)));
+                }
+                Type::Unit
+                | Type::Bool
+                | Type::I32
+                | Type::U32
+                | Type::I64
+                | Type::U64
+                | Type::F64
+                | Type::U256
+                | Type::I256
+                | Type::Str
+                | Type::Generic(_)
+                | Type::Cap(_, _)
+                | Type::ActorRef(_)
+                | Type::Region
+                | Type::IntLit(_)
+                | Type::HktVar { .. }
+                | Type::TypeCtor(_)
+                | Type::StateMarker(_)
+                | Type::Never
+                | Type::Error => {}
+            }
+        }
+        true
     }
 }
 
@@ -836,6 +938,9 @@ impl Drop for BorrowContextGuard<'_> {
 }
 
 pub(super) const MAX_MONOMORPH_DEPTH: usize = 64;
+pub(super) const MAX_MONOMORPH_INSTANTIATIONS: usize = 1024;
+pub(super) const MAX_EXPANDED_TYPE_NODES: usize = 4096;
+pub(super) const MAX_EXPANDED_TYPE_DEPTH: usize = 128;
 
 #[cfg(test)]
 mod region_lattice_tests {

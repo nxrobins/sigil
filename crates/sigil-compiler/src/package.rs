@@ -26,7 +26,7 @@ use crate::{
 
 pub const PACKAGE_PROTOCOL_VERSION: &str = "sigil-package-v1";
 pub const RESOLVER_CONTRACT: &str = "sigil-resolver-v1";
-pub const PACKAGE_CERTIFICATE_SCHEMA: &str = "1";
+pub const PACKAGE_CERTIFICATE_SCHEMA: &str = "2";
 pub const PACKAGE_CERTIFICATE_EXTENSION: &str = "package-graph-v1";
 pub const RUNTIME_VERSION: &str = "0.1.0";
 
@@ -44,7 +44,17 @@ const MAX_FEATURE_DEPTH: usize = 64;
 const CONTENT_DOMAIN: &[u8] = b"SIGIL-PACKAGE-CONTENT\0V1\0";
 const GRAPH_DOMAIN: &[u8] = b"SIGIL-PACKAGE-GRAPH\0V1\0";
 const SOURCE_SET_DOMAIN: &[u8] = b"SIGIL-PACKAGE-SOURCES\0V1\0";
+const PUBLIC_API_DOMAIN: &[u8] = b"SIGIL-PACKAGE-PUBLIC-API\0V1\0";
+const ARTIFACT_ID_DOMAIN: &[u8] = b"SIGIL-PACKAGE-ARTIFACT\0V1\0";
 const COMPILER_ID_DOMAIN: &[u8] = b"SIGIL-COMPILER-IDENTITY\0V1\0";
+
+/// Stable package-layer failure. Compiler diagnostics remain `CompileError`
+/// and are not remapped into package codes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageErrorOrigin {
+    Candidate,
+    Infrastructure,
+}
 
 /// Stable package-layer failure. Compiler diagnostics remain `CompileError`
 /// and are not remapped into package codes.
@@ -52,6 +62,7 @@ const COMPILER_ID_DOMAIN: &[u8] = b"SIGIL-COMPILER-IDENTITY\0V1\0";
 pub struct PackageError {
     pub code: &'static str,
     pub message: String,
+    pub origin: PackageErrorOrigin,
 }
 
 impl PackageError {
@@ -59,6 +70,15 @@ impl PackageError {
         Self {
             code,
             message: message.into(),
+            origin: PackageErrorOrigin::Candidate,
+        }
+    }
+
+    fn infrastructure(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            origin: PackageErrorOrigin::Infrastructure,
         }
     }
 }
@@ -123,6 +143,11 @@ pub struct PackageCertificateJson {
     pub ambient_stdlib: AmbientStdlibCertificateJson,
     pub packages: Vec<PackageNodeCertificateJson>,
     pub graph_resource_evidence_hash: String,
+    pub public_api: Vec<serde_json::Value>,
+    pub public_api_hash: String,
+    pub artifact_identity_hash: String,
+    pub proof_tier: String,
+    pub solver_verified: bool,
     pub authentication: PackageAuthenticationJson,
 }
 
@@ -271,6 +296,132 @@ pub struct PackageCompilation {
 }
 
 impl PackageCompilation {
+    /// Write a create-new evidence directory. A failed write leaves an incomplete
+    /// directory that is never overwritten on retry. The manifest is written last;
+    /// consumers must verify its identities, not infer completeness from existence.
+    pub fn write_evidence_directory(&self, output: &Path) -> Result<(), PackageError> {
+        let files = self.evidence_files()?;
+        let inventory: BTreeMap<_, _> = files
+            .iter()
+            .map(|(name, bytes)| {
+                (
+                    name.clone(),
+                    serde_json::json!({"sha256": prefixed_sha256(bytes), "bytes": bytes.len()}),
+                )
+            })
+            .collect();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": "sigil-package-evidence-v1", "files": inventory,
+            "proof_tier": "solver_verified", "admission": "not_evaluated"
+        }))
+        .map_err(|e| PackageError::infrastructure("E_EVIDENCE", e.to_string()))?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, mkdirat};
+            let parent = output
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let leaf = output.file_name().ok_or_else(|| {
+                PackageError::infrastructure("E_EVIDENCE", "output must name a new directory")
+            })?;
+            let parent = PackageDirectory::open_root(parent)?;
+            mkdirat(
+                &parent.fd,
+                Path::new(leaf),
+                Mode::RUSR | Mode::WUSR | Mode::XUSR,
+            )
+            .map_err(|e| PackageError::infrastructure("E_EVIDENCE", e.to_string()))?;
+            let directory = parent.open_directory(Path::new(leaf), "E_EVIDENCE")?;
+            for (name, bytes) in &files {
+                directory.create_regular_file(name, bytes, "E_EVIDENCE")?;
+            }
+            directory.create_regular_file("evidence-manifest.json", &manifest, "E_EVIDENCE")?;
+            fs::File::from(directory.fd)
+                .sync_all()
+                .map_err(|e| PackageError::infrastructure("E_EVIDENCE", e.to_string()))?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (output, files, manifest);
+            Err(PackageError::infrastructure(
+                "E_UNSUPPORTED_PLATFORM",
+                "secure evidence output is unavailable",
+            ))
+        }
+    }
+
+    /// Exact compiler-owned digest preimages and artifacts from one compilation.
+    /// This method supplies evidence, never admission or publisher authentication.
+    /// Structural builds cannot materialize an accepting-shaped evidence bundle.
+    pub fn evidence_files(&self) -> Result<BTreeMap<String, Vec<u8>>, PackageError> {
+        self.require_solver_verified()?;
+        let certificate = self.certificate();
+        let mut files = BTreeMap::from([
+            (
+                "sigil-package.lock.json".to_owned(),
+                self.graph.lockfile_bytes.clone(),
+            ),
+            (
+                "source-set.preimage".to_owned(),
+                package_source_set_preimage(&self.graph.sources),
+            ),
+            (
+                "package-graph.preimage".to_owned(),
+                self.graph.graph_preimage.clone(),
+            ),
+            (
+                "public-api.preimage".to_owned(),
+                package_public_api_preimage(&certificate.public_api).map_err(|error| {
+                    PackageError::infrastructure("E_EVIDENCE", error.to_string())
+                })?,
+            ),
+            (
+                "compiler-artifact.preimage".to_owned(),
+                package_artifact_preimage(
+                    &self.graph,
+                    &self.compilation,
+                    &certificate.compiler_identity_hash,
+                    &certificate.public_api_hash,
+                ),
+            ),
+            (
+                "certificate.json".to_owned(),
+                serde_json::to_vec(&certificate).map_err(|error| {
+                    PackageError::infrastructure("E_EVIDENCE", error.to_string())
+                })?,
+            ),
+            ("inner.wasm".to_owned(), self.compilation.wasm_inner.clone()),
+        ]);
+        if let Some(outer) = &self.compilation.wasm_outer {
+            files.insert("outer.wasm".to_owned(), outer.clone());
+        }
+        // This comparison also detects accidental divergence if a derivation
+        // changes without updating the corresponding evidence producer.
+        for (path, expected) in [
+            ("sigil-package.lock.json", &certificate.lockfile_hash),
+            (
+                "source-set.preimage",
+                &certificate.composed_source_framing_hash,
+            ),
+            ("package-graph.preimage", &certificate.package_graph_hash),
+            ("public-api.preimage", &certificate.public_api_hash),
+            (
+                "compiler-artifact.preimage",
+                &certificate.artifact_identity_hash,
+            ),
+        ] {
+            if prefixed_sha256(&files[path]) != *expected {
+                return Err(PackageError::infrastructure(
+                    "E_EVIDENCE",
+                    format!("{path} differs from certified identity"),
+                ));
+            }
+        }
+        Ok(files)
+    }
+
     /// Require the proof tier used by package acceptance and release gates.
     /// Structural package compilation remains useful for diagnostics, but it
     /// must never be confused with a solver-backed verification result.
@@ -289,6 +440,22 @@ impl PackageCompilation {
     /// certificate stays at schema v9 and keeps its single-file behavior; only
     /// this explicit package path emits the wrapper.
     pub fn certificate(&self) -> PackageCertificateJson {
+        let compiler_identity_hash = compiler_identity_hash();
+        let public_api = package_public_api(&self.graph, &self.compilation);
+        let public_api_hash =
+            package_public_api_hash(&public_api).expect("package public API is serializable");
+        let proof_tier = if self.compilation.capability_report.solver_verified {
+            "solver_verified"
+        } else {
+            "structural_only"
+        }
+        .to_owned();
+        let artifact_identity_hash = package_artifact_identity_hash(
+            &self.graph,
+            &self.compilation,
+            &compiler_identity_hash,
+            &public_api_hash,
+        );
         let sources: Vec<(String, String)> = self
             .graph
             .sources
@@ -327,7 +494,7 @@ impl PackageCompilation {
             package_graph_hash: self.graph.graph_hash.clone(),
             composed_source_framing_hash: self.graph.source_framing_hash.clone(),
             compiler_version: COMPILER_VERSION.to_owned(),
-            compiler_identity_hash: compiler_identity_hash(),
+            compiler_identity_hash,
             runtime_version: RUNTIME_VERSION.to_owned(),
             stdlib_hash: compiler_stdlib_hash(),
             modules: self.compilation.module_names.clone(),
@@ -337,6 +504,11 @@ impl PackageCompilation {
                 &self.graph,
                 &self.compilation,
             ),
+            public_api,
+            public_api_hash,
+            artifact_identity_hash,
+            proof_tier,
+            solver_verified: self.compilation.capability_report.solver_verified,
             authentication: PackageAuthenticationJson {
                 status: "unsigned_local".to_owned(),
                 subject: None,
@@ -356,6 +528,8 @@ pub struct ResolvedPackageGraph {
     pub source_framing_hash: String,
     pub sources: Vec<PackageSource>,
     pub certificate_nodes: Vec<PackageNodeCertificateJson>,
+    lockfile_bytes: Vec<u8>,
+    graph_preimage: Vec<u8>,
     ambient_stdlib: AmbientStdlibCertificateJson,
     claims: BTreeMap<String, ManifestDeclared>,
 }
@@ -478,7 +652,7 @@ struct ManifestDeclared {
     trusted_surface: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Lockfile {
     format_version: String,
@@ -491,7 +665,7 @@ struct Lockfile {
     nodes: Vec<LockNode>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockResolver {
     contract: String,
@@ -505,7 +679,7 @@ pub struct LockSource {
     pub locator: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockNode {
     package: String,
@@ -589,6 +763,79 @@ pub fn compile_local_package_structural_with_context(
     Ok(PackageCompilation { compilation, graph })
 }
 
+/// Derive the canonical root-only offline lockfile bytes for a local package.
+/// This helper is intentionally narrow: dependency resolution remains locked
+/// by explicit checked-in lockfiles, while tests and successor proof tooling
+/// can materialize the single-root candidate packages used by the fmt trial.
+pub fn derive_local_package_lock(root: &Path) -> Result<Vec<u8>, PackageError> {
+    let root = PackageDirectory::open_root(root)?;
+    derive_open_package_lock(&root)
+}
+
+/// Create a root-only lock without overwriting any existing file or following a
+/// leaf symlink. The retained directory descriptor owns both reads and the write.
+pub fn create_local_package_lock(root: &Path) -> Result<Vec<u8>, PackageError> {
+    let root = PackageDirectory::open_root(root)?;
+    let bytes = derive_open_package_lock(&root)?;
+    root.create_regular_file(LOCK_FILE, &bytes, "E_LOCK_CREATE")?;
+    Ok(bytes)
+}
+
+fn derive_open_package_lock(root: &PackageDirectory) -> Result<Vec<u8>, PackageError> {
+    let manifest_bytes =
+        root.read_regular_file(Path::new(MANIFEST_FILE), MAX_JSON_BYTES, "E_MANIFEST")?;
+    let manifest: Manifest = parse_json(&manifest_bytes, MANIFEST_FILE)?;
+    validate_manifest_shape(&manifest)?;
+    if !manifest.dependencies.is_empty() {
+        return Err(PackageError::new(
+            "E_MANIFEST",
+            "derive_local_package_lock only supports root-only packages",
+        ));
+    }
+    let identity = package_id(&manifest);
+    let manifest_hash = canonical_manifest_hash(&manifest_bytes)?;
+    let sources = load_module_sources(root, &identity, &manifest.modules)?;
+    let content_hash =
+        package_content_hash(&identity, &manifest.version, &manifest_bytes, &sources)?;
+    let requested: BTreeSet<String> = manifest.features.default.iter().cloned().collect();
+    let features: Vec<String> = feature_closure(&identity, &manifest, &requested)?
+        .into_iter()
+        .collect();
+    let node = LockNode {
+        package: identity.clone(),
+        version: manifest.version.clone(),
+        source: LockSource {
+            kind: "workspace".to_owned(),
+            locator: ".".to_owned(),
+        },
+        manifest_hash: manifest_hash.clone(),
+        content_hash,
+        features,
+        modules: manifest.modules.clone(),
+        dependencies: Vec::new(),
+        yanked_observed: false,
+    };
+    let lock = Lockfile {
+        format_version: "1".to_owned(),
+        root: identity,
+        root_manifest_hash: manifest_hash,
+        resolver: LockResolver {
+            contract: RESOLVER_CONTRACT.to_owned(),
+            offline: true,
+        },
+        graph_hash: package_graph_hash(std::slice::from_ref(&node)),
+        stdlib_hash: compiler_stdlib_hash(),
+        compiler_requires: manifest.compiler.requires.clone(),
+        nodes: vec![node],
+    };
+    serde_json::to_vec(&lock).map_err(|error| {
+        PackageError::infrastructure(
+            "E_LOCK_DERIVATION",
+            format!("failed to serialize canonical lockfile: {error}"),
+        )
+    })
+}
+
 /// Recompile from the explicit root, compare every package-aware field, and
 /// require a freshly derived solver witness before accepting the certificate.
 /// Missing/malformed fields fail during strict deserialization; changed inputs
@@ -657,7 +904,7 @@ fn compare_local_package_certificate(
 ) -> Result<(), PackageCompileError> {
     let expected = fresh.certificate();
     if supplied != &expected {
-        return Err(PackageError::new(
+        return Err(PackageError::infrastructure(
             "E_CERTIFICATE",
             "package certificate does not match freshly resolved, compiled, and derived inputs",
         )
@@ -934,6 +1181,8 @@ fn load_locked_package(root: &Path) -> Result<ResolvedPackageGraph, PackageError
         source_framing_hash,
         sources,
         certificate_nodes,
+        graph_preimage: package_graph_preimage(&lock.nodes),
+        lockfile_bytes: lock_bytes,
         ambient_stdlib: AmbientStdlibCertificateJson {
             modules: Vec::new(),
             derived: empty_derived_facts(),
@@ -1307,6 +1556,50 @@ fn canonical_dependency_order(
 }
 
 impl PackageDirectory {
+    fn create_regular_file(
+        &self,
+        leaf: &str,
+        bytes: &[u8],
+        code: &'static str,
+    ) -> Result<(), PackageError> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags, openat};
+            use std::io::Write as _;
+            // Internal fixed filenames only: this helper never traverses a path.
+            if Path::new(leaf).components().count() != 1
+                || !matches!(
+                    Path::new(leaf).components().next(),
+                    Some(Component::Normal(_))
+                )
+            {
+                return Err(PackageError::infrastructure(
+                    code,
+                    "output must be a single regular filename",
+                ));
+            }
+            let fd = openat(
+                &self.fd,
+                leaf,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|e| PackageError::infrastructure(code, e.to_string()))?;
+            let mut file = fs::File::from(fd);
+            file.write_all(bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| PackageError::infrastructure(code, e.to_string()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (leaf, bytes);
+            Err(PackageError::infrastructure(
+                code,
+                "secure output is unavailable",
+            ))
+        }
+    }
+
     fn open_root(path: &Path) -> Result<Self, PackageError> {
         #[cfg(unix)]
         {
@@ -1570,10 +1863,11 @@ fn load_module_sources(
             .iter()
             .any(|diagnostic| diagnostic.severity() == crate::diagnostics::Severity::Error)
         {
+            let source_hash = prefixed_sha256(normalized.as_bytes());
             return Err(PackageError::new(
                 "E_MANIFEST",
                 format!(
-                    "source `{}` cannot be parsed while validating its manifest module binding",
+                    "source `{}` with normalized hash {source_hash} cannot be parsed while validating its manifest module binding",
                     path.display()
                 ),
             ));
@@ -2309,7 +2603,11 @@ fn package_content_hash(
 }
 
 fn package_graph_hash(nodes: &[LockNode]) -> String {
-    let mut digest = Sha256::new();
+    prefixed_sha256(&package_graph_preimage(nodes))
+}
+
+fn package_graph_preimage(nodes: &[LockNode]) -> Vec<u8> {
+    let mut digest = Preimage::default();
     digest.update(GRAPH_DOMAIN);
     for node in nodes {
         frame(&mut digest, node.package.as_bytes());
@@ -2331,11 +2629,246 @@ fn package_graph_hash(nodes: &[LockNode]) -> String {
             canonical_string_array(&node.dependencies).as_bytes(),
         );
     }
-    format!("sha256:{:x}", digest.finalize())
+    digest.0
+}
+
+/// The compiled callable surface of package-owned modules, excluding ambient
+/// library modules. Nominal types remain nominal: this is not a declaration
+/// inventory for records, constants, or uninstantiated generics. Source/graph
+/// and artifact identities bind the definitions behind those names separately.
+fn package_public_api(
+    graph: &ResolvedPackageGraph,
+    compilation: &Compilation,
+) -> Vec<serde_json::Value> {
+    let modules: BTreeSet<&str> = graph.sources.iter().map(|s| s.module.as_str()).collect();
+    let mut entries = Vec::new();
+    let registry = &compilation.typed.effect_registry;
+    for module in &compilation.typed.modules {
+        if !modules.contains(module.name.as_str()) {
+            continue;
+        }
+        for function in &module.functions {
+            // Module initializers are compiler scaffolding, not declared API.
+            // Their code/export still contributes to the exact Wasm identity.
+            if !function.externally_callable
+                || matches!(
+                    function.kind,
+                    crate::typed_ast::TypedFunctionKind::ModuleInit
+                )
+            {
+                continue;
+            }
+            let name = function.name.rsplit("::").next().expect("function name");
+            let params = function
+                .params
+                .iter()
+                .map(|param| {
+                    let label = if param.flow {
+                        "Flow"
+                    } else {
+                        taint_name(param.taint)
+                    };
+                    format!(
+                        "{}:{}@{label}",
+                        param.name,
+                        package_api_type(&param.ty, registry)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let result = package_api_type(&function.ret, registry);
+            let label = if function.ret_flow {
+                "Flow"
+            } else {
+                taint_name(function.ret_taint)
+            };
+            // Typed effects describe the implementation, whereas a checked
+            // declaration may intentionally expose a larger row (e.g. Alloc).
+            // Join by declaration span, including generic specializations;
+            // never derive a row from a package name or unchecked manifest.
+            let mut effects: BTreeSet<String> = function
+                .effects
+                .effects
+                .iter()
+                .map(|id| registry.name_of(*id).expect("checked effect").to_owned())
+                .collect();
+            for source_module in &compilation.ast.modules {
+                if source_module.name != module.name {
+                    continue;
+                }
+                for item in &source_module.items {
+                    let declarations: &[crate::ast::FnDef] = match item {
+                        Item::FnDef(def) => std::slice::from_ref(def),
+                        Item::ImplDef(def) => &def.methods,
+                        _ => &[],
+                    };
+                    for def in declarations.iter().filter(|def| def.span == function.span) {
+                        let variables = crate::ast::effect_row_param_names(def);
+                        if let Some(row) = &def.effects {
+                            effects.extend(
+                                row.iter()
+                                    .filter(|name| !variables.contains(*name))
+                                    .cloned(),
+                            );
+                        }
+                    }
+                }
+            }
+            let effects = effects.into_iter().collect::<Vec<_>>().join(",");
+            entries.push(serde_json::json!({
+                "kind": "function",
+                "module": module.name,
+                "name": name,
+                "signature": format!("fn {name}({params})->{result}@{label}!{{{effects}}}"),
+                "wasm_export": function.export_name,
+            }));
+        }
+    }
+    entries.sort_by(|left, right| {
+        let key = |value: &serde_json::Value| {
+            (
+                value["module"].as_str().unwrap_or_default().to_owned(),
+                value["name"].as_str().unwrap_or_default().to_owned(),
+            )
+        };
+        key(left).cmp(&key(right))
+    });
+    entries
+}
+
+fn package_api_effects(
+    effects: &crate::registries::EffectSet,
+    registry: &crate::registries::EffectRegistry,
+) -> String {
+    let names: BTreeSet<_> = effects
+        .effects
+        .iter()
+        .map(|id| {
+            registry
+                .name_of(*id)
+                .expect("checked effect has a registered identity")
+        })
+        .collect();
+    names.into_iter().collect::<Vec<_>>().join(",")
+}
+
+/// Identity encoding, not the lossy diagnostic type renderer. In particular,
+/// nested function types retain linearity and the names of their latent effects.
+fn package_api_type(
+    ty: &crate::type_check::Type,
+    registry: &crate::registries::EffectRegistry,
+) -> String {
+    use crate::type_check::Type;
+    let render = |ty: &Type| package_api_type(ty, registry);
+    let render_many = |types: &[Type]| types.iter().map(&render).collect::<Vec<_>>().join(",");
+    match ty {
+        Type::Unit => "unit".into(),
+        Type::Bool => "bool".into(),
+        Type::I32 => "i32".into(),
+        Type::U32 => "u32".into(),
+        Type::I64 => "i64".into(),
+        Type::U64 => "u64".into(),
+        Type::F64 => "f64".into(),
+        Type::U256 => "u256".into(),
+        Type::I256 => "i256".into(),
+        Type::Str => "str".into(),
+        Type::Generic(name) => format!("generic<{name}>"),
+        Type::Named(name, args) => format!("named<{name};{}>", render_many(args)),
+        Type::Cap(name, args) => format!(
+            "cap<{name};{}>",
+            args.iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Type::ActorRef(name) => format!("actor<{name}>"),
+        Type::Array { elem, size } => format!("[{};{size}]", render(elem)),
+        Type::Fn(args, ret, linear, effects) => format!(
+            "fn[linear={linear}]({})->{}!{{{}}}",
+            render_many(args),
+            render(ret),
+            package_api_effects(effects, registry)
+        ),
+        Type::Ref(inner, mutable) => format!("ref[mutable={mutable}]<{}>", render(inner)),
+        Type::Slice(inner) => format!("slice<{}>", render(inner)),
+        Type::Ptr(inner) => format!("ptr<{}>", render(inner)),
+        Type::MutPtr(inner) => format!("mutptr<{}>", render(inner)),
+        Type::Region => "region".into(),
+        Type::Tuple(elems) => format!("({})", render_many(elems)),
+        Type::IntLit(value) => format!("intlit<{value}>"),
+        Type::HktVar { name, arity } => format!("hktvar<{name};{arity}>"),
+        Type::HktApp { ctor, args } => format!("hktapp<{ctor};{}>", render_many(args)),
+        Type::TypeCtor(name) => format!("typector<{name}>"),
+        Type::StateMarker(name) => format!("state<{name}>"),
+        Type::Never => "never".into(),
+        Type::Error => "error".into(),
+    }
+}
+
+fn package_public_api_hash(entries: &[serde_json::Value]) -> Result<String, serde_json::Error> {
+    Ok(prefixed_sha256(&package_public_api_preimage(entries)?))
+}
+
+fn package_public_api_preimage(
+    entries: &[serde_json::Value],
+) -> Result<Vec<u8>, serde_json::Error> {
+    let json = serde_json::to_vec(entries)?;
+    let mut digest = Preimage::default();
+    digest.update(PUBLIC_API_DOMAIN);
+    digest.update((json.len() as u64).to_be_bytes());
+    digest.update(json);
+    Ok(digest.0)
+}
+
+fn package_artifact_identity_hash(
+    graph: &ResolvedPackageGraph,
+    compilation: &Compilation,
+    compiler_identity_hash: &str,
+    public_api_hash: &str,
+) -> String {
+    prefixed_sha256(&package_artifact_preimage(
+        graph,
+        compilation,
+        compiler_identity_hash,
+        public_api_hash,
+    ))
+}
+
+fn package_artifact_preimage(
+    graph: &ResolvedPackageGraph,
+    compilation: &Compilation,
+    compiler_identity_hash: &str,
+    public_api_hash: &str,
+) -> Vec<u8> {
+    let mut digest = Preimage::default();
+    digest.update(ARTIFACT_ID_DOMAIN);
+    frame(&mut digest, graph.graph_hash.as_bytes());
+    frame(&mut digest, graph.source_framing_hash.as_bytes());
+    frame(&mut digest, compiler_identity_hash.as_bytes());
+    let proof_tier = if compilation.capability_report.solver_verified {
+        "solver_verified"
+    } else {
+        "structural_only"
+    };
+    frame(&mut digest, proof_tier.as_bytes());
+    frame(&mut digest, public_api_hash.as_bytes());
+    frame(&mut digest, RUNTIME_VERSION.as_bytes());
+    frame(&mut digest, &compilation.wasm_inner);
+    if let Some(outer) = compilation.wasm_outer.as_deref() {
+        frame(&mut digest, b"outer-present");
+        frame(&mut digest, outer);
+    } else {
+        frame(&mut digest, b"outer-absent");
+    }
+    digest.0
 }
 
 fn package_source_set_hash(sources: &[PackageSource]) -> String {
-    let mut digest = Sha256::new();
+    prefixed_sha256(&package_source_set_preimage(sources))
+}
+
+fn package_source_set_preimage(sources: &[PackageSource]) -> Vec<u8> {
+    let mut digest = Preimage::default();
     digest.update(SOURCE_SET_DOMAIN);
     for source in sources {
         frame(&mut digest, source.package.as_bytes());
@@ -2343,16 +2876,41 @@ fn package_source_set_hash(sources: &[PackageSource]) -> String {
         frame(&mut digest, source.logical_name.as_bytes());
         frame(&mut digest, source.text.as_bytes());
     }
-    format!("sha256:{:x}", digest.finalize())
+    digest.0
 }
 
 fn canonical_string_array(values: &[String]) -> String {
     serde_json::to_string(values).expect("string array serialization is infallible")
 }
 
-fn frame(digest: &mut Sha256, bytes: &[u8]) {
-    digest.update((bytes.len() as u64).to_be_bytes());
-    digest.update(bytes);
+trait FrameSink {
+    fn append(&mut self, bytes: &[u8]);
+}
+
+impl FrameSink for Sha256 {
+    fn append(&mut self, bytes: &[u8]) {
+        self.update(bytes);
+    }
+}
+
+#[derive(Default)]
+struct Preimage(Vec<u8>);
+
+impl Preimage {
+    fn update(&mut self, bytes: impl AsRef<[u8]>) {
+        self.0.extend_from_slice(bytes.as_ref());
+    }
+}
+
+impl FrameSink for Preimage {
+    fn append(&mut self, bytes: &[u8]) {
+        self.update(bytes);
+    }
+}
+
+fn frame(digest: &mut impl FrameSink, bytes: &[u8]) {
+    digest.append(&(bytes.len() as u64).to_be_bytes());
+    digest.append(bytes);
 }
 
 fn prefixed_sha256(bytes: &[u8]) -> String {
@@ -2432,6 +2990,10 @@ const COMPILER_ID_INPUTS: &[(&str, &[u8])] = &[
     ("src/effect_check.rs", include_bytes!("effect_check.rs")),
     ("src/effect_desugar.rs", include_bytes!("effect_desugar.rs")),
     ("src/formal.rs", include_bytes!("formal.rs")),
+    (
+        "src/formal_projection.rs",
+        include_bytes!("formal_projection.rs"),
+    ),
     ("src/formal_v9.rs", include_bytes!("formal_v9.rs")),
     ("src/fuel.rs", include_bytes!("fuel.rs")),
     ("src/lexer.rs", include_bytes!("lexer.rs")),
@@ -2444,6 +3006,7 @@ const COMPILER_ID_INPUTS: &[(&str, &[u8])] = &[
     ("src/ownership.rs", include_bytes!("ownership.rs")),
     ("src/package.rs", include_bytes!("package.rs")),
     ("src/parser.rs", include_bytes!("parser.rs")),
+    ("src/parser/limits.rs", include_bytes!("parser/limits.rs")),
     ("src/registries.rs", include_bytes!("registries.rs")),
     ("src/ring_check.rs", include_bytes!("ring_check.rs")),
     ("src/source.rs", include_bytes!("source.rs")),
@@ -2556,6 +3119,16 @@ fn compiler_identity_hash_with_features(features: &str) -> String {
     frame(&mut digest, features.as_bytes());
     frame(&mut digest, b"build/native-z3");
     frame(&mut digest, env!("SIGIL_Z3_IDENTITY").as_bytes());
+    frame(&mut digest, b"build/native-formal-checker");
+    frame(
+        &mut digest,
+        crate::formal::checker_source_fingerprint().as_bytes(),
+    );
+    frame(&mut digest, b"build/lean-toolchain");
+    frame(
+        &mut digest,
+        include_bytes!("../../../proofs/lean/lean-toolchain"),
+    );
     format!("sha256:{:x}", digest.finalize())
 }
 

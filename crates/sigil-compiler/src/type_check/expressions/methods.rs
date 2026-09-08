@@ -1218,6 +1218,9 @@ fn infer_user_method_expr(
                 .cloned()
                 .chain(method_concrete_args.iter().cloned())
                 .collect();
+            if !tracker.check_type_work(&mangle_args, expr.span, diagnostics) {
+                return super::work_limit_expr(expr.span);
+            }
             let base_mangled =
                 build_mono_impl_method_mangled_name(&sig.qualified_name, &mangle_args);
             // A `push` whose receiver roots at a `mut Vec<scalar>` actor-state field is
@@ -1264,7 +1267,7 @@ fn infer_user_method_expr(
             // N6-PRD: atomic check-and-insert via the cache.
             // `insert` returns true iff the value was NEW. On true:
             // build the mono body. On false: cache hit, skip.
-            if tracker.cache.insert(mangled_callee.clone()) {
+            if tracker.reserve_specialization(&mangled_callee, expr.span, diagnostics) {
                 // Look up method AST (N10-PRD: never silently fall back).
                 if let Some((impl_type_params_decl, method_def, method_module)) = universe
                     .generic_impl_methods
@@ -1932,6 +1935,9 @@ fn infer_associated_fn_call(
             .map(|p| subst.get(p).cloned().unwrap_or(Type::Error))
             .collect();
         let qualified_method_key = format!("{}::{}::{}", sig.module, type_name, expr.method);
+        if !tracker.check_type_work(&type_args, expr.span, diagnostics) {
+            return super::work_limit_expr(expr.span);
+        }
         let base_mangled = build_mono_impl_method_mangled_name(&sig.qualified_name, &type_args);
         // PPS-0: an ASSOCIATED function called from inside a state-backed body is itself
         // state-backed. `Map::insert` reaches `Vec::with_capacity` through
@@ -1945,7 +1951,7 @@ fn infer_associated_fn_call(
         } else {
             base_mangled
         };
-        if tracker.cache.insert(mangled_callee.clone()) {
+        if tracker.reserve_specialization(&mangled_callee, expr.span, diagnostics) {
             if let Some((_decl, method_def, method_module)) = universe
                 .generic_impl_methods
                 .get(&qualified_method_key)

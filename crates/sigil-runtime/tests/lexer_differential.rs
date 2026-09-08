@@ -559,7 +559,9 @@ fn code_num(c: DiagnosticCode) -> i64 {
 #[test]
 fn differential_lexer_errors() {
     let corpus: Vec<&str> = vec![
-        // L004 unexpected char — one diagnostic per stray byte; scanning resyncs
+        // L004 unexpected char — one diagnostic per codepoint; scanning resyncs
+        "é\u{00a0}\u{feff}💯",
+        "let x = é; let y = 💯;",
         "let x = ~ ;",
         "a $ b ^ c",
         "fn f ( ) { return `x` ; }",

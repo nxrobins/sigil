@@ -736,7 +736,13 @@ impl<'a> Lexer<'a> {
 
     fn unexpected_char(&mut self) {
         let start = self.cursor;
-        self.cursor += 1;
+        // SourceFile contains UTF-8. Reject one complete codepoint so both
+        // diagnostic spans and the next scanner position stay on boundaries.
+        self.cursor += self.source.text()[start..]
+            .chars()
+            .next()
+            .expect("unexpected_char is called before EOF")
+            .len_utf8();
         let snippet = self.source.span_text(self.span(start, self.cursor));
         self.diagnostics.push(Diagnostic::error(
             codes::L004,

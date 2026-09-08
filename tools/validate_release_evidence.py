@@ -215,9 +215,9 @@ def validate_document(document: object, *, tagged: bool) -> dict:
             f"{field} must remain {expected!r}",
         )
     require(
-        record["unresolved_risks"] == ["SR-013", "SR-017"],
+        record["unresolved_risks"] == ["SR-017"],
         "risks",
-        "SR-013 and SR-017 must remain explicitly unresolved",
+        "SR-017 must remain explicitly unresolved",
     )
     require(
         record["state"] == ("complete" if tagged else PENDING),

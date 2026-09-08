@@ -421,6 +421,82 @@ fn repeated_package_builds_are_byte_identical() {
 }
 
 #[test]
+fn package_api_identity_is_the_checked_non_special_case_surface() {
+    let package = compile_local_package(&fixture_root(), CompileOptions::default()).unwrap();
+    let mut expected = Vec::new();
+    for (module, suffix) in [("app", "roundtrip"), ("helper", "echo")] {
+        for (prefix, label) in [
+            ("internal", "Internal"),
+            ("public", "Public"),
+            ("secret", "Secret"),
+        ] {
+            let name = format!("{prefix}_{suffix}");
+            expected.push(serde_json::json!({
+                "kind": "function", "module": module, "name": name,
+                "signature": format!("fn {name}(value:i64@{label})->i64@{label}!{{}}"),
+                "wasm_export": format!("{module}__{name}")
+            }));
+        }
+    }
+    assert_eq!(package.certificate().public_api, expected);
+}
+
+#[test]
+fn compiler_owned_evidence_is_exact_create_new_and_solver_gated() {
+    let package = compile_local_package(&fixture_root(), CompileOptions::default()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("evidence");
+    if !cfg!(feature = "solver") {
+        assert_eq!(
+            package.evidence_files().unwrap_err().code,
+            "E_SOLVER_UNVERIFIED"
+        );
+        assert!(package.write_evidence_directory(&output).is_err());
+        assert!(!output.exists());
+        return;
+    }
+    let certificate = package.certificate();
+    let files = package.evidence_files().unwrap();
+    for (name, expected) in [
+        ("sigil-package.lock.json", &certificate.lockfile_hash),
+        (
+            "source-set.preimage",
+            &certificate.composed_source_framing_hash,
+        ),
+        ("package-graph.preimage", &certificate.package_graph_hash),
+        ("public-api.preimage", &certificate.public_api_hash),
+        (
+            "compiler-artifact.preimage",
+            &certificate.artifact_identity_hash,
+        ),
+    ] {
+        assert_eq!(
+            &format!("sha256:{:x}", Sha256::digest(&files[name])),
+            expected,
+            "{name}"
+        );
+    }
+    assert_eq!(files["inner.wasm"], package.compilation.wasm_inner);
+    assert_eq!(
+        files["certificate.json"],
+        serde_json::to_vec(&certificate).unwrap()
+    );
+    package.write_evidence_directory(&output).unwrap();
+    let inventory: Value =
+        serde_json::from_slice(&fs::read(output.join("evidence-manifest.json")).unwrap()).unwrap();
+    assert_eq!(inventory["admission"], "not_evaluated");
+    assert!(package.write_evidence_directory(&output).is_err());
+    for (name, bytes) in files {
+        assert_eq!(fs::read(output.join(&name)).unwrap(), bytes);
+        assert_eq!(inventory["files"][&name]["bytes"], bytes.len());
+        assert_eq!(
+            inventory["files"][&name]["sha256"],
+            format!("sha256:{:x}", Sha256::digest(&bytes))
+        );
+    }
+}
+
+#[test]
 fn reverse_filesystem_creation_order_produces_identical_package_artifacts() {
     let forward_temp = tempfile::tempdir().unwrap();
     let forward_root = forward_temp.path().join("forward");

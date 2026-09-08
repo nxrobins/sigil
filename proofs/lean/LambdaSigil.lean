@@ -61,3 +61,5 @@ import LambdaSigil.TaintJoin
 import LambdaSigil.DefiniteInit
 import LambdaSigil.RingCheck
 import LambdaSigil.RowPoly
+
+import LambdaSigil.ProjectionSecurity

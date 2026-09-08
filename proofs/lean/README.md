@@ -3,8 +3,9 @@
 A machine-checked formalization of core SIGIL calculi for capabilities, affine ownership,
 effects, and taint. These theorems provide independent pressure on the design; they are not a
 proof of the shipped compiler or runtime. The production/model boundary is tracked in
-[`docs/SOUNDNESS_MATRIX.md`](../../docs/SOUNDNESS_MATRIX.md) and
-[`docs/RESIDUAL_RISKS.md`](../../docs/RESIDUAL_RISKS.md).
+[`docs/SOUNDNESS_MATRIX.md`](../../docs/SOUNDNESS_MATRIX.md),
+[`docs/RESIDUAL_RISKS.md`](../../docs/RESIDUAL_RISKS.md), and the versioned
+[`PLC-2026-09-07` composition profile](../../docs/specs/production-lean-composition.md).
 
 Everything here is checked by Lean 4 with **zero `sorry`/`admit`**. The current axiom audit reports
 only Lean's standard axioms (`propext`, `Classical.choice`, `Quot.sound`) for every declared
@@ -78,11 +79,10 @@ ordered Public output/boundary trace; it does not assert ordinary-Secret timing,
 allocation, or cost equality. The Public and SecretCT production claim dependency closures are
 both checker-fingerprinted and audited without an assumed relational policy.
 These results use a
-security-event abstraction rather than an AIR/Wasm adequacy proof.
-None proves Rust source-to-CSIR projection, Lean native generation/runtime, Wasm emission,
-Wasmtime, scheduling, or hardware timing. Authority/affine/quantity operational closure is also
-still outside the Public theorem, every legacy gate remains mandatory, and the v9 tagged-release
-evidence is not retirement-eligible.
+security-event abstraction rather than an AIR/Wasm adequacy proof. `PLC-2026-09-07` pins the shipped
+checker-to-Lean composition boundary, but none of these proofs prove Rust source-to-CSIR projection,
+Lean native generation/runtime, Wasm emission, Wasmtime, scheduling, or hardware timing. Every
+legacy gate remains mandatory, and the v9 tagged-release evidence is not retirement-eligible.
 
 ## The calculus
 
@@ -166,6 +166,13 @@ tagged platform/performance results as incomplete until real immutable release m
 CI forbids that file from claiming retirement and pins all compatibility gates in the meantime.
 
 ## Not yet proven (next milestones)
+
+The [APC-1 transfer validator](../../docs/specs/production-lean-composition.md#apc-1-air-dataflow-transfer-validation)
+now independently checks local AIR read/write renaming and CFG transfers. The production-linked
+`ProjectionSecurity.lean` proof preserves every extracted finite transfer path through actual
+decoded CSIR phi operands. Rust extraction completeness, unreachable-path justification,
+opcode/metadata semantics, serialization of local reads, and the remaining execution boundaries
+are still assumptions; this does not retire any security gate or close SR-017.
 
 * **M6b** — scoped / resume-once effect handlers (need evaluation contexts).
 * Complete constructor-level capability origin/authority/slot-meet, affine CFG, and quantitative

@@ -2010,12 +2010,12 @@ fn ag6_5_with_driver_byte_capstone() {
 //
 // Relational capstones can miss changes when both stages move together. These
 // absolute pins make certified-surface movement an explicit, reviewed change.
-const PIN_CAP0_SRC_CHARS: usize = 1_150_219;
-const PIN_CAP0_MODULE_BYTES: usize = 454_099;
-const PIN_CAP0_RUNNABLE_SRC_CHARS: usize = 1_150_574;
-const PIN_CAP0_RUNNABLE_MODULE_BYTES: usize = 454_453;
-const PIN_WITH_DRIVER_SRC_CHARS: usize = 1_151_054;
-const PIN_WITH_DRIVER_MODULE_BYTES: usize = 454_798;
+const PIN_CAP0_SRC_CHARS: usize = 1_150_294;
+const PIN_CAP0_MODULE_BYTES: usize = 454_195;
+const PIN_CAP0_RUNNABLE_SRC_CHARS: usize = 1_150_649;
+const PIN_CAP0_RUNNABLE_MODULE_BYTES: usize = 454_549;
+const PIN_WITH_DRIVER_SRC_CHARS: usize = 1_151_129;
+const PIN_WITH_DRIVER_MODULE_BYTES: usize = 454_894;
 // PIN-1, STAGE-1 SIDE. The six pins above measure the ORACLE's output: `pin_module_bytes` calls
 // `oracle_compile`, so Stage-1's own size was pinned only TRANSITIVELY — via the capstones'
 // `shex == ohex`. That chain has two links, and a weakened or deleted equality assertion breaks
@@ -2023,9 +2023,9 @@ const PIN_WITH_DRIVER_MODULE_BYTES: usize = 454_798;
 // SELFHOST-emitted module directly, at the point each capstone already holds `shex`, so the
 // selfhost side costs no extra Stage-1 run. They must be repinned on their own, with their own
 // stated reason, even when the oracle pins move with them.
-const PIN_STAGE1_CAP0_MODULE_BYTES: usize = 454_099;
-const PIN_STAGE1_RUNNABLE_MODULE_BYTES: usize = 454_453;
-const PIN_STAGE1_WITH_DRIVER_MODULE_BYTES: usize = 454_798;
+const PIN_STAGE1_CAP0_MODULE_BYTES: usize = 454_195;
+const PIN_STAGE1_RUNNABLE_MODULE_BYTES: usize = 454_549;
+const PIN_STAGE1_WITH_DRIVER_MODULE_BYTES: usize = 454_894;
 // Catastrophic-shrink floors (SC-P3): these survive a lazy "edit the exact pin down" change.
 const PIN_FLOOR_SRC_CHARS: usize = 1_000_000;
 const PIN_FLOOR_MODULE_BYTES: usize = 400_000;
@@ -2306,19 +2306,19 @@ fn pin_certified_artifact_digest() {
 
     // Source digests include the strip-list result.
     const PIN_CAP0_SRC_SHA256: &str =
-        "0c2a3df3ebc428e25eebcf2d5082e254622fb616dda02de1a9aa800d67c0e7d3";
+        "9c7e6702bf963acfe528e2c8bda1586dd22d56942213dd307313a66f7d33dce7";
     const PIN_CAP0_RUNNABLE_SRC_SHA256: &str =
-        "4db2018ae98cee2aadeef77fb715ccd7886def2244565ebde5c4f003986cf9a2";
+        "3d40add4944508246a9760b56a1bdd529fc06adc76aa01857fcce8a9fc1827a4";
     const PIN_WITH_DRIVER_SRC_SHA256: &str =
-        "fa69ab5fc7bbd58dba180432fc49d8cc7b7eff29cfdfa48b9ffe38c00d0cdc94";
+        "2a0acecaff3357b5e1066a74185dda97800a3a469c5317b66e2852db81411b46";
 
     // Module digests pin the absolute oracle output behind relational capstones.
     const PIN_CAP0_MODULE_SHA256: &str =
-        "6081e7b8e65d35c7b9090a79db7f2af6107a576bc7d9d85c20852c87161ad02c";
+        "160f608f572e8b429f03f05d2662f13219e37a6aa739739fe86a1c31b62ec9b6";
     const PIN_CAP0_RUNNABLE_MODULE_SHA256: &str =
-        "2adc22d45af440f58119fd601c1779d746b2a4a4966fe7a3a6e98031bbbe1eb9";
+        "f91aaf10dcfe25240155208c38b9f8dcbb73f24d566d18487eb3fba0d28ffe81";
     const PIN_WITH_DRIVER_MODULE_SHA256: &str =
-        "b499f4b98858401e73e61667198f6611b7b70837f21406e5dbed67586dc4e4cc";
+        "177e43e625b4908d085f5cc4cb386cd1440698155e07df4be458bafc585f1128";
 
     let checks: [(&str, String, &str); 6] = [
         (
@@ -2837,7 +2837,7 @@ fn hb1_multi_module_rejects_fence_the_vacuous_gate_class() {
 
 /// SHA-256 of the committed seed's RAW bytes (distinct from PIN_WITH_DRIVER_MODULE_SHA256,
 /// which digests the oracle's HEX STRING).
-const PIN_SEED_SHA256: &str = "4062f4e19707f9dcaa51c71bb11f9cec73ddbfa2d12c8e38f127c8a3e705ac39";
+const PIN_SEED_SHA256: &str = "1ef47cc5b967d2d42b43be6353dc8d276209aa8ec23655a9b4e0c83ad21764f2";
 
 /// Environment variable that ARMS the succession ritual's write. Without it the ritual VERIFIES
 /// instead of writing (see `seed_regenerate`).

@@ -673,11 +673,12 @@ pub(super) fn register_concrete_enum(
     variants: &[(String, Vec<Type>)],
     type_params: &[String],
     concrete_args: &[Type],
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if tracker.cache.contains(mangled) {
+    if !tracker.reserve_specialization(mangled, span, diagnostics) {
         return;
     }
-    tracker.cache.insert(mangled.to_owned());
     let subst: HashMap<String, Type> = type_params
         .iter()
         .zip(concrete_args.iter())
@@ -1713,14 +1714,16 @@ pub(crate) fn type_compatible(expected: &Type, actual: &Type) -> bool {
         // the names match (they're the same parameter in scope).
         (Type::Generic(a), Type::Generic(b)) => a == b,
         (Type::Generic(_), _) | (_, Type::Generic(_)) => {
-            panic!("ICE: Type::Generic escaped monomorphization into type_compatible")
+            // A failed substitution is incompatible, not a process-wide panic.
+            // The caller reports its ordinary type-mismatch diagnostic.
+            false
         }
         // HKT (EX-4/V3): higher-kinded types are check-time-only and MUST be erased
         // to a concrete Type::Named before any concrete compatibility check. A
         // same-shape symbolic pair is legitimate inside a (future) symbolic
         // generic-over-F body — accept by structural equality, exactly like the
         // Generic == Generic carve-out above; any other pairing means an HKT var
-        // escaped monomorphization → ICE (never the silent `_ => expected==actual`).
+        // escaped monomorphization: reject the comparison without panicking.
         (Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_), _)
         | (_, Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_))
             if expected == actual =>
@@ -1728,9 +1731,7 @@ pub(crate) fn type_compatible(expected: &Type, actual: &Type) -> bool {
             true
         }
         (Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_), _)
-        | (_, Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_)) => {
-            panic!("ICE: HKT type escaped monomorphization into type_compatible")
-        }
+        | (_, Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_)) => false,
         // Typestate (ST-3): state markers compare by EXACT equality — `File<Open>`
         // ≠ `File<Closed>` (the invariant we want), `File<Open>` = `File<Open>`.
         // A REAL arm, NOT an ICE: markers flow through here as `Named` args on every
@@ -2649,6 +2650,37 @@ mod ptr_walker_tests {
             false,
         );
         assert_eq!(b2.get("U"), Some(&Type::Bool));
+    }
+
+    #[test]
+    fn type_compatible_rejects_unresolved_symbolic_types_without_panicking() {
+        assert!(type_compatible(
+            &Type::Generic("T".into()),
+            &Type::Generic("T".into())
+        ));
+        assert!(!type_compatible(
+            &Type::Generic("T".into()),
+            &Type::Generic("U".into())
+        ));
+        assert!(!type_compatible(&Type::Generic("T".into()), &Type::I64));
+        assert!(!type_compatible(&Type::I64, &Type::Generic("T".into())));
+
+        let hkt = Type::HktVar {
+            name: "F".into(),
+            arity: 1,
+        };
+        let app = Type::HktApp {
+            ctor: "F".into(),
+            args: vec![Type::I64],
+        };
+        assert!(type_compatible(&hkt, &hkt));
+        assert!(type_compatible(&app, &app));
+        assert!(!type_compatible(&hkt, &Type::Named("Box".into(), vec![])));
+        assert!(!type_compatible(
+            &Type::Named("Box".into(), vec![Type::I64]),
+            &app
+        ));
+        assert!(!type_compatible(&Type::TypeCtor("Box".into()), &Type::I64));
     }
 }
 

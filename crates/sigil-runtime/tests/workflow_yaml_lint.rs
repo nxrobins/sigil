@@ -228,6 +228,7 @@ fn ci_keeps_production_v9_and_release_enforcement_commands() {
     for required in [
         "cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget",
         "cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract",
+        "cargo test -p sigil-runtime --no-default-features --test production_lean_composition_profile",
         "cargo test -p sigil-compiler --no-default-features --test formal_security",
         "cargo test -p sigil-compiler --no-default-features --test public_region_probes",
         "cargo test -p sigil-formal-bridge --test v9_production_verifier",

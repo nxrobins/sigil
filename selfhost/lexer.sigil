@@ -1112,14 +1112,16 @@ fn lex_step(src: str, i: i64, n: i64, toks: Vec<Token> @Mut) -> i64 ! { Alloc } 
     let (otag, olen) = scan_op(src, i, n);
     let mut ekind: i64 = otag;
     let mut eval: i64 = 0;
+    let mut width: i64 = olen;
     if otag == T_UNKNOWN {
         ekind = T_ERR;
         eval = L004;
+        width = utf8_len(src.byte_at(i));
     } else {
     }
-    let t: Token = Token { kind: ekind, start: i, end: i + olen, value: eval, text: "" };
+    let t: Token = Token { kind: ekind, start: i, end: i + width, value: eval, text: "" };
     let pushed: i64 = toks.push(t);
-    return i + olen;
+    return i + width;
 }
 
 // ── the scan ─────────────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@
 `@effects` → effects, outer-ring), and PR-FE2 (booleans, records, control flow —
 a typed subset behind a sound type+scope checker) implemented. Crate:
 `crates/sigil-frontends`. CLI: `sigil translate --from <lang>` and
-`sigil check --from <lang>`.
+`sigil check --from <lang>`. The drift-pinned correspondence profile is
+[`FFC-2026-09-07`](foreign-frontend-correspondence.md).
 
 ## Thesis
 
@@ -16,6 +17,13 @@ trust anchor**. This mirrors the project's pervasive compiler-as-oracle stance
 the *Rust* compiler — the self-hosted `selfhost/*.sigil` toolchain is a smaller
 differential subset and is explicitly out of scope: emitted SIGIL need only be
 accepted by the Rust compiler, and frontends are not gated on self-hosted parity.
+
+The active correspondence claim is bounded by `FFC-2026-09-07`: TypeScript,
+Rust, and Solidity accepted fixtures must match independent SIGIL goldens and
+compile through `sigil-compiler`; a finite scalar-expression core is checked by
+an independently implemented oracle; every reject fixture must name the expected
+`FE` diagnostic. Any allow-list expansion must update that profile and its
+evidence pins in the same review.
 
 ## Contract
 

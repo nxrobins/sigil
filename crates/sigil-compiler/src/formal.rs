@@ -181,7 +181,15 @@ const RAW_CLAIM_SURFACE_SOURCE: &[u8] =
     include_bytes!("../../../proofs/lean/LambdaSigil/RawClaimSurface.lean");
 const LEAN_TOOLCHAIN: &str = include_str!("../../../proofs/lean/lean-toolchain");
 
-const CHECKER_EVIDENCE_SOURCES: [&[u8]; 70] = [
+#[path = "formal_projection.rs"]
+mod projection;
+const PROJECTION_RUST_SOURCE: &[u8] = include_bytes!("formal_projection.rs");
+const PROJECTION_KERNEL_SOURCE: &[u8] =
+    include_bytes!("../../../proofs/lean/LambdaSigil/ProjectionKernel.lean");
+const PROJECTION_PROOF_SOURCE: &[u8] =
+    include_bytes!("../../../proofs/lean/LambdaSigil/ProjectionSecurity.lean");
+
+const CHECKER_EVIDENCE_SOURCES: [&[u8]; 73] = [
     CHECKER_KERNEL_SOURCE,
     SEMANTIC_KERNEL_SOURCE,
     CHECKER_PROOF_SOURCE,
@@ -252,6 +260,9 @@ const CHECKER_EVIDENCE_SOURCES: [&[u8]; 70] = [
     NATIVE_BRIDGE_BUILD_SOURCE,
     NATIVE_BRIDGE_C_SOURCE,
     NATIVE_BRIDGE_RUST_SOURCE,
+    PROJECTION_RUST_SOURCE,
+    PROJECTION_KERNEL_SOURCE,
+    PROJECTION_PROOF_SOURCE,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -743,6 +754,7 @@ impl Node {
 
 #[derive(Default)]
 struct Projector {
+    projection_transfers: Vec<projection::Transfer>,
     nodes: Vec<Node>,
     pending_semantic_metadata: Vec<Node>,
     spans: BTreeMap<u32, Span>,
@@ -2136,6 +2148,7 @@ impl Projector {
         manifest.ceiling = 0;
         self.push(manifest)?;
         let mut counts = SemanticCounts::default();
+        let mut projection_budget = projection::Budget::default();
 
         for (function_index, function) in program.functions.iter().enumerate() {
             let function_id = semantic_ref(
@@ -2168,6 +2181,7 @@ impl Projector {
             let base_ids = base_declarations.keys().copied().collect::<Vec<_>>();
             let ssa = build_semantic_ssa_plan(function, &base_ids)?;
 
+            let function_start = self.nodes.len();
             let ring_code = u32::from(u8::from(matches!(function.ring, crate::ast::Ring::Outer)));
             let mut function_node = Node::ordinary(Op::SemFunction, ring_code);
             function_node.flags = air_function_kind_code(&function.kind);
@@ -2349,6 +2363,15 @@ impl Projector {
                         .unwrap_or(function.def_span),
                 );
             }
+            projection::validate_function(
+                function,
+                function_id,
+                &base_ids,
+                &ssa,
+                &self.nodes[function_start..],
+                &mut projection_budget,
+                &mut self.projection_transfers,
+            )?;
         }
 
         let manifest = self
@@ -4685,7 +4708,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     result
 }
 
-fn checker_source_fingerprint() -> String {
+pub(crate) fn checker_source_fingerprint() -> String {
     fingerprint_checker_sources(&CHECKER_EVIDENCE_SOURCES)
 }
 
@@ -5044,6 +5067,19 @@ pub fn verify_with_context(
                 "formal CSIR v9 projection returned a noncanonical record length",
             )]
         })?;
+    let transfers = projection::encode(&projector.projection_transfers)
+        .map_err(|error| vec![internal_error(error)])?;
+    let projection_verdict =
+        sigil_formal_bridge::validate_projection(&bytes, &transfers).map_err(|error| {
+            vec![internal_error(format!(
+                "APC-1 Lean infrastructure failure: {error}"
+            ))]
+        })?;
+    if projection_verdict != 0 {
+        return Err(vec![internal_error(format!(
+            "APC-1 Lean transfer validator rejected compiler-produced CSIR: {projection_verdict}"
+        ))]);
+    }
     let verdict = sigil_formal_bridge::verify_v9(&bytes).map_err(|error| {
         vec![internal_error(format!(
             "formal Lean verifier infrastructure failure: {error}"
@@ -5225,7 +5261,7 @@ mod tests {
 
     #[test]
     fn checker_fingerprint_binds_every_native_v9_dependency_and_proof() {
-        let expected_sources: [&[u8]; 70] = [
+        let expected_sources: [&[u8]; 73] = [
             include_bytes!("../../../proofs/lean/LambdaSigil/CombinedKernel.lean"),
             include_bytes!("../../../proofs/lean/LambdaSigil/SemanticKernel.lean"),
             include_bytes!("../../../proofs/lean/LambdaSigil/CombinedSecurity.lean"),
@@ -5302,6 +5338,9 @@ mod tests {
             include_bytes!("../../sigil-formal-bridge/build.rs"),
             include_bytes!("../../sigil-formal-bridge/native/bridge.c"),
             include_bytes!("../../sigil-formal-bridge/src/lib.rs"),
+            include_bytes!("formal_projection.rs"),
+            include_bytes!("../../../proofs/lean/LambdaSigil/ProjectionKernel.lean"),
+            include_bytes!("../../../proofs/lean/LambdaSigil/ProjectionSecurity.lean"),
         ];
         assert_eq!(CHECKER_EVIDENCE_SOURCES, expected_sources);
         let current = checker_source_fingerprint();

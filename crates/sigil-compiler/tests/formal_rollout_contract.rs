@@ -148,6 +148,7 @@ fn v9_integration_cannot_silently_retire_the_dual_gates() {
         "certificate_schema = 9",
         "phase = \"dual-gate-integration\"",
         "retirement_eligible = false",
+        "unresolved_risks = [\"SR-017\"]",
         "semantic_v9 = true",
         "historical_v8 = true",
         "obligations_v6 = true",

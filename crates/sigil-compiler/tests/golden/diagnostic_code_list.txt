@@ -116,6 +116,7 @@ R816	Effect set mismatch between certificate and runtime
 R817	Certificate not solver-verified (Z3 proofs did not run)
 R818	Persistent heap exhausted
 R819	Formal security report or CSIR fingerprint mismatch
+R820	Certificate provenance did not validate
 S001	Source exceeds maximum byte size
 S002	Tool module missing `tool_main`
 S003	Source must not be empty
@@ -224,7 +225,7 @@ T140	Array element type mismatch
 T141	Cannot index non-array value
 T142	Array index must be integer
 T150	Could not infer type parameter
-T151	Monomorphization depth exceeded
+T151	Type expansion limit exceeded
 T155	Cross-module call to private function
 T156	Module name shadowed by local variable
 T160	Extern function must declare `FFI` effect

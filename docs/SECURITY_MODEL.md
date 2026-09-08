@@ -18,14 +18,18 @@ SIGIL's production guarantees apply only when all of the following are true:
    the execution policy requires that tier.
 4. The emitted module is executed by the matching `sigil-runtime` host.
 5. A command that requires a verification certificate validates source, module, schema-v9 formal
-   evidence, effects, and current solver status before execution.
+   evidence, effects, current solver status, and, when the authenticated-release profile is
+   requested, Ed25519 certificate provenance before execution.
 6. Runtime grants are no broader than the policy supplied by the host.
 
-The combined CSIR Lean kernel is production enforcement. The older lambda-calculus models and
-self-hosted checkers remain independent evidence and do not widen the production contract.
+The combined CSIR Lean kernel is production enforcement. Its shipped-checker composition boundary
+is the [`PLC-2026-09-07` production Lean composition profile](specs/production-lean-composition.md);
+source/AIR/Wasm adequacy remains SR-017. The older lambda-calculus models and self-hosted checkers
+remain independent evidence and do not widen the production contract.
 
-Certificates bind source, module, and policy but are unsigned; binding does not authenticate
-provenance.
+Plain certificates bind source, module, and policy but do not authenticate provenance. Deployment
+profiles that need origin authentication use the signed
+[`authenticated-release` certificate provenance envelope](specs/certificate-provenance.md).
 
 ## Adversary
 
@@ -104,7 +108,9 @@ cannot authorize one with missing authority.
 ## Foreign and unsafe code
 
 - Foreign frontends are soundness-preserving only for their documented allow-lists. Unsupported or
-  ambiguous input must be rejected with an `FE` diagnostic.
+  ambiguous input must be rejected with an `FE` diagnostic. The active
+  `FFC-2026-09-07` correspondence profile pins TypeScript, Rust, and Solidity
+  grammar/evidence counts and requires renewed review whenever an allow-list expands.
 - SIGIL does not verify the behavior of foreign functions. Foreign results and argument sinks are
   `Internal`; `Secret` arguments require declassification, `SecretCT` arguments are rejected with
   the dedicated constant-time diagnostic, and FFI/Unsafe effects remain explicit.
@@ -123,7 +129,8 @@ SIGIL does not currently claim protection against:
 
 - a malicious or compromised operating system, hardware platform, Wasmtime build, Rust toolchain,
   Z3 build, or production compiler binary;
-- authenticity of an unsigned certificate or artifact;
+- authenticity of a certificate or artifact unless the authenticated-release provenance profile is
+  required with a trusted signer and deployment context;
 - arbitrary handwritten WebAssembly executed outside the certificate and grant gates;
 - behavior beyond a foreign frontend's declared subset;
 - full semantic equivalence between the Rust compiler, self-hosted shadows, and Lean calculi; or
@@ -137,9 +144,10 @@ SIGIL does not currently claim protection against:
   delimited-release results. The Public theorem covers independently sized successful executions,
   calls, closures, recursive/private regions, per-site external inputs, repeated releases, the full
   Public projection, and ordered Public output/boundary traces; it deliberately does not equate
-  ordinary-Secret timing, control, address, allocation, or cost. Complete origin/BV32/slot-meet,
-  affine CFG, and quantitative balance/difference correspondence still remains load-bearing in the
-  retained v6/Rust/Z3 layers, and the semantic machine is not an AIR/Wasm adequacy proof); or
+  ordinary-Secret timing, control, address, allocation, or cost. The production Lean composition
+  profile relates the retained-v6 capability, slot-meet, affine, and quantity obligations to Lean
+  theorems and canaries, but the old Rust/Z3 gates remain mandatory and the semantic machine is not
+  an AIR/Wasm adequacy proof); or
 - correctness of a security property merely because the corresponding model or shadow agrees.
 
 ## Fail-closed rule
@@ -181,11 +189,12 @@ propagation, control-flow/slot authority meets, sinks, and release kinds without
 legitimacy bit or final authority mask. Explicit `if`/`match` and loop markers additionally drive
 fallthrough-aware may-consume joins, conservative repeatable-edge checks, and `break`-exit joins in
 Lean. It also checks signed quantitative cells, supported normalized literal-RHS bounds, and
-mandatory guest/host split/draw guard links. It still trusts source-to-CSIR correspondence. Full
-semantic capability-origin/authority/slot-meet propagation and path-affine CFG state remain legacy
-obligations; quantitative split/fuel constraints remain legacy obligations rather than facts derived
-solely from the v8 semantic envelope. The raw relational results are over an abstract security-event
-machine and do not establish general AIR or Wasm adequacy. The raw SecretCT corollary is connected
+mandatory guest/host split/draw guard links. The `PLC-2026-09-07` profile pins those production
+checker transitions to Lean theorem names, executable positive and negative canaries, and exact gate
+tokens. It still trusts source-to-CSIR correspondence, and quantitative split/fuel constraints remain
+legacy obligations rather than facts derived solely from the v8 semantic envelope. The raw relational
+results are over an abstract security-event machine and do not establish general AIR or Wasm
+adequacy. The raw SecretCT corollary is connected
 to retained-v8 acceptance, and the independently sized Public corollary is connected to production
 model-9 acceptance. Both production claim closures are fingerprinted and transitively audited.
 Aggregate field precision, region aliases, closure-body rechecking under actual capture labels,

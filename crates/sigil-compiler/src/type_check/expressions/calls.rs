@@ -518,6 +518,10 @@ fn infer_unresolved_call_expr(
                 .collect()
         };
 
+        if !tracker.check_type_work(&concrete_args, expr.span, diagnostics) {
+            return super::work_limit_expr(expr.span);
+        }
+
         // PR-3b (CM-T5): enforce trait bounds at the instantiation site,
         // concrete type-args in hand, BEFORE the body is monomorphized — a
         // clean T245/T248 at the call span rather than a deep failure inside
@@ -635,9 +639,7 @@ fn infer_unresolved_call_expr(
         let qualified = format!("{}::{}", module_name, mangled);
 
         // Cache-before-check: prevents recursive deadlock
-        if !tracker.cache.contains(&qualified) {
-            tracker.cache.insert(qualified.clone());
-
+        if tracker.reserve_specialization(&qualified, expr.span, diagnostics) {
             // Phase 4: rows written in the return type are instantiated via
             // the AST/Type overlay — the type-subst map is structurally
             // incapable of touching a row (rows are `Vec<String>` on the AST
@@ -1026,6 +1028,9 @@ fn infer_unresolved_call_expr(
                     );
                 }
 
+                if !tracker.check_type_work([&cty], expr.span, diagnostics) {
+                    return super::work_limit_expr(expr.span);
+                }
                 let mangled = mangle_type(&cty);
                 // Re-borrow to get the variants slice for registration.
                 let variants_ref = universe
@@ -1039,6 +1044,8 @@ fn infer_unresolved_call_expr(
                     &variants_ref,
                     &type_params,
                     &concrete_args,
+                    expr.span,
+                    diagnostics,
                 );
                 (cty, mangled)
             };

@@ -7,12 +7,12 @@
 //! both gate on the freshly derived `solver_verified` (R817) whether
 //! or not `--cert` was supplied (sole override:
 //! `SIGIL_ALLOW_UNVERIFIED_CERT=1`); every `--cert` mismatch aborts
-//! before instantiation with the `GateFailure` ladder R810..R819,
+//! before instantiation with the `GateFailure` ladder R810..R820,
 //! asserted by code, never by message substring. Pinned by the
 //! in-file `verify_cert_tests`, `gate_tests`, and `forge_gate_tests`.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use serde_json::json;
@@ -21,6 +21,10 @@ use sigil_compiler::{
     Compilation, CompileOptions, CompilerContext, compile_named_module_with_context,
 };
 
+use crate::cert_provenance::{
+    CertificateDocumentError, CertificateProvenancePolicy, LoadedCertificate,
+    decode_certificate_document,
+};
 use crate::json_envelope;
 use crate::json_envelope::{Envelope, OutputFormat};
 
@@ -427,6 +431,9 @@ pub(crate) enum GateFailure {
     /// R819: schema-v9 formal evidence is absent or differs from the report
     /// freshly derived by the mandatory linked Lean verifier.
     FormalEvidenceMismatch { reason: String },
+    /// R820: authenticated certificate provenance is required or present but
+    /// does not validate under the active trust policy.
+    ProvenanceMismatch { reason: String },
 }
 
 impl GateFailure {
@@ -441,6 +448,7 @@ impl GateFailure {
             Self::EffectsMismatch { .. } => codes::R816,
             Self::SolverUnverified => codes::R817,
             Self::FormalEvidenceMismatch { .. } => codes::R819,
+            Self::ProvenanceMismatch { .. } => codes::R820,
         }
     }
 
@@ -515,17 +523,14 @@ impl GateFailure {
             Self::FormalEvidenceMismatch { reason } => {
                 format!("formal security report or CSIR fingerprint mismatch: {reason}")
             }
+            Self::ProvenanceMismatch { reason } => {
+                format!("certificate provenance check failed: {reason}")
+            }
         }
     }
 }
 
-/// Load and deserialize certificate JSON with strict file-shape guards.
-/// Every certificate surface, including the package wrapper, goes through
-/// this one bounded, open-once path before serde sees attacker-controlled
-/// bytes.
-fn load_bounded_cert_json<T: serde::de::DeserializeOwned>(
-    path: &std::path::Path,
-) -> Result<T, GateFailure> {
+fn load_bounded_cert_value(path: &std::path::Path) -> Result<serde_json::Value, GateFailure> {
     use std::io::Read as _;
 
     let file_shape = |reason: String| GateFailure::FileShape {
@@ -601,16 +606,39 @@ fn load_bounded_cert_json<T: serde::de::DeserializeOwned>(
 /// file no larger than CERT_FILE_SIZE_CAP. Refuses fifos, sockets, special
 /// devices (e.g. `/dev/zero` reading forever) and oversized blobs that would
 /// crash the parser with OOM.
+#[cfg(test)]
 pub(crate) fn load_cert_file(
     path: &std::path::Path,
 ) -> Result<sigil_compiler::certificate::CertificateJson, GateFailure> {
-    load_bounded_cert_json(path)
+    Ok(load_cert_file_with_policy(path, &CertificateProvenancePolicy::default())?.certificate)
 }
 
-fn load_package_cert_file(
+pub(crate) fn load_cert_file_with_policy(
     path: &std::path::Path,
-) -> Result<sigil_compiler::package::PackageCertificateJson, GateFailure> {
-    load_bounded_cert_json(path)
+    policy: &CertificateProvenancePolicy,
+) -> Result<LoadedCertificate<sigil_compiler::certificate::CertificateJson>, GateFailure> {
+    let value = load_bounded_cert_value(path)?;
+    decode_certificate_document(value, policy)
+        .map_err(|error| map_certificate_document_error(path, error))
+}
+
+fn load_package_cert_file_with_policy(
+    path: &std::path::Path,
+    policy: &CertificateProvenancePolicy,
+) -> Result<LoadedCertificate<sigil_compiler::package::PackageCertificateJson>, GateFailure> {
+    let value = load_bounded_cert_value(path)?;
+    decode_certificate_document(value, policy)
+        .map_err(|error| map_certificate_document_error(path, error))
+}
+
+fn map_certificate_document_error(path: &Path, error: CertificateDocumentError) -> GateFailure {
+    match error {
+        CertificateDocumentError::CertificateJson(error) => GateFailure::JsonParse {
+            path: path.to_path_buf(),
+            error,
+        },
+        CertificateDocumentError::Provenance(reason) => GateFailure::ProvenanceMismatch { reason },
+    }
 }
 
 /// Whether the run/forge gate must require `solver_verified: true` on the
@@ -875,16 +903,17 @@ pub(crate) fn run_verify_cert(
     fmt: OutputFormat,
     context: &CompilerContext,
 ) -> anyhow::Result<()> {
-    use sigil_compiler::certificate::CertificateJson;
-
     let cert_path = &command.cert_path;
     if let Some(package_root) = &command.package_root {
-        let supplied = match load_package_cert_file(cert_path) {
-            Ok(certificate) => certificate,
-            Err(failure) => {
-                return emit_gate_failure(CommandKind::VerifyCert, fmt, failure);
-            }
-        };
+        let loaded =
+            match load_package_cert_file_with_policy(cert_path, &command.cert_provenance_policy) {
+                Ok(loaded) => loaded,
+                Err(failure) => {
+                    return emit_gate_failure(CommandKind::VerifyCert, fmt, failure);
+                }
+            };
+        let supplied = loaded.certificate;
+        let provenance = loaded.provenance;
         match sigil_compiler::package::verify_local_package_certificate_with_context(
             package_root,
             &supplied,
@@ -900,6 +929,7 @@ pub(crate) fn run_verify_cert(
                             "package_root": package_root.display().to_string(),
                             "root_package": fresh.graph.root_package,
                             "package_graph_hash": fresh.graph.graph_hash,
+                            "provenance": provenance.to_json(),
                             "verified": true,
                         }),
                     )
@@ -941,10 +971,12 @@ pub(crate) fn run_verify_cert(
             }
         }
     }
-    let cert_bytes = fs::read(cert_path)
-        .with_context(|| format!("failed to read certificate `{}`", cert_path.display()))?;
-    let supplied: CertificateJson = serde_json::from_slice(&cert_bytes)
-        .with_context(|| format!("failed to parse certificate `{}`", cert_path.display()))?;
+    let loaded = match load_cert_file_with_policy(cert_path, &command.cert_provenance_policy) {
+        Ok(loaded) => loaded,
+        Err(failure) => return emit_gate_failure(CommandKind::VerifyCert, fmt, failure),
+    };
+    let supplied = loaded.certificate;
+    let provenance = loaded.provenance;
 
     // Step 22: optionally hash a WASM artifact and verify it against
     // the cert's wasm_inner_fingerprint. When --wasm is provided this
@@ -981,9 +1013,10 @@ pub(crate) fn run_verify_cert(
             "forbidden_effects_requested": command.forbidden_effects,
             "forbidden_effects_present": result.forbidden_effects_present,
             "allowed_effects_requested": command.allowed_effects,
-            "unauthorized_effects_present": result.unauthorized_effects_present,
-            "differences": result.differences,
-            "supplied_compiler_version": result.supplied_compiler_version,
+                "unauthorized_effects_present": result.unauthorized_effects_present,
+                "provenance": provenance.to_json(),
+                "differences": result.differences,
+                "supplied_compiler_version": result.supplied_compiler_version,
             "current_compiler_version": result.current_compiler_version,
         });
         if all_ok {
@@ -1014,6 +1047,14 @@ pub(crate) fn run_verify_cert(
             println!(
                 "  note: cert compiler_version={} differs from current={}; rederivation skipped",
                 result.supplied_compiler_version, result.current_compiler_version
+            );
+        }
+        if provenance.envelope_present {
+            println!(
+                "  provenance: signer={} context={} trusted={}",
+                provenance.signer_id.as_deref().unwrap_or("<unknown>"),
+                provenance.context.as_deref().unwrap_or("<unknown>"),
+                provenance.trusted
             );
         }
     } else {

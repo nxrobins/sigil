@@ -835,6 +835,12 @@ define_catalog! {
         default_hint: "Schema-v9 execution requires a formal report freshly re-derived by the current compiler. The supplied report is missing or differs in model version, checker fingerprint, canonical CSIR fingerprint, toolchain, or checked counts. Treat this as certificate tampering or toolchain drift and re-emit the certificate from the exact source and compiler binary.",
         category: Category::Internal,
     },
+    CodeEntry {
+        code: R820,
+        title: "Certificate provenance did not validate",
+        default_hint: "The active deployment profile requires authenticated certificate provenance, or the supplied signed envelope is malformed. Check the signer id, Ed25519 public key, deployment context, revocation list, and signature algorithm, then re-emit the certificate from a trusted signing key.",
+        category: Category::Internal,
+    },
     // ── Type checking — declarations & assignments ──
     CodeEntry {
         code: T040,
@@ -1865,8 +1871,8 @@ define_catalog! {
     },
     CodeEntry {
         code: T151,
-        title: "Monomorphization depth exceeded",
-        default_hint: "A generic function instantiates itself (or its callees) too deeply. Restructure to break the recursion or simplify the generic chain.",
+        title: "Type expansion limit exceeded",
+        default_hint: "Generic specialization or type-alias expansion exceeds the compiler's count, size, or depth budget. Reduce distinct specializations or simplify the expanded types and alias chain.",
         category: Category::TypeCheck,
     },
     CodeEntry {

@@ -74,6 +74,7 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [R817](R817.md) — Certificate not solver-verified (Z3 proofs did not run)
 - [R818](R818.md) — Persistent heap exhausted
 - [R819](R819.md) — Formal security report or CSIR fingerprint mismatch
+- [R820](R820.md) — Certificate provenance did not validate
 ## Lexer
 
 - [L001](L001.md) — Invalid integer literal
@@ -264,7 +265,7 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [T141](T141.md) — Cannot index non-array value
 - [T142](T142.md) — Array index must be integer
 - [T150](T150.md) — Could not infer type parameter
-- [T151](T151.md) — Monomorphization depth exceeded
+- [T151](T151.md) — Type expansion limit exceeded
 - [T155](T155.md) — Cross-module call to private function
 - [T156](T156.md) — Module name shadowed by local variable
 - [T160](T160.md) — Extern function must declare `FFI` effect

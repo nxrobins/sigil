@@ -32,7 +32,15 @@
 # the target, and the cross-build fails with the release binary that lane exists
 # to prove. Naming the target here keeps one source of truth: the file that
 # decides the version also decides what that version can build.
+#
+# x86_64-pc-windows-gnu is here for the same reason and cost the same lesson on
+# 2026-09-07: the Windows leg moved off the MSVC ABI, which the mandatory Lean
+# verifier cannot be built for, and the leg died in `can't find crate for std`
+# even though its toolchain step had installed the target -- into `stable`,
+# which nothing then used. It is the Windows leg's ONLY target, not a
+# cross-build: the runner's host default is MSVC, so that lane sets
+# CARGO_BUILD_TARGET to this triple.
 [toolchain]
 channel = "1.98.0"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-apple-darwin"]
+targets = ["x86_64-apple-darwin", "x86_64-pc-windows-gnu"]

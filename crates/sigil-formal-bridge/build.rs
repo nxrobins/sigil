@@ -100,6 +100,26 @@ fn compile_lean_module(
 }
 
 fn main() {
+    // Fail closed on the MSVC ABI, immediately and by name, rather than after several minutes of
+    // Lean compilation followed by a wall of compiler errors nobody can read a decision out of.
+    // Lean publishes Windows only as `x86_64-w64-windows-gnu`, and its generated C is not
+    // MSVC-compatible in any compiler mode: it initializes the flexible array member `m_objs` of
+    // `lean_closure_object` with `.m_objs = {}` (28 sites in CombinedKernel.c alone), which ISO C
+    // forbids initializing in every edition including C23, which GCC and Clang accept as an
+    // extension, and which `cl.exe` rejects under every `/std` level with C7757 (measured
+    // 2026-09-07: 164 of them, after `/std:c11` and `/experimental:c11atomics` had cleared the two
+    // `<stdatomic.h>` gates in front of it). Its shipped archives are Itanium-mangled besides, so
+    // even a compiling MSVC build could not resolve them against the MSVC C++ runtime.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        panic!(
+            "the mandatory Lean verifier cannot be built for the MSVC ABI: the pinned Lean \
+             toolchain ships Windows as `x86_64-w64-windows-gnu` and emits C that only GCC and \
+             Clang accept. Build Windows with `--target x86_64-pc-windows-gnu`, which matches \
+             Lean's own triple and is the target SIGIL's Windows CI lane covers."
+        );
+    }
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let repository = manifest
         .parent()
@@ -283,6 +303,10 @@ fn main() {
     ]);
     let v9_modules: &[(&str, &[&str])] = &[
         (
+            "LambdaSigil.ProjectionKernel",
+            &["LambdaSigil.OccurrenceWire"],
+        ),
+        (
             "LambdaSigil.OccurrenceRegions",
             &["LambdaSigil.SemanticKernel"],
         ),
@@ -447,7 +471,21 @@ fn main() {
     let host_prefix = PathBuf::from(host_prefix.trim());
     let host = env::var("HOST").expect("Cargo must provide HOST");
     let target = env::var("TARGET").expect("Cargo must provide TARGET");
-    let prefix = if host == target {
+    // Windows reaches here with differing triples that nonetheless want the same Lean runtime.
+    // The runner's rustc host is `x86_64-pc-windows-msvc` while this crate must be built for
+    // `x86_64-pc-windows-gnu` (the MSVC ABI cannot build the verifier at all, see the refusal
+    // at the top of this file), yet elan installs exactly ONE Windows Lean toolchain --
+    // `x86_64-w64-windows-gnu` -- and it is precisely the one the GNU target needs. Demanding
+    // SIGIL_LEAN_TARGET_PREFIX here would mean pointing it at the prefix `lake` just reported.
+    //
+    // Deliberately NOT generalized to "same architecture and OS": `linux-gnu` and `linux-musl`
+    // share both and do NOT share a Lean runtime, which is the mistake this guard exists to
+    // catch. Only the Windows ABI split is exempted, because only there does one published
+    // runtime serve both triples.
+    let same_windows_runtime = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && host.contains("-windows-")
+        && host.split('-').next() == target.split('-').next();
+    let prefix = if host == target || same_windows_runtime {
         host_prefix
     } else {
         let supplied = env::var_os("SIGIL_LEAN_TARGET_PREFIX").unwrap_or_else(|| {
@@ -466,13 +504,23 @@ fn main() {
     let gmp_archive = dependency_lib.join("libgmp.a");
     let uv_archive = dependency_lib.join("libuv.a");
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     // Lean's Linux distribution is built against LLVM's libc++ (its runtime archives reference
     // `std::__1::*`), not GNU libstdc++, and it ships the matching static archives beside
     // libgmp/libuv for exactly this static-link use. Linking `stdc++` there left every libc++
-    // symbol in libleanrt.a undefined on a fresh Linux runner. macOS resolves the same symbols
-    // from the system libc++, and MSVC uses the C++ runtime import library below.
-    let links_lean_cxx_runtime = target_family == "unix" && target_os != "macos";
+    // symbol in libleanrt.a undefined on a fresh Linux runner. macOS alone resolves the same
+    // symbols from the system libc++, which is Itanium-mangled like Lean's own.
+    //
+    // Windows belongs on the Linux side of this line, not its own. Lean publishes Windows as
+    // `x86_64-w64-windows-gnu` -- clang, libc++, mingw -- so its archives carry exactly the same
+    // Itanium-mangled `std::__1::*` references, and the same shipped `lib/libc++.a` answers them.
+    // Measured with llvm-nm on the pinned 4.32.0-rc1 release: the four archives below leave 72
+    // `_ZNSt3__1*` symbols plus 8 `__cxa_*`/`_Unwind_*` undefined on Windows, against 67 on
+    // macOS. The condition was previously `target_family == "unix"`, which silently excluded
+    // Windows and sent it to an MSVC branch that linked `msvcprt` -- a C++ runtime whose symbols
+    // are MSVC-mangled and therefore cannot define any of those 80, which is why the Windows leg
+    // had never once linked.
+    let links_lean_cxx_runtime = target_os != "macos" && target_env != "msvc";
     let cxx_archives = [
         dependency_lib.join("libc++.a"),
         dependency_lib.join("libc++abi.a"),
@@ -485,7 +533,14 @@ fn main() {
         uv_archive.clone(),
     ];
     if links_lean_cxx_runtime {
-        required_paths.extend(cxx_archives.iter().cloned());
+        // Require exactly what gets linked below, so a prefix missing a piece fails here with
+        // its own name rather than as an unresolved symbol thousands of lines into a link.
+        required_paths.push(cxx_archives[0].clone());
+        if target_os == "windows" {
+            required_paths.push(dependency_lib.join("libicu.a"));
+        } else {
+            required_paths.push(cxx_archives[1].clone());
+        }
     }
     for required in &required_paths {
         assert!(
@@ -533,26 +588,49 @@ fn main() {
         "cargo:rustc-link-search=native={}",
         dependency_lib.display()
     );
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        // The official Lean Windows distribution deliberately ships GNU-style
-        // `lib*.a` COFF archives. `rustc-link-lib` asks the MSVC linker for
-        // `*.lib`, so pass the verified archive paths verbatim instead.
-        for archive in [init_archive, runtime_archive, gmp_archive, uv_archive] {
-            println!("cargo:rustc-link-arg={}", archive.display());
-        }
-        println!("cargo:rustc-link-lib=msvcprt");
-    } else {
-        println!("cargo:rustc-link-lib=static=Init");
-        println!("cargo:rustc-link-lib=static=leanrt");
-        println!("cargo:rustc-link-lib=static=gmp");
-        println!("cargo:rustc-link-lib=static=uv");
-    }
+    // One spelling for every supported target. The GNU-style `lib*.a` archives Lean ships on
+    // Windows are what `-lstatic=` already asks a GNU linker for, so the MSVC-only branch that
+    // used to pass them as raw link arguments beside `msvcprt` is gone with the ABI it served.
+    println!("cargo:rustc-link-lib=static=Init");
+    println!("cargo:rustc-link-lib=static=leanrt");
+    println!("cargo:rustc-link-lib=static=gmp");
+    println!("cargo:rustc-link-lib=static=uv");
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
     } else if links_lean_cxx_runtime {
         // Static, from the pinned Lean prefix: the only C++ runtime that matches the pinned
         // Lean runtime archives. Unwinding stays on the platform libgcc_s that Rust links.
         println!("cargo:rustc-link-lib=static=c++");
-        println!("cargo:rustc-link-lib=static=c++abi");
+        // Linux ships libc++ and libc++abi as two archives and needs both named. The Windows
+        // build of libc++ already contains the whole ABI library -- `__cxa_throw`,
+        // `__gxx_personality_seh0` and the `operator new`/`operator delete` definitions are all
+        // inside `libc++.a` -- so naming libc++abi as well makes ld.lld reject the link with
+        // ~20 `duplicate symbol` errors rather than resolving anything new.
+        if target_os != "windows" {
+            println!("cargo:rustc-link-lib=static=c++abi");
+        }
+    }
+    if target_os == "windows" {
+        // Emitted LAST, and explicitly rather than by relying on what libstd happens to link:
+        // GNU ld resolves an archive against the libraries that follow it, so these have to sit
+        // behind the Lean and libc++ archives that need them.
+        //
+        // Lean's own `leanc` never needs this list because it links `libleanshared.dll`, which
+        // already carries these dependencies; SIGIL links the static archives instead, so the
+        // dependencies become ours. Every name below was derived from a real unresolved symbol
+        // in a cross-link of this crate's test binaries, not copied from a template:
+        // `ucal_getTimeZoneID` and `u_strToUTF8` (Lean's io.cpp time zone path) from the ICU
+        // archive Lean ships on Windows and on no other platform; `BCryptGenRandom` from bcrypt;
+        // `RegGetValueW`, `OpenProcessToken`, `AdjustTokenPrivileges`, `SetEntriesInAclA`,
+        // `GetUserNameW` and `SystemFunction036` from advapi32; `SHGetKnownFolderPath` from
+        // shell32; `CoTaskMemFree` from ole32; `GetAdaptersAddresses` from iphlpapi; the rest
+        // from libuv's process, pipe and thread paths.
+        println!("cargo:rustc-link-lib=static=icu");
+        for system in [
+            "advapi32", "bcrypt", "crypt32", "dbghelp", "iphlpapi", "ole32", "psapi", "shell32",
+            "user32", "userenv", "ws2_32",
+        ] {
+            println!("cargo:rustc-link-lib=dylib={system}");
+        }
     }
 }

@@ -29,6 +29,7 @@ Rules:
 | 2026-08-01 | genesis | `4d1bce13cd0e01aeb545f9c5704972f7a1b58cccc774e0de79ae1b5a58085c2a` | `6fe4bc0fbe2e7cc38746225bc9e3275383f5d09a57d85a8f3e34cdd73c9fb914` | 464377 | Rust oracle emit (no prior seed existed) |
 | 2026-08-03 | source-only | `48d087cbb183691d56e988047042e0c4bde0156376d9906caac2478c6293e444` | `6fe4bc0fbe2e7cc38746225bc9e3275383f5d09a57d85a8f3e34cdd73c9fb914` | 464377 | unchanged — comment-only source edit, no succession run |
 | 2026-09-02 | succession (emitter rule, two stages) | `fa69ab5fc7bbd58dba180432fc49d8cc7b7eff29cfdfa48b9ffe38c00d0cdc94` | `4062f4e19707f9dcaa51c71bb11f9cec73ddbfa2d12c8e38f127c8a3e705ac39` | 454798 | the compiler the old seed built (`ed2d006c4337f199ec34ee0f3dd84b2e8d37f1a782b0de0e7d9e509144c41b23`, 464600 bytes) compiling the certified source; oracle-agreed and its own fixed point |
+| 2026-09-07 | succession (self-host lexer codepoint width mirror) | `2a0acecaff3357b5e1066a74185dda97800a3a469c5317b66e2852db81411b46` | `1ef47cc5b967d2d42b43be6353dc8d276209aa8ec23655a9b4e0c83ad21764f2` | 454894 | the old committed seed (`4062f4e19707f9dcaa51c71bb11f9cec73ddbfa2d12c8e38f127c8a3e705ac39`, 454798 bytes) compiling the certified source; oracle-agreed |
 
 **On the `source-only` row.** Two comments in `stdlib/sigil/strings.sigil` described `str ==` as
 pointer-identity; that stopped being true when `==` began comparing bytes, so they were corrected.
