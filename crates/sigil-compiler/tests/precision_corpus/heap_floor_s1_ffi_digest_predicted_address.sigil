@@ -1,0 +1,17 @@
+// Heap floor S1 (BUG-2): a host-written FFI result read through a PREDICTED address.
+// The host writes the SHA-256 digest at the guest's own bump pointer, so the byte at
+// `p + 1` is host-written yet reachable through `p`'s @Public label. The extern call
+// raises the raw-load floor to @Internal, and returning the load from a function
+// declared @Public is T001. The @Public return is the fixture's ONLY sink (precision
+// lane: exactly one error). Shape pinned by `ffi_digest_read_through_predicted_address_is_t001`.
+// expect-error: T001
+#[ring(outer)] #[trusted] module tool;
+extern "C" fn crypto_sha256(input: i32, input_len: i32) -> i64 ! { FFI, Unsafe };
+fn probe(input_ptr: i32, input_len: i32) -> i64 @Public ! { Alloc, FFI, Unsafe } {
+    let p: i64 = alloc(1);
+    let unused: i64 @Internal = crypto_sha256(input_ptr, input_len);
+    return load8(p + 1);
+}
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc, FFI, Unsafe } {
+    return probe(input_ptr, input_len);
+}

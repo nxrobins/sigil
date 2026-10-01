@@ -13,6 +13,8 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [C010](C010.md) — Capability from actor state consumed in a handler
 - [C011](C011.md) — `mut` actor-state field must be plain reassignable data
 - [C012](C012.md) — `mut` actor-state field's element shape is not yet preserved across dispatches
+- [C013](C013.md) — Capability without a recognised full-authority origin put into an aliasable slot
+- [C014](C014.md) — Cap-typed actor-state field assigned a capability without a recognised full-authority origin
 - [R010](R010.md) — Non-capability spawn argument
 - [R011](R011.md) — Non-capability fuel argument
 - [R012](R012.md) — Non-cap source or destination at restrict/split
@@ -48,6 +50,7 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [T031](T031.md) — `declassify` rejects `@SecretCT` input (CT017)
 - [T032](T032.md) — `declassify_ct` input must be `@SecretCT`
 - [T033](T033.md) — Secret-dependent string content comparison
+- [T034](T034.md) — Secret-dependent shift amount (CT008)
 ## Internal
 
 - [I001](I001.md) — Internal compiler invariant violation
@@ -75,6 +78,7 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [R818](R818.md) — Persistent heap exhausted
 - [R819](R819.md) — Formal security report or CSIR fingerprint mismatch
 - [R820](R820.md) — Certificate provenance did not validate
+- [R821](R821.md) — Shipped WASM module could not be bound to the certificate's source
 ## Lexer
 
 - [L001](L001.md) — Invalid integer literal
@@ -168,6 +172,7 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [R004](R004.md) — Direct cross-ring call requires a grant
 - [R005](R005.md) — Compatibility alias for T109 ring-error sanitization
 - [R006](R006.md) — `#[trusted]` requires `#[ring(outer)]`
+- [R007](R007.md) — Monomorphized generic instance is filed in the other ring
 ## SourceLimit
 
 - [S001](S001.md) — Source exceeds maximum byte size

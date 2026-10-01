@@ -20,8 +20,23 @@
 //!
 //! There is no machine Lean-to-Rust bridge; the correspondence is a reviewed classification of
 //! shared and intentionally one-sided ids, checked by `lean_obligation_ids_are_pinned`.
+//!
+//! **Two pairs tied by id to the SAME program on both sides** (C17 / C19 of the paper review):
+//! `LSD-E001-hof` / `LSD-ACC-E001-hof` are the `.sigil` spelling of `EffectRows.lean`'s `hofProg`
+//! (construct an effectful closure, apply it under a declared row that omits / declares the
+//! effect), and `LSD-ACC-trap` is a function whose body is an explicit `trap()` plus a call of it
+//! (`Differential.lean`'s `lsdTrapProg`, a `lam` over `trap` applied to `unit`).  The older
+//! direct-call E001 pair stays Rust-only: λ-SIGIL has no named functions, so a direct call has no
+//! same-shape term.  Fuel exhaustion and bounds failure CANNOT be paired at all — the core calculus
+//! has no fuel counter and no arrays — so the only trap pairing is the explicit one.
+//!
+//! `RUST_ONLY_REJECTS` holds rejects whose headline code is outside `IN_SCOPE` and is therefore
+//! asserted on the FULL code set (`all_codes`), not the in-scope filter — a value-position `trap()`
+//! is rejected by Rust but typed by Lean (`Typing.trap` is position-free), a structural asymmetry
+//! recorded in `CORRESPONDENCE` rather than papered over with a fake Lean reject.
 
 use sigil_compiler::compile_module;
+use sigil_test_utils::snapshot::wat_of;
 
 /// The headline ownership/effect/mint codes the coded fixtures range over.  Codes outside this set
 /// (parse/resolve artifacts, missing-entry, etc.) are filtered out — the verdict is "does this
@@ -84,7 +99,8 @@ pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
 ";
 
 // ── E001: undeclared effect (callee row ⊄ caller row) ───────────────────────────────────────
-// λ-SIGIL: mechanism gap — row synthesis + effect_safety (Differential.lean note).  The accept
+// Direct-call pair — Rust-only: λ-SIGIL has no named functions, so `boot` calling `expensive`
+// has no same-shape term (the Lean E001 content is the higher-order pair below).  The accept
 // drops `effect NetIO;`, so NetIO is unregistered and the row drops to empty (no leak).
 const E001_REJECT: &str = "\
 #[ring(outer)]
@@ -98,6 +114,28 @@ const E001_ACCEPT: &str = "\
 module m;
 fn expensive() -> i64 ! { NetIO } { return 0; }
 fn boot() -> i64 ! {} { return expensive(); }
+";
+
+// ── E001 (higher-order): apply an effectful closure under a row that omits its effect ────────
+// λ-SIGIL: `EffectRows.lean`'s `hofProg` = `app (lam unit (perform hofEff unit)) unit`, checked
+// against declared row `∅` (`lsd_e001_hof_reject`, no `Chk` derivation — `Chk.app_latent_bounded`)
+// vs. `{hofEff}` (`lsd_acc_e001_hof`).  Rust: the closure's row `{NetIO}` is inferred from its body
+// and rides `Type::Fn`; `walk_expr_effects`' IndirectCall arm discharges it against `boot`'s row.
+// The accept twin DECLARES the effect on the applying function — it does not un-register it —
+// so the pair is one mutation apart on exactly the row the Lean pair varies.
+const E001_HOF_REJECT: &str = "\
+#[ring(outer)]
+module m;
+effect NetIO;
+fn net() -> i64 ! { NetIO } { return 0; }
+fn boot() -> i64 ! {} { let g = fn(x: i64) -> i64 { return net(); }; return g(1); }
+";
+const E001_HOF_ACCEPT: &str = "\
+#[ring(outer)]
+module m;
+effect NetIO;
+fn net() -> i64 ! { NetIO } { return 0; }
+fn boot() -> i64 ! { NetIO } { let g = fn(x: i64) -> i64 { return net(); }; return g(1); }
 ";
 
 // ── T272 / T273: mint policy + authority gate ───────────────────────────────────────────────
@@ -126,6 +164,25 @@ record File { id: i64 }
 fn bad(f: File) -> Admin { return mint Admin for f; }
 ";
 
+// ── trap / Type::Never: an explicit abort is ACCEPTED in statement position ─────────────────
+// λ-SIGIL: `lsdTrapProg = app (lam unit trap) unit` is typed (`lsd_acc_trap`) and β-steps to the
+// terminal abort `trap` (`lsd_acc_trap_aborts`).  Rust: `trap()` is `Type::Never`, legal only as a
+// bare statement; the block ends in `AirTerminator::Unreachable` → wasm `unreachable`
+// (`trap_accept_lowers_to_wasm_unreachable` below; the WAT shape is also a `snap_wat` golden).
+const TRAP_ACCEPT: &str = "\
+module m;
+pub fn always_abort() -> i64 { trap(); }
+pub fn run() -> i64 { return always_abort(); }
+";
+// Rust-only reject: binding the diverging value.  Lean's `Typing.trap` types `trap` at ANY type in
+// ANY position (`demoTrap_typed` even puts it in function position), so there is no Lean reject to
+// pair — the asymmetry is structural and is classified, not faked.  The expected code is spelled
+// with `concat!` so the diagnostic census (`soundness_contract.rs`) sees no new code token here.
+const TRAP_VALUE_REJECT: &str = "\
+module m;
+fn f() -> i64 { let x = trap(); return 0; }
+";
+
 const FIXTURES: &[Fixture] = &[
     // rejects
     Fixture {
@@ -148,6 +205,11 @@ const FIXTURES: &[Fixture] = &[
         expect: &["T272"],
         src: T272_REJECT,
     },
+    Fixture {
+        id: "LSD-E001-hof",
+        expect: &["E001"],
+        src: E001_HOF_REJECT,
+    },
     // accept siblings (1 mutation away — proves each reject is load-bearing, harden-spec C3)
     Fixture {
         id: "LSD-ACC-O001",
@@ -164,19 +226,42 @@ const FIXTURES: &[Fixture] = &[
         expect: &[],
         src: T273_ACCEPT,
     },
+    Fixture {
+        id: "LSD-ACC-E001-hof",
+        expect: &[],
+        src: E001_HOF_ACCEPT,
+    },
+    Fixture {
+        id: "LSD-ACC-trap",
+        expect: &[],
+        src: TRAP_ACCEPT,
+    },
 ];
 
+/// Rejects whose headline code lies OUTSIDE `IN_SCOPE`: `expect` is the exact FULL code set
+/// (`all_codes`), so an in-scope filter cannot hide a wrong-reason rejection.  Every id here is
+/// Rust-only by construction (see the per-fixture comment) and is classified in `CORRESPONDENCE`.
+const RUST_ONLY_REJECTS: &[Fixture] = &[Fixture {
+    id: "LSD-trap-value",
+    expect: &[concat!("T", "279")],
+    src: TRAP_VALUE_REJECT,
+}];
+
 /// The coded-fixture id set the rust-lane half covers (C003 ids are solver-lane; C001 is the
-/// forgery-rejected witness below). Keep in lockstep with `FIXTURES`; cross-language differences
-/// are classified explicitly in `CORRESPONDENCE` below.
+/// forgery-rejected witness below). Keep in lockstep with `FIXTURES` + `RUST_ONLY_REJECTS`;
+/// cross-language differences are classified explicitly in `CORRESPONDENCE` below.
 const EXPECTED_IDS: &[&str] = &[
     "LSD-O001",
     "LSD-E001",
     "LSD-T273",
     "LSD-T272",
+    "LSD-E001-hof",
     "LSD-ACC-O001",
     "LSD-ACC-E001",
     "LSD-ACC-mint",
+    "LSD-ACC-E001-hof",
+    "LSD-ACC-trap",
+    "LSD-trap-value",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,9 +291,31 @@ const CORRESPONDENCE: &[(&str, CorrespondenceLocation, &str)] = &[
         "both sides admit minting with authority",
     ),
     (
+        "LSD-E001-hof",
+        CorrespondenceLocation::Shared,
+        "both sides reject applying an effectful closure under a declared row that omits its \
+         effect: Rust's IndirectCall latent-row discharge, Lean's Chk.app_latent_bounded \
+         (lsd_e001_hof_reject = hof_latent_leak_rejected over the same hofProg shape)",
+    ),
+    (
+        "LSD-ACC-E001-hof",
+        CorrespondenceLocation::Shared,
+        "the same closure application under a row that DECLARES the effect is accepted on both \
+         sides (lsd_acc_e001_hof = hof_declared_accepts)",
+    ),
+    (
+        "LSD-ACC-trap",
+        CorrespondenceLocation::Shared,
+        "an explicit trap in statement position is accepted on both sides and aborts (Rust: \
+         Never-typed statement lowered to wasm unreachable; Lean: lsd_acc_trap typed, \
+         lsd_acc_trap_aborts steps to the terminal trap); fuel exhaustion and bounds failure \
+         cannot be paired — the core calculus has no fuel counter and no arrays",
+    ),
+    (
         "LSD-E001",
         CorrespondenceLocation::RustOnly,
-        "Lean synthesizes effect rows and has no source annotation-mismatch verdict",
+        "direct-call E001 (callee row not within caller row): λ-SIGIL has no named functions, so \
+         a direct call has no same-shape term — the higher-order LSD-E001-hof is the shared pair",
     ),
     (
         "LSD-T272",
@@ -223,7 +330,15 @@ const CORRESPONDENCE: &[(&str, CorrespondenceLocation, &str)] = &[
     (
         "LSD-ACC-E001",
         CorrespondenceLocation::RustOnly,
-        "Rust annotation-check accept twin for the Lean effect-row mechanism gap",
+        "Rust accept twin of the direct-call E001 fixture (un-registers the effect); the Lean \
+         accept twin that declares the row is the shared LSD-ACC-E001-hof",
+    ),
+    (
+        "LSD-trap-value",
+        CorrespondenceLocation::RustOnly,
+        "Rust rejects binding a value-position trap (the diverging value has no inhabitant); \
+         Lean's Typing.trap types trap at any type in any position (demoTrap_typed), so no Lean \
+         reject exists — a structural asymmetry, classified rather than faked",
     ),
     (
         "LSD-C003",
@@ -277,6 +392,22 @@ const CORRESPONDENCE: &[(&str, CorrespondenceLocation, &str)] = &[
     ),
 ];
 
+/// Every diagnostic code the full pipeline emits, sorted and deduplicated — the UNFILTERED verdict
+/// surface, for rejects whose headline code is outside `IN_SCOPE`.
+fn all_codes(src: &str) -> Vec<String> {
+    let mut v: Vec<String> = match compile_module(src) {
+        Ok(_) => Vec::new(),
+        Err(e) => e
+            .diagnostics()
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect(),
+    };
+    v.sort();
+    v.dedup();
+    v
+}
+
 #[test]
 fn differential_verdicts_match() {
     for f in FIXTURES {
@@ -293,7 +424,100 @@ fn differential_verdicts_match() {
                 "reject"
             }
         );
+        // An accept fixture must ACTUALLY compile, end to end.  The in-scope filter alone would
+        // let an accept twin that fails for an out-of-scope reason (a parse error, a codegen ICE
+        // surfaced as a diagnostic) pass as "no headline violation" — fail closed instead.
+        if f.expect.is_empty() {
+            let outcome = compile_module(f.src);
+            assert!(
+                outcome.is_ok(),
+                "accept fixture {} must compile clean; got {:?}",
+                f.id,
+                outcome.err().map(|e| e
+                    .diagnostics()
+                    .iter()
+                    .map(|d| d.code().as_str().to_string())
+                    .collect::<Vec<_>>())
+            );
+        }
     }
+}
+
+/// `RUST_ONLY_REJECTS` are asserted on the FULL code set: exactly the expected code, nothing else.
+#[test]
+fn rust_only_rejects_match_exact_full_code_set() {
+    assert!(
+        !RUST_ONLY_REJECTS.is_empty(),
+        "the Rust-only reject list is empty — this test would assert nothing"
+    );
+    for f in RUST_ONLY_REJECTS {
+        assert!(
+            !f.expect.is_empty(),
+            "Rust-only reject {} must expect at least one code",
+            f.id
+        );
+        let got = all_codes(f.src);
+        let expect: Vec<String> = f.expect.iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, expect, "fixture {}: full code set mismatch", f.id);
+    }
+}
+
+/// `LSD-ACC-trap`'s Rust half, operationally: the function whose body is `trap()` compiles clean
+/// and its wasm body ENDS in `unreachable` (the `AirTerminator::Unreachable` lowering) — the
+/// counterpart of `lsd_acc_trap_aborts` (β-step to the terminal `trap`).
+#[test]
+fn trap_accept_lowers_to_wasm_unreachable() {
+    let comp = compile_module(TRAP_ACCEPT).unwrap_or_else(|e| {
+        panic!(
+            "LSD-ACC-trap must compile clean; got {:?}",
+            e.diagnostics()
+                .iter()
+                .map(|d| d.code().as_str().to_string())
+                .collect::<Vec<_>>()
+        )
+    });
+    let wat = wat_of(&comp.wasm_inner);
+    // Resolve the exported trapping function's index, then its body: `(export "m__always_abort"
+    // (func N))` → the `(func (;N;)` block.  Both lookups fail closed (a missing export or body
+    // is a panic, not a vacuous pass).
+    let export_tag = "(export \"m__always_abort\" (func ";
+    let export_at = wat
+        .find(export_tag)
+        .unwrap_or_else(|| panic!("no export of always_abort in WAT:\n{wat}"));
+    let idx: String = wat[export_at + export_tag.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert!(!idx.is_empty(), "export index unreadable in WAT:\n{wat}");
+    let func_tag = format!("(func (;{idx};)");
+    let body_at = wat
+        .find(&func_tag)
+        .unwrap_or_else(|| panic!("no body for func {idx} in WAT:\n{wat}"));
+    let body = &wat[body_at..];
+    // The body runs to the next top-level `\n  (` item or the module's closing paren.
+    let body_end = body[1..]
+        .find("\n  (")
+        .map(|i| i + 1)
+        .unwrap_or_else(|| body.rfind(')').expect("WAT module has a closing paren"));
+    let body = &body[..body_end];
+    assert!(
+        body_ends_in_unreachable(body),
+        "always_abort's wasm body must END in `unreachable`; body:\n{body}"
+    );
+    // Anti-stub (SC-P4): the SAME detector must reject a body that returns instead of trapping.
+    assert!(
+        !body_ends_in_unreachable("(func (;0;) (result i64)\n    i64.const 0\n    return\n  )"),
+        "the ends-in-unreachable detector accepted a returning body"
+    );
+}
+
+/// The `LSD-ACC-trap` operational detector: does a WAT `(func …)` block's last instruction — after
+/// its closing parens and trailing whitespace — read `unreachable`?  Shared by the assertion and
+/// its anti-stub so the planted negative exercises exactly the code path the positive relies on.
+fn body_ends_in_unreachable(func_block: &str) -> bool {
+    func_block
+        .trim_end_matches([')', '\n', ' '])
+        .ends_with("unreachable")
 }
 
 #[test]
@@ -303,7 +527,11 @@ fn fixture_ids_match_expected_ids() {
     // claim it backed both said this checked the LEAN obligation ids, but it never read Lean; it
     // only compared two Rust-side lists in this file. The genuine Rust↔Lean comparison is
     // `lean_obligation_ids_are_pinned` below, and it shows the two sets do NOT match.
-    let mut ids: Vec<&str> = FIXTURES.iter().map(|f| f.id).collect();
+    let mut ids: Vec<&str> = FIXTURES
+        .iter()
+        .chain(RUST_ONLY_REJECTS)
+        .map(|f| f.id)
+        .collect();
     ids.sort();
     ids.dedup();
     let mut expected: Vec<&str> = EXPECTED_IDS.to_vec();

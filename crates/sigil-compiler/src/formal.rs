@@ -944,7 +944,23 @@ fn string_immediates(value: &str) -> Vec<SemanticOperand> {
     operands
 }
 
-fn air_stmt_destination(statement: &AirStmt) -> Option<VarId> {
+/// The single `VarId` a statement defines, or `None` for a statement that
+/// defines nothing (stores, sends, guards, markers). This is the certificate's
+/// SSA-versioning source, so it is the crate's one authority on "how many
+/// times is this AIR value defined"; `air_capability_v2` reuses it to decide
+/// whether a fuel amount is a single-definition literal it may bind. Failure
+/// direction of an arm missing here, for that consumer: definitions are
+/// UNDER-counted, so an `IntLit` assignment would look like the only
+/// definition even when an unlisted statement later redefines the same
+/// VarId. That is the FAIL-OPEN direction: if the redefinition were larger
+/// than the literal, the stale smaller numeral would bind, the family would
+/// stay SAT, and the overdraw would be accepted at compile time (the runtime
+/// table still enforces). It holds today only because no variant outside
+/// this list defines a user-referenceable integer — the sole unlisted
+/// definer, `SerializeMessage`'s `dst_buf`/`dst_len`, writes compiler-fresh
+/// `Ptr` locals that no source amount can name. A new defining AIR variant
+/// must be added here.
+pub(crate) fn air_stmt_destination(statement: &AirStmt) -> Option<VarId> {
     match statement {
         AirStmt::Assign { dst, .. }
         | AirStmt::LoadField { dst, .. }

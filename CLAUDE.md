@@ -69,7 +69,12 @@ Every PR is one of two classes, enforced by `crates/sigil-compiler/tests/parity_
   golden or manifest by hand; run its regenerator (each failure message names the exact
   command).
 - **`.sigil`, `.tsv`, and most text files are LF-pinned** in `.gitattributes`; tests
-  byte-compare them on the Windows lane. `git diff --check` gates whitespace errors.
+  byte-compare them on the Windows lane. `git diff --check` gates whitespace errors
+  (the hygiene lane excludes `*.md`, `*.patch`, and `bench/fixtures/**`).
+- **Every commit needs a DCO sign-off.** The hygiene lane fails closed on one unsigned
+  commit anywhere in `main..head` — commit with `git commit -s`. Nothing local catches
+  this, and fixing it after the fact means amending every commit in the range and
+  force-pushing, so sign as you go.
 - **Fixture headers**: description line first (the corpus extractor reads it as prose),
   machine expectation second (`// expect-error: T044, T088` — exact codes, comma-set).
 
@@ -82,8 +87,9 @@ Every PR is one of two classes, enforced by `crates/sigil-compiler/tests/parity_
     python tools/selfhost_ergonomics_census.py --ratchet        # selfhost ergonomics gate
 
 CI lanes beyond `test`: `checks` (fmt/clippy), `solver` (pinned Z3), `interp-ddc`
-(diverse double-compilation, digest-pinned), `hygiene` (python lint, workflow validity,
-whitespace), portability (macOS/Windows — parity and the compiler-side censuses run
+(diverse double-compilation, digest-pinned), `hygiene` (python lint, DCO sign-off,
+private-identifier sweep, workflow validity, interpreter pins, selfhost ergonomics
+ratchet, whitespace), portability (macOS/Windows — parity and the compiler-side censuses run
 there too; **gated**: push-to-main, or a PR labelled `ci-portability`, which takes effect
 on that PR's next push — macOS bills at 10x and Windows at 2x), Lean.
 

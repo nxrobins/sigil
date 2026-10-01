@@ -148,7 +148,10 @@ fn pin6_every_claim_names_a_real_test() {
     // raise whenever claims are added; lowering it means a claim lost its proof and must move to §D.
     // Measure with THIS extractor, not a hand grep: a raw `@test:` count reads 62 because the
     // documentation table's `@test:<fn>` example has no identifier after the colon.
-    const PIN6_TEST_TAG_FLOOR: usize = 67;
+    // Raised 67 → 257 on 2026-10-01, once, after the phase-2 landings added claims 46–53: the
+    // number is what this extractor measured on the merged ledger (the floor's own failure
+    // message, read with the floor set out of reach).
+    const PIN6_TEST_TAG_FLOOR: usize = 257;
     assert!(
         tags.len() >= PIN6_TEST_TAG_FLOOR,
         "PIN-6: docs/CLAIMS.md carries only {} `@test:` tags (floor {PIN6_TEST_TAG_FLOOR}). \
@@ -395,7 +398,9 @@ fn pin6_section_b_prose_states_no_unpinned_measurement() {
 fn pin6_unproven_claim_count_is_pinned() {
     // This is a floor from the current deduplicated audit. New findings should
     // raise it; closing a row with executable proof should lower it.
-    const PIN6_UNPROVEN_CLAIMS: usize = 4;
+    // 4 -> 5 at the BUG-2 heap-floor landing: a fresh disclosure, not a regression — the
+    // floors (claim 53) have no Lean counterpart, and the ledger now says so.
+    const PIN6_UNPROVEN_CLAIMS: usize = 5;
     let n = LEDGER.matches("@unproven").count();
     assert_eq!(
         n, PIN6_UNPROVEN_CLAIMS,

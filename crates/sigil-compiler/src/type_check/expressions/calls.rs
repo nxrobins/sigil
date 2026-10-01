@@ -416,7 +416,7 @@ fn infer_unresolved_call_expr(
 ) -> TypedExpr {
     let (function_sigs, _actor_sigs, module_name, universe) = context.parts();
     // Fallback 1: check generic function registry for monomorphization
-    if let Some(generic_def) = universe.generic_fns.get(&callee_name).cloned() {
+    if let Some((definer_module, generic_def)) = universe.generic_fns.get(&callee_name).cloned() {
         // PR-1: the inference layer is name-only; bounds live on the AST.
         // Phase 4 (row polymorphism): every POSITIONAL consumer below zips
         // binders against TYPE-kinded concrete args, so the effect-kinded
@@ -714,6 +714,20 @@ fn infer_unresolved_call_expr(
                         mono_row.clone(),
                     ))
                 };
+                // BUG-5b: a free-fn instance body is re-checked in the CALLING
+                // module's context (`context` below — its sigs, and the checked
+                // module's `use` scope and ring), so its callee names resolve in
+                // the caller's scope, not the definer's. The instance is governed
+                // by the MEET of the definer and those scopes (round 3 — the
+                // definer alone let a trusted generic's `handle Unsafe` discharge
+                // a caller's untrusted helper, and an inner-ring generic's
+                // exemption hide a caller's FFI chain). Round 2: anything
+                // lambda-lifted out of this body is named `{caller}::__closure_N`
+                // and needs the same home, so publish it for the lift site;
+                // restored after the body so a nested instance of another
+                // module's generic cannot leak this home outward.
+                let home = tracker.instance_home(&definer_module, module_name);
+                let saved_instance_home = tracker.current_instance_home.replace(home.clone());
                 let body = check_function_block(
                     &params,
                     &mono_ret,
@@ -748,9 +762,17 @@ fn infer_unresolved_call_expr(
                     &std::collections::HashSet::new(),
                     super::super::BodyKind::Free,
                 );
+                tracker.current_instance_home = saved_instance_home;
                 if let Some(prev) = saved_effects {
                     tracker.current_effects = prev;
                 }
+                // BUG-5b: `qualified` is prefixed with the CALLING module (a
+                // `use`-imported generic instantiates under the caller's name),
+                // so the home is recorded beside the instance for the effect and
+                // ring walks — keying on the name prefix (or on the filing
+                // module) would check an untrusted module's body under a trusted
+                // caller's authority (E002 launder).
+                tracker.instance_homes.insert(qualified.clone(), home);
                 tracker.functions.push(TypedFunction {
                     ret_flow: false,
                     name: qualified.clone(),

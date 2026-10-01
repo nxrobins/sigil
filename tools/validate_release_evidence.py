@@ -347,10 +347,14 @@ def validate_document(document: object, *, tagged: bool) -> dict:
         "measured peak exceeds the separately reviewed memory limit",
     )
     integer(results["million_record_count"], "million_record_count", 1_000_000)
+    # `selfhost_trio_seconds` is the ISOLATED `Formal verifier scaling canary`
+    # step's measurement, bounded by SELFHOST_TRIO_CANARY_MS (five seconds) in
+    # crates/sigil-corpus/src/schema.rs. The corpus extractor's wider drop bound
+    # (VALIDATE_BUDGET_MS) is a different number and is not evidence here.
     require(
         number(results["selfhost_trio_seconds"], "selfhost_trio_seconds") <= 5,
         "selfhost",
-        "the existing five-second self-host canary must remain satisfied",
+        "the five-second isolated self-host scaling canary must remain satisfied",
     )
     return record
 

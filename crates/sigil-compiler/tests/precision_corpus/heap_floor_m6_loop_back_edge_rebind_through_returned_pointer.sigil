@@ -1,0 +1,22 @@
+// Heap floor, M6 region side across a LOOP BACK-EDGE (BUG-2 round 7): a pointer local is rebound
+// INSIDE the loop to the buffer the function returns, so the second iteration's `store8` lands
+// in that buffer. The loop fixpoint used to rebuild its env without the region facts and the
+// body was walked once with `q` in its fresh region — on main this was accepted and `sigil
+// forge` printed the bit. The region map is now loop-carried and joined over the back-edge, so
+// returning the pointer from a function declared @Public is T001 — the fixture's ONLY sink
+// (precision lane: exactly one error).
+// Shape pinned by `pointer_rebound_across_a_loop_back_edge_taints_the_returned_region_is_t001`.
+// expect-error: T001
+#[ring(outer)] module ext;
+fn probe() -> i64 @Public ! { Alloc } {
+    let out: i64 = alloc(64);
+    let s: i64 @Secret = 1;
+    let mut q: i64 = alloc(8);
+    let mut i: i64 = 0;
+    while i < 2 {
+        store8(q, s & 1);
+        q = out;
+        i = i + 1;
+    }
+    return out << 32 | 1;
+}

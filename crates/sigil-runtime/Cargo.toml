@@ -71,6 +71,11 @@ proptest = { workspace = true }
 sigil-test-utils = { workspace = true }
 # The normal wasmparser dependency also supports the Stage-3-A test's read-only
 # lookup of `run_from_str` + `BUMP_PTR` before splicing raw tool_main glue.
+# The fuel-overhead micro-benchmark (examples/fuel_overhead.rs) re-encodes ONE
+# section of the tool module (every `call sigil.fuel_decrement` -> `drop`) and
+# copies the rest byte-for-byte; the reencoder must match the wasmparser
+# generation above or the two crates' operator enums disagree.
+wasm-encoder = { version = "0.246.2", features = ["wasmparser"] }
 
 # Solver-only integration test (mirrors sigil-compiler's gating): a whole-file
 # `#![cfg(feature = "solver")]` binary that would otherwise compile and link to

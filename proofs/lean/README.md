@@ -135,9 +135,15 @@ To make **C003** a *literal* ⇔ rather than a representative analogy, the calcu
 full-mask **`sink`** rule (`sink req e`, `req ⊆ k`); `progress` / `preservation` / `capability_safety`
 / `effect_safety` / `type_soundness` are all re-proven over it.  Correspondence kinds are labelled
 honestly: O001 / T273 / C003 are clean rejects (O001 = the capability sub-case of affine ownership;
-T273 = the `&Admin` *type* gate), while **C001** (by construction — no forging term, front-end-rejected
-in SIGIL), **E001** (mechanism gap — row *synthesis* + `effect_safety`, not annotation-checking), and
-**T272** (out of model — no `mintable_by` policy layer) are documented, not over-claimed.
+T273 = the `&Admin` *type* gate), and so is the **higher-order E001** case (`LSD-E001-hof` /
+`LSD-ACC-E001-hof`: `EffectRows.lean`'s declared-row `Chk` witness pair, tied by id to the same
+closure-application program on the Rust side), while **C001** (by construction — no forging term,
+front-end-rejected in SIGIL), the **direct-call E001** fixtures (Rust-only — λ-SIGIL has no named
+functions), and **T272** (out of model — no `mintable_by` policy layer) are documented, not
+over-claimed.  The explicit **`trap`** accept is paired (`LSD-ACC-trap`: typed, and β-stepping to the
+terminal `trap` that `WT.progress` admits as its fourth answer); a *value-position* `trap()` is a
+Rust-only reject (Lean's `Typing.trap` is position-free), and fuel exhaustion / bounds failure
+cannot be paired at all — the core calculus has no fuel counter and no arrays.
 
 The older λ-SIGIL differential still has no automatic surface bridge. Combined CSIR separately has
 a narrow native FFI bridge: Rust encodes canonical bytes and calls the exported Lean verifier. The
@@ -145,9 +151,11 @@ Rust half of the older differential
 runs in the `test` and `solver` jobs; the Lean build and no-sorry/axiom gate run in the required Lean
 workflow. The linked production verifier builds semantic cross-reference and taint-adjacency
 indexes once per program. Required Rust CI also compiles the roughly quarter-million-record self-host
-trio through that exact native verifier under the corpus validator's fixed five-second budget;
-source canaries reject the measured whole-program-rescan regressions. This is a bounded regression
-guard, not an asymptotic theorem.
+trio through that exact native verifier under a fixed five-second bound (`SELFHOST_TRIO_CANARY_MS`),
+armed only in the isolated `Formal verifier scaling canary` step where the clock measures the
+verifier alone — the corpus extractor's own drop bound (`VALIDATE_BUDGET_MS`) is wider and only
+bounds a hung compile; source canaries reject the measured whole-program-rescan regressions. This
+is a bounded regression guard, not an asymptotic theorem.
 
 The Rust projection assigns security-only SSA versions to reassigned AIR names and emits
 predecessor-compressed phi instructions at reachable joins. The Lean semantic graph restores

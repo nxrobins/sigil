@@ -7,12 +7,15 @@
 //! and **C004** (Unknown / budget) arms that NO `.sigil` source can
 //! reach:
 //!
-//!   * **C002** — fires on an illegitimate (forged) capability reaching a
-//!     spawn/message sink. In the full pipeline a forged cap is caught by
-//!     the STRUCTURAL check (`capability::verify` → C001) BEFORE the Z3
-//!     prover runs, so `compile_module` emits C001, never C002. C002 is
-//!     only reachable by feeding a forged-cap `AirProgram` DIRECTLY to
-//!     the prover (bypassing the structural pre-check).
+//!   * **C002** (legitimacy arm) — fires on an illegitimate (forged)
+//!     capability reaching a spawn/message sink. In the full pipeline a
+//!     forged cap is caught by the STRUCTURAL check (`capability::verify`
+//!     → C001) BEFORE the Z3 prover runs, so `compile_module` emits C001,
+//!     never this C002. It is only reachable by feeding a forged-cap
+//!     `AirProgram` DIRECTLY to the prover (bypassing the structural
+//!     pre-check). The OTHER C002 arm — the phase-3 consistency probe —
+//!     IS reachable from `.sigil` since BUG-4 bound literal fuel amounts:
+//!     `fuel_literal_overdraw.rs` covers it with source programs.
 //!   * **C004** — fires on a Z3 `Unknown`. Unreachable under the
 //!     production rlimit (1M); exercised via the `_at_rlimit(prog, reg, 1)`
 //!     test seam.

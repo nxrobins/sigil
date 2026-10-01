@@ -2594,6 +2594,24 @@ pub(super) fn infer_closure_expr(
     let closure_id = tracker.functions.len();
     let synthesized_name = format!("{}::__closure_{}", module_name, closure_id);
 
+    // BUG-5b round 2: `module_name` is the module whose context this body is being
+    // checked in — for a monomorphized FREE-FN instance that is the CALLING module,
+    // not the generic's definer. The drain re-homes a lifted closure by this name
+    // prefix (PR #654) and the security walks then read the caller's ring and trust
+    // off it, so a `handle Unsafe` wrapped in a closure inside an untrusted module's
+    // generic was accepted under a trusted caller (E002 launder). Record the
+    // enclosing instance's home — the MEET of its definer and its resolving scopes
+    // (round 3) — for exactly the closures lifted inside an instance body; FILING is
+    // untouched (the closure's signature is registered in the module it is emitted
+    // from — re-homing it ICEs in `wasm.rs`), so no emitted byte moves. Outside an
+    // instance the prefix module IS the closure's source module and the scope its
+    // names resolve in, and no entry is recorded.
+    if let Some(home) = tracker.current_instance_home.clone() {
+        tracker
+            .instance_homes
+            .insert(synthesized_name.clone(), home);
+    }
+
     // Build params: env_ptr (Ptr) + user params
     let mut lifted_params = vec![TypedParam {
         flow: false,

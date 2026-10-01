@@ -4,13 +4,90 @@
 //! are a subset of their own declared effect row. Inner-ring functions
 //! are exempt (actor model handles effects implicitly).
 //!
+//! The exemption is wholesale: `check_effects` skips every module whose ring
+//! is `Inner`, and `Inner` is the DEFAULT ring when no `#[ring]` attribute is
+//! written. An inner-ring undeclared-effect call, an `alloc` under an empty
+//! row, a closure DEFINED AND APPLIED inside one inner-ring fn under an empty
+//! row, and a `handle Unsafe` therefore all compile clean where the same
+//! program under `#[ring(outer)]` rejects (E001 / E001 / E001 / E002). The
+//! closure statement is scoped to that shape on purpose: it is what
+//! `tests/effect_ring_scope.rs` measures, and the moment an effectful closure
+//! crosses a call boundary as an ARGUMENT to a generic callee, a different
+//! pass owns the answer (see the note below).
+//!
+//! E001 IS NOT THIS PASS'S CODE ALONE, so this skip does not scope it. The
+//! type checker's generic call path (`bind_and_check_effect_rows` in
+//! `type_check/expressions/calls.rs`) raises E001 too, enforcing row
+//! contravariance on every `Fn`-typed formal of a GENERIC callee, and the
+//! type-check pass takes no ring. Measured: an effectful closure passed to a
+//! generic callee's concrete `! { }` formal is exactly {E001} in the inner
+//! ring, the outer ring and an explicit `#[ring(inner)]` alike, and it still
+//! fires when every module is inner-ring — i.e. it is neither scoped by this
+//! skip nor by the monomorph routing recorded below. E002, by contrast, has
+//! its single emitter here (the `handle Unsafe` arm), so the skip does scope
+//! it. `tests/effect_ring_scope.rs` pins both facts as exact code sets.
+//!
+//! What makes that acceptable is NOT that the inner ring performs no effects —
+//! `alloc` is an inner-ring intrinsic and it performs the registered `Alloc`
+//! effect (see the `TypedIntrinsicKind::Alloc` arm below, which raises E001 for
+//! exactly that in the outer ring). The defensible statement is narrower: no
+//! inner-ring primitive performs an effect that REACHES THE HOST. The host
+//! boundary is `extern`, and two fences carry that weight for non-generic code:
+//! R003 rejects an inner-ring `extern` call, and R004 rejects a direct
+//! inner→outer call (only `grant` crosses). E003 is NOT one of those fences: it
+//! only stops an inner-ring free fn from NAMING `FFI` / `Unsafe` in a declared
+//! row. It says nothing about a `handle Unsafe` block in a row-less inner-ring
+//! fn — which compiles clean — and its validator walks free `FnDef` items only,
+//! so an inner-ring impl method may declare `Unsafe` outright.
+//!
+//! What the exemption costs is real and local: an inner-ring `alloc` is never
+//! charged to a declared row, so `Alloc` in an inner-ring row is documentation
+//! rather than an enforced obligation, and any bound on inner-ring allocation
+//! is the runtime's (fuel, arena), not this gate's.
+//! `tests/effect_ring_scope.rs` pins the exemption, its non-generic
+//! confinement (of THIS pass's emitters), the ring-blind second E001 emitter,
+//! and R003 / E003 / R004 as exact code sets.
+//!
+//! Generic code (BUG-5b, closed): monomorphized generic instances are still
+//! filed under `modules[0]` regardless of their defining module
+//! (`type_check/mod.rs`, the `else { 0 }` owner arm), but this skip no longer
+//! keys on the FILING module's ring — it reads the GOVERNING context (see
+//! below). On `main` at `ae026aec` it did key on the filing module, and that
+//! cut both ways: with an inner-ring first module an outer-ring generic fn or
+//! generic impl method escaped this check entirely (and `ring_check`'s R001 /
+//! R002 with it), and with an OUTER-ring first module an inner-ring generic
+//! WAS effect-checked (E001 / E002 on source whose non-generic twin compiled
+//! clean) while escaping R003. `tests/effect_ring_scope.rs` pins the ring-code
+//! side of both directions (its "Ring codes under monomorph routing" section,
+//! which recorded the escapes until the meet landed) and
+//! `tests/effect_ring_routing.rs` pins the effect side. The meet decides this
+//! CHECK only: an instance is still emitted in its filing module's ring, so a
+//! meet-accepted instance filed in another ring than its caller is refused at
+//! emission with R007 (`ring_check::check_air_ring_placement`) until instances
+//! are emitted into their governing ring (#768 in nxrobins/sigil-dev).
+//!
+//! Failure direction: adding an inner-ring primitive that performs a HOST
+//! effect would make this exemption FAIL OPEN — the effect would run with no
+//! row to charge it to — so such a primitive must land together with removing
+//! this skip (or scoping it); the fence tests are what that change must break
+//! first.
+//!
 //! `handle Effect1, Effect2 { ... }` blocks expand the available effect set
 //! within their body — callees requiring those effects become legal.
 //!
 //! `handle Unsafe { ... }` is only legal inside `#[trusted]` modules (E002).
+//!
+//! Both the inner-ring exemption and the E002 trust authority are read off each
+//! function's GOVERNING context ([`TypedProgram::governing_context`]), not the
+//! module it is filed in: a monomorphized instance — and any closure lifted out
+//! of one — is filed under `modules[0]` and named after its CALLING module, so
+//! keying on either would let whatever module sorts first, or whatever module
+//! instantiates the generic, decide the authority (BUG-5b). The governing
+//! context is the MEET of the generic's definer and every module whose scope its
+//! re-checked body resolved names in: exempt only if all are inner-ring, trusted
+//! only if all are `#[trusted]`.
 
 use crate::{
-    ast::Ring,
     diagnostics::{Diagnostic, codes},
     type_check::{
         EffectSet, Type, TypedExpr, TypedExprKind, TypedIntrinsicKind, TypedProgram, TypedStmt,
@@ -57,15 +134,32 @@ pub fn check_effect_handlers_gated(program: &TypedProgram) -> Result<(), Vec<Dia
 pub fn check_effects(program: &TypedProgram) -> Result<(), Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
-    for module in &program.modules {
-        if module.ring == Ring::Inner {
-            continue; // inner ring exempt
-        }
-        for function in &module.functions {
+    for filing in &program.modules {
+        for function in &filing.functions {
+            // BUG-5b: a monomorphized instance is FILED under `modules[0]`, so
+            // keying the inner-ring exemption and the E002 trust authority on the
+            // filing module let an inner-ring first module exempt an outer-ring
+            // generic's instance. Round 3: keying them on the DEFINER alone was
+            // fail-open too — the re-checked body's callee names resolve in the
+            // caller's scope, so an inner-ring generic hid an outer caller's
+            // effects and a trusted generic's `handle Unsafe` discharged an
+            // untrusted caller's code. Fails CLOSED: the context is the meet
+            // over the definer and every resolving scope (exempt only if all
+            // are inner, trusted only if all are trusted). Non-instances resolve
+            // to `filing` itself.
+            let governing = program.governing_context(filing, function);
+            if governing.effect_exempt {
+                // Inner ring exempt (by design: inner fns carry no rows, E003; see the
+                // module doc): fails OPEN if an inner-ring primitive that performs a HOST
+                // effect is ever added — pinned by `tests/effect_ring_scope.rs` together
+                // with the R003/R004 host-boundary fences (E003 is a row-hygiene fence,
+                // not a host-boundary one).
+                continue;
+            }
             walk_stmts(
                 &function.body.statements,
                 &function.effects,
-                module.trusted,
+                governing.trusted,
                 program,
                 &mut diagnostics,
             );

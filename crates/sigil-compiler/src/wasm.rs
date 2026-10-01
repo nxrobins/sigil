@@ -43,7 +43,7 @@ use wasm_encoder::{
 
 use crate::air::{
     AirBlock, AirFunction, AirFunctionKind, AirProgram, AirStmt, AirSupervisionStrategy,
-    AirTerminator, AirType, AirValue, BlockId, HandlerId, VarId,
+    AirTerminator, AirType, AirValue, BlockId, FuncId, HandlerId, VarId,
 };
 use crate::ast::{BinaryOp, Ring};
 
@@ -78,20 +78,19 @@ pub fn emit(program: &AirProgram) -> WasmOutput {
         return WasmOutput { inner, outer: None };
     }
 
-    // Two-ring: partition by ring annotation.
-    let inner_fns: Vec<&AirFunction> = program
-        .functions
-        .iter()
-        .filter(|f| f.ring == Ring::Inner)
-        .collect();
-    let outer_fns: Vec<&AirFunction> = program
-        .functions
-        .iter()
-        .filter(|f| f.ring == Ring::Outer)
-        .collect();
+    // Two-ring: partition by ring annotation. Each function travels with its GLOBAL `FuncId`
+    // (its position in `program.functions`, the id every `AirStmt::Call` names and every
+    // closure stores as its table slot) because the per-ring module numbers its functions by
+    // position in ITS slice: the other ring's ids are interleaved in the global numbering, so
+    // `import_count + FuncId` is a correct call index only by coincidence of layout
+    // (P2B-TWORING). Both modules size their `call_indirect` table by the GLOBAL count so a
+    // stored global id is always a slot of the table (see `emit_module_refs`).
+    let inner_fns = ring_functions(program, Ring::Inner);
+    let outer_fns = ring_functions(program, Ring::Outer);
+    let table_size = program.functions.len() as u32;
 
-    let inner = emit_module_refs(&inner_fns, ImportSet::Full);
-    let outer = emit_module_refs(&outer_fns, ImportSet::Reduced);
+    let inner = emit_module_refs(&inner_fns, ImportSet::Full, table_size);
+    let outer = emit_module_refs(&outer_fns, ImportSet::Reduced, table_size);
 
     WasmOutput {
         inner,
@@ -374,14 +373,39 @@ fn collect_static_data(functions: &[&AirFunction]) -> StaticDataLayout {
     }
 }
 
-/// Emit a wasm module from a slice of owned `AirFunction`s.
-fn emit_module(functions: &[AirFunction], import_set: ImportSet) -> Vec<u8> {
-    let refs: Vec<&AirFunction> = functions.iter().collect();
-    emit_module_refs(&refs, import_set)
+/// One ring's functions in program order, each paired with its global `FuncId`.
+fn ring_functions(program: &AirProgram, ring: Ring) -> Vec<(FuncId, &AirFunction)> {
+    program
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.ring == ring)
+        .map(|(index, f)| (FuncId(index as u32), f))
+        .collect()
 }
 
-/// Emit a wasm module from a slice of borrowed `AirFunction`s.
-fn emit_module_refs(functions: &[&AirFunction], import_set: ImportSet) -> Vec<u8> {
+/// Emit a wasm module from a slice of owned `AirFunction`s (the whole single-ring program, so
+/// every global `FuncId` is its position and the table holds exactly these functions).
+fn emit_module(functions: &[AirFunction], import_set: ImportSet) -> Vec<u8> {
+    let refs: Vec<(FuncId, &AirFunction)> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, f)| (FuncId(index as u32), f))
+        .collect();
+    emit_module_refs(&refs, import_set, functions.len() as u32)
+}
+
+/// Emit a wasm module from one ring's functions, each paired with its global `FuncId`.
+/// `table_size` is the number of functions in the WHOLE program: the `call_indirect` table is
+/// indexed by global `FuncId` (the slot a closure stores, `air::CLOSURE_TABLE_IDX_OFFSET`), so
+/// it spans every id even though only this ring's functions are placed in it.
+fn emit_module_refs(
+    ring_fns: &[(FuncId, &AirFunction)],
+    import_set: ImportSet,
+    table_size: u32,
+) -> Vec<u8> {
+    let functions: Vec<&AirFunction> = ring_fns.iter().map(|(_, f)| *f).collect();
+    let functions: &[&AirFunction] = &functions;
     let mut builtins = builtin_import_indices(import_set);
     let base_import_count = base_import_count(import_set);
     let ffi_imports = collect_ffi_imports(functions, base_import_count);
@@ -400,6 +424,31 @@ fn emit_module_refs(functions: &[&AirFunction], import_set: ImportSet) -> Vec<u8
     }
     let import_count =
         base_import_count + ffi_imports.len() as u32 + u32::from(has_persistent_alloc);
+    // P2B-TWORING: the wasm function index of every function in THIS module, keyed by the
+    // global `FuncId` that `AirStmt::Call` names. The index is `import_count + position in this
+    // ring's slice` — the same rule the FunctionSection and ExportSection below use, and the
+    // value the ElementSection places at table slot `FuncId` — never `import_count + FuncId`:
+    // in a two-ring program the other ring's ids are interleaved in the global numbering, so
+    // the global id pointed at the WRONG function of this module (a same-signature neighbour
+    // validates and runs; any other shape fails to instantiate or traps). A callee absent from
+    // this map is a call that crosses the ring boundary after lowering. R004 rejects such
+    // a call in SOURCE, but a monomorphized generic instance is filed under `modules[0]`
+    // and so inherits THAT module's ring (`type_check/mod.rs`), which turns a legal
+    // same-module source call into one; `ring_check::check_air_ring_placement` rejects
+    // those (R007) over the very AIR this function receives. Reaching emission with one is
+    // therefore an ICE and the `Call` arm fails closed (panics) rather than pick a
+    // plausible index — but it is the BACKSTOP for that gate, not a restatement of a
+    // static source-level guarantee.
+    let call_targets: LookupMap<u32, u32> = ring_fns
+        .iter()
+        .enumerate()
+        .map(|(position, (id, _))| (id.0, import_count + position as u32))
+        .collect();
+    assert_eq!(
+        call_targets.len(),
+        ring_fns.len(),
+        "ICE: duplicate global FuncId in one ring's function slice"
+    );
     let static_data = collect_static_data(functions);
 
     let mut module = Module::new();
@@ -578,14 +627,35 @@ fn emit_module_refs(functions: &[&AirFunction], import_set: ImportSet) -> Vec<u8
     }
     module.section(&func_section);
 
-    // Table section must come before Memory in Wasm section order
+    // Table section must come before Memory in Wasm section order. The table is indexed by
+    // GLOBAL `FuncId` (P2B-TWORING): it spans the whole program's ids, and the element
+    // section below fills only this ring's slots. In a single-ring module `table_size ==
+    // func_count`, so the section is byte-identical to the compact table it replaces.
+    //
+    // COST (accepted; the only two-ring sources in the repo are test fixtures, so it is not
+    // measured on a real program): a two-ring module's table is sized by the WHOLE program's
+    // function count, so the small ring pays for the big one — a 1-function outer tool beside
+    // a 5000-function inner app declares a 5000-entry table (5000 funcref slots, all but one
+    // left uninitialized; a few more section bytes for the wider LEB128 limits, and a
+    // 5000-slot allocation at instantiation). Accepted because the slot a closure stores is
+    // the GLOBAL `FuncId` and nothing narrows it before `call_indirect`, so any smaller span
+    // must be justified per ring. The tighter rule is `max own global FuncId + 1` (an
+    // out-of-ring index then traps as out of bounds instead of on an uninitialized slot —
+    // equally fail-closed); it is deliberately NOT taken here because it changes emitted
+    // bytes for every two-ring program, moving this branch's parity row and the index tests,
+    // for a size win no program in the repo collects. Revisit with the first real two-ring app.
     let func_count = functions.len() as u32;
+    assert!(
+        table_size >= func_count,
+        "ICE: a ring's function slice ({func_count}) exceeds the program's function count \
+         ({table_size})"
+    );
     if func_count > 0 {
         let mut tables = TableSection::new();
         tables.table(TableType {
             element_type: RefType::FUNCREF,
-            minimum: func_count as u64,
-            maximum: Some(func_count as u64),
+            minimum: table_size as u64,
+            maximum: Some(table_size as u64),
             table64: false,
             shared: false,
         });
@@ -637,15 +707,33 @@ fn emit_module_refs(functions: &[&AirFunction], import_set: ImportSet) -> Vec<u8
     }
     module.section(&exports);
 
-    // Element section: populate function table for call_indirect
+    // Element section: place each of this ring's functions at table slot == its GLOBAL
+    // `FuncId`, which is the slot a closure stores (P2B-TWORING). One active segment per
+    // maximal run of consecutive global ids: a single-ring module is one run from slot 0 (the
+    // bytes the compact table produced); a two-ring module has a run per stretch of same-ring
+    // functions. Slots of the OTHER ring stay uninitialized, so a `call_indirect` through one
+    // traps (fail closed) instead of landing on a same-signature function of this module.
     if func_count > 0 {
         let mut elements = ElementSection::new();
-        let all_indices: Vec<u32> = (0..func_count).map(|i| import_count + i).collect();
-        elements.active(
-            Some(0),
-            &ConstExpr::i32_const(0),
-            Elements::Functions(all_indices.into()),
-        );
+        let mut run_start = 0usize;
+        while run_start < ring_fns.len() {
+            let first_slot = ring_fns[run_start].0.0;
+            let mut run_end = run_start + 1;
+            while run_end < ring_fns.len()
+                && ring_fns[run_end].0.0 == first_slot + (run_end - run_start) as u32
+            {
+                run_end += 1;
+            }
+            let run_indices: Vec<u32> = (run_start..run_end)
+                .map(|position| import_count + position as u32)
+                .collect();
+            elements.active(
+                Some(0),
+                &ConstExpr::i32_const(first_slot as i32),
+                Elements::Functions(run_indices.into()),
+            );
+            run_start = run_end;
+        }
         module.section(&elements);
     }
 
@@ -661,7 +749,7 @@ fn emit_module_refs(functions: &[&AirFunction], import_set: ImportSet) -> Vec<u8
             function,
             &mut body,
             &type_map,
-            import_count,
+            &call_targets,
             builtins,
             &ffi_import_map,
             &static_data.offsets,
@@ -690,7 +778,7 @@ fn emit_function(
     function: &AirFunction,
     body: &mut Function,
     type_map: &LookupMap<(Vec<ValType>, Vec<ValType>), u32>,
-    import_count: u32,
+    call_targets: &LookupMap<u32, u32>,
     builtins: BuiltinImportIndices,
     ffi_imports: &LookupMap<String, u32>,
     static_data_offsets: &LookupMap<String, u32>,
@@ -711,7 +799,7 @@ fn emit_function(
         &mut emitted,
         body,
         type_map,
-        import_count,
+        call_targets,
         builtins,
         ffi_imports,
         static_data_offsets,
@@ -797,7 +885,7 @@ fn emit_block(
     emitted: &mut HashSet<BlockId>,
     body: &mut Function,
     type_map: &LookupMap<(Vec<ValType>, Vec<ValType>), u32>,
-    import_count: u32,
+    call_targets: &LookupMap<u32, u32>,
     builtins: BuiltinImportIndices,
     ffi_imports: &LookupMap<String, u32>,
     static_data_offsets: &LookupMap<String, u32>,
@@ -832,7 +920,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -847,7 +935,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -862,7 +950,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -906,7 +994,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -939,7 +1027,7 @@ fn emit_block(
                     emitted,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -966,7 +1054,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -994,7 +1082,7 @@ fn emit_block(
                     emitted,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -1010,7 +1098,7 @@ fn emit_block(
                     emitted,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -1054,7 +1142,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -1076,7 +1164,7 @@ fn emit_block(
                     emitted,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -1097,7 +1185,7 @@ fn emit_block(
                     function,
                     body,
                     type_map,
-                    import_count,
+                    call_targets,
                     builtins,
                     ffi_imports,
                     static_data_offsets,
@@ -1212,7 +1300,7 @@ fn emit_stmt(
     function: &AirFunction,
     body: &mut Function,
     type_map: &LookupMap<(Vec<ValType>, Vec<ValType>), u32>,
-    import_count: u32,
+    call_targets: &LookupMap<u32, u32>,
     builtins: BuiltinImportIndices,
     ffi_imports: &LookupMap<String, u32>,
     static_data_offsets: &LookupMap<String, u32>,
@@ -1241,7 +1329,21 @@ fn emit_stmt(
             for arg in args {
                 body.instruction(&Instruction::LocalGet(wasm_local_index(function, *arg)));
             }
-            body.instruction(&Instruction::Call(import_count + func.0));
+            // Fail closed: a callee outside this ring's module cannot be indexed from
+            // here — refuse to emit any index rather than a wrong one. Unreachable from
+            // the compiler pipeline, which runs `ring_check::check_air_ring_placement`
+            // (R007) over this exact AIR first; reachable only from hand-built AIR that
+            // skips that gate.
+            let target = *call_targets.get(&func.0).unwrap_or_else(|| {
+                panic!(
+                    "ICE: `{}` calls FuncId({}), which is not in this ring's module — a call \
+                     crossing the ring boundary reached wasm emission without \
+                     `check_air_ring_placement` having rejected it; refusing to emit a \
+                     misdirected call index",
+                    function.name, func.0
+                )
+            });
+            body.instruction(&Instruction::Call(target));
             if let Some(dst) = dst {
                 body.instruction(&Instruction::LocalSet(wasm_local_index(function, *dst)));
             }
@@ -2383,7 +2485,7 @@ fn emit_block_stmts(
     function: &AirFunction,
     body: &mut Function,
     type_map: &LookupMap<(Vec<ValType>, Vec<ValType>), u32>,
-    import_count: u32,
+    call_targets: &LookupMap<u32, u32>,
     builtins: BuiltinImportIndices,
     ffi_imports: &LookupMap<String, u32>,
     static_data_offsets: &LookupMap<String, u32>,
@@ -2394,7 +2496,7 @@ fn emit_block_stmts(
             function,
             body,
             type_map,
-            import_count,
+            call_targets,
             builtins,
             ffi_imports,
             static_data_offsets,

@@ -4,9 +4,13 @@
 //! - R001: Outer ring cannot own capabilities (only borrow via grants)
 //! - R002: Capability references cannot escape outer ring functions
 //! - R003: Inner ring cannot call extern functions (forward-looking for 2E)
-//! - R004: Cross-ring direct calls are forbidden (must use grants)
+//! - R004: Cross-ring direct calls are forbidden (must use grants; emitted by
+//!   `type_check::expressions::calls` at the SOURCE call site, not here)
+//! - R007: a lowered call crosses the ring boundary although no source call did
+//!   (`check_air_ring_placement`, below — an AIR-level gate, not a source one)
 
 use crate::{
+    air::{AirProgram, AirStmt},
     ast::Ring,
     diagnostics::{Diagnostic, codes},
     type_check::{Type, TypedModule, TypedProgram, TypedStmt},
@@ -27,70 +31,172 @@ pub fn check_rings(program: &TypedProgram) -> Result<(), Vec<Diagnostic>> {
     }
 }
 
+/// AIR-level ring gate (P2B-TWORING round 2): every `AirStmt::Call` must name a callee in the
+/// CALLER's ring.
+///
+/// R004 forbids cross-ring calls in SOURCE, but the AIR a two-ring program lowers to can still
+/// contain one, because `type_check` files every monomorphized generic instance under
+/// `modules[0]` (see the "Drain monomorphized outputs" comment in `type_check/mod.rs`: the
+/// re-homing fix was deliberately narrowed to lambda-lifted closures, whose destination is not
+/// pinned by the SH-MONO differential). An instance therefore inherits the FIRST module's ring
+/// rather than its definer's, so a generic defined and called inside one ring of a two-ring
+/// program lowers to a call from that ring into the other one — with no cross-ring call
+/// anywhere in the source.
+///
+/// Wasm emission numbers each ring's functions by position in ITS slice, so it cannot encode
+/// such a call at all: before this gate it panicked (an ICE on a program `main` compiles), and
+/// before the per-ring index map it silently emitted a neighbour's index. FAIL DIRECTION: this
+/// gate rejects at compile time (a real, source-anchored diagnostic) rather than emit an
+/// artifact, so the residual is a REFUSED compile, never a misdirected call. It is a
+/// conservative over-approximation only in the sense that a future fix routing instances to
+/// their definer would make it unreachable; it never accepts a cross-ring call. Since the typed
+/// checks govern an instance by the meet of its definer and resolving scopes (BUG-5b) rather
+/// than by its filing module, this gate also refuses instances those checks ACCEPT whenever the
+/// filing ring differs from a caller's — kept, by the author's decision of 2026-10-01, until
+/// instances are emitted into their governing ring (issue #768).
+///
+/// SCOPE: direct calls. A funcref (a closure captured across the boundary) is already fail-closed
+/// by emission — each module's `call_indirect` table spans the whole program's ids but leaves the
+/// other ring's slots uninitialized, so an out-of-ring funcref TRAPS instead of landing on a
+/// same-signature neighbour.
+///
+/// Single-ring programs cannot trip it (one ring, every callee in it), which covers the whole
+/// self-hosted surface and every parity fixture except the two-ring ones; of those,
+/// `tests/compile/ring_two_ring_inner_first.sigil` must pass it and
+/// `tests/reject/ring_generic_instance_other_ring.sigil` must fail it with exactly this code.
+///
+/// WHY HERE, and not in the typed `check_rings` pass: the typed pass sees source modules, but
+/// the defect is a property of where LOWERING put an instance. Predicting that from the typed
+/// program would re-derive `type_check`'s filing rule in a second place (a copy that drifts the
+/// day the rule changes, e.g. when instances are re-homed to their definer); checking the AIR
+/// `emit` actually receives needs no prediction, so the emitter's ICE is unreachable from the
+/// pipeline by construction rather than by agreement between two passes.
+pub fn check_air_ring_placement(program: &AirProgram) -> Result<(), Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+    for caller in &program.functions {
+        for block in &caller.blocks {
+            for stmt in &block.stmts {
+                let AirStmt::Call { func, .. } = stmt else {
+                    continue;
+                };
+                // A `FuncId` out of range is an emitter ICE, not a ring verdict: leave it to
+                // `wasm.rs`'s backstop rather than report a ring error we cannot substantiate.
+                let Some(callee) = program.functions.get(func.0 as usize) else {
+                    continue;
+                };
+                if callee.ring == caller.ring {
+                    continue;
+                }
+                diagnostics.push(Diagnostic::error(
+                    codes::R007,
+                    format!(
+                        // States only what the gate checked (the two rings). The CAUSE — a
+                        // monomorphized generic instance filed under the first module — is
+                        // the registry hint's job, because this walk observes rings, not
+                        // provenance, and naming a cause it did not establish would be a
+                        // guess dressed as a finding.
+                        "`{}` ({}) calls `{}` ({}): the call crosses the ring boundary \
+                         after lowering, so it has no emittable index",
+                        caller.name,
+                        ring_word(caller.ring),
+                        callee.name,
+                        ring_word(callee.ring),
+                    ),
+                    // The `Call` statement's own span moves with the memory/fuel rewrites that
+                    // run before emission; the caller's declaration span is stable and always
+                    // present for a lowered function (synthetic only for hand-built AIR).
+                    Some(caller.def_span),
+                ));
+            }
+        }
+    }
+
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
+/// The word a ring is spelled with in a diagnostic (`#[ring(outer)]` / the default inner ring).
+fn ring_word(ring: Ring) -> &'static str {
+    match ring {
+        Ring::Inner => "inner ring",
+        Ring::Outer => "outer ring",
+    }
+}
+
 fn check_module_ring_rules(
-    module: &TypedModule,
-    _program: &TypedProgram,
+    filing: &TypedModule,
+    program: &TypedProgram,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for function in &module.functions {
-        match module.ring {
-            Ring::Outer => {
-                // R001: No cap ownership in outer ring
-                for param in &function.params {
-                    if is_owned_cap(&param.ty) {
-                        diagnostics.push(Diagnostic::error(
-                            codes::R001,
-                            format!(
-                                "outer ring cannot own capabilities: parameter `{}` has type `{}`",
-                                param.name,
-                                render_type_brief(&param.ty)
-                            ),
-                            Some(function.span),
-                        ));
-                    }
-                }
-                if is_owned_cap(&function.ret) {
+    for function in &filing.functions {
+        // BUG-5b: a monomorphized instance is FILED under `modules[0]`, so
+        // keying its ring rules on the filing module let an outer-ring first
+        // module carry an inner-ring generic's instance past R003. Round 3: the
+        // re-checked body's names resolve in the caller's scope as well as the
+        // definer's, so fails CLOSED: each ring's restrictions apply when ANY
+        // governing module (definer or resolving scope) is in that ring — an
+        // instance straddling both rings gets both sets. Non-instances resolve
+        // to `filing` itself, exactly one ring.
+        let governing = program.governing_context(filing, function);
+        if governing.outer_rules {
+            // R001: No cap ownership in outer ring
+            for param in &function.params {
+                if is_owned_cap(&param.ty) {
                     diagnostics.push(Diagnostic::error(
                         codes::R001,
                         format!(
-                            "outer ring cannot own capabilities: function `{}` returns `{}`",
-                            function.name,
-                            render_type_brief(&function.ret)
+                            "outer ring cannot own capabilities: parameter `{}` has type `{}`",
+                            param.name,
+                            render_type_brief(&param.ty)
                         ),
                         Some(function.span),
                     ));
                 }
-
-                // R002: Cap references cannot be returned from outer functions
-                if contains_cap_ref(&function.ret) {
-                    diagnostics.push(Diagnostic::error(
-                        codes::R002,
-                        format!(
-                            "capability reference cannot be returned from outer ring function `{}`",
-                            function.name
-                        ),
-                        Some(function.span),
-                    ));
-                }
-
-                // Walk body for cap ownership in let bindings
-                check_outer_body(&function.body.statements, diagnostics);
             }
-            Ring::Inner => {
-                // R003: Inner ring cannot call extern functions. FFI is the
-                // privileged trust boundary — it can only be invoked from
-                // outer-ring code (where R001/R002 quarantine cap state).
-                // Inner-ring code is the safe-by-construction policy tier
-                // and must reach FFI only through a `grant(&cap, fn(ref) -> ...)`
-                // across the ring boundary, never via a direct extern call.
-                //
-                // Step 24 of the supremum loop (axis-6 second touch) made this
-                // check real. Before, the ring_check pass was a no-op for
-                // inner-ring modules ("forward-looking — no extern syntax
-                // exists yet"), and an inner-ring module could declare AND
-                // call `extern "C" fn foo() ! { FFI, Unsafe }` cleanly.
-                check_inner_body_for_externs(&function.body.statements, diagnostics);
+            if is_owned_cap(&function.ret) {
+                diagnostics.push(Diagnostic::error(
+                    codes::R001,
+                    format!(
+                        "outer ring cannot own capabilities: function `{}` returns `{}`",
+                        function.name,
+                        render_type_brief(&function.ret)
+                    ),
+                    Some(function.span),
+                ));
             }
+
+            // R002: Cap references cannot be returned from outer functions
+            if contains_cap_ref(&function.ret) {
+                diagnostics.push(Diagnostic::error(
+                    codes::R002,
+                    format!(
+                        "capability reference cannot be returned from outer ring function `{}`",
+                        function.name
+                    ),
+                    Some(function.span),
+                ));
+            }
+
+            // Walk body for cap ownership in let bindings
+            check_outer_body(&function.body.statements, diagnostics);
+        }
+        if governing.inner_rules {
+            // R003: Inner ring cannot call extern functions. FFI is the
+            // privileged trust boundary — it can only be invoked from
+            // outer-ring code (where R001/R002 quarantine cap state).
+            // Inner-ring code is the safe-by-construction policy tier
+            // and must reach FFI only through a `grant(&cap, fn(ref) -> ...)`
+            // across the ring boundary, never via a direct extern call.
+            //
+            // Step 24 of the supremum loop (axis-6 second touch) made this
+            // check real. Before, the ring_check pass was a no-op for
+            // inner-ring modules ("forward-looking — no extern syntax
+            // exists yet"), and an inner-ring module could declare AND
+            // call `extern "C" fn foo() ! { FFI, Unsafe }` cleanly.
+            check_inner_body_for_externs(&function.body.statements, diagnostics);
         }
     }
 }

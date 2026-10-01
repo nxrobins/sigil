@@ -1,0 +1,32 @@
+// A restricted capability put into a slot through a callee's `Slot<Fuel>`
+// PARAMETER: the caller takes through its own variable, so both authority
+// checkers' variable-keyed slot meets would never see the narrow put. The
+// slot escape gate rejects the put itself (C013); the sound shape puts the
+// full cap and restricts the value returned by `slot_take` at the use site.
+// expect-error: C013
+module fixture;
+
+cap type Fuel { burn, query }
+
+fn use_full(f: Fuel) -> i64 { return 1; }
+
+fn fill(s: Slot<Fuel>, c: Fuel) -> i64 {
+    let n = c.restrict(burn);
+    slot_put(s, n);
+    return 0;
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let full1 = fuel.draw(10);
+        let full2 = fuel.draw(10);
+        let s = slot_new::<Fuel>();
+        let _f = fill(s, full1);
+        let taken: Fuel = slot_take(s);
+        let r = use_full(taken);
+        slot_put(s, full2);
+        return r;
+    }
+}

@@ -30,6 +30,7 @@ pub mod package;
 pub mod parser;
 pub mod registries;
 pub mod ring_check;
+pub mod slot_escape;
 pub mod source;
 pub mod span;
 pub mod taint_check;

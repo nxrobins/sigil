@@ -180,4 +180,12 @@ TypedProgram {
         next_id: 2,
     },
     effect_ops: {},
+    instance_homes: {
+        "m::identity__i64": InstanceHome {
+            definer: "m",
+            scopes: {
+                "m",
+            },
+        },
+    },
 }

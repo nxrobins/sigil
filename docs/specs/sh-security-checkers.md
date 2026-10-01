@@ -62,7 +62,10 @@ calls, closure bodies, and the complete effect-handler diagnostic family remain 
 **Implementation:** `selfhost/taint_check.sigil`
 
 **Compared codes:** T001, T020-T027, and T029-T032. T028 is actor-only and cannot be reached by a
-type-clean fixture in this projection.
+type-clean fixture in this projection. T033 (CT018, `str` content compare) and T034 (CT008,
+`@SecretCT` shift amount) are oracle-only: the shadow has neither rule, and the differential
+filters both sides to the compared set, so the shadow lags the oracle on those two rather than
+disagreeing with it.
 
 The covered corpus exercises scalar flow, per-field record flow, selected closure captures,
 declassification, calls, returns, indexing, arithmetic, allocation sizes, and the algorithmic
