@@ -1241,6 +1241,7 @@ leak_steps
 leak_trace_dirty
 lsd_acc_declass
 lsd_acc_declass_once
+lsd_acc_e001_hof
 lsd_acc_handle
 lsd_acc_host
 lsd_acc_implicit
@@ -1248,8 +1249,11 @@ lsd_acc_mint
 lsd_acc_once
 lsd_acc_restr
 lsd_acc_sink
+lsd_acc_trap
+lsd_acc_trap_aborts
 lsd_c003_reject
 lsd_c003_stuck
+lsd_e001_hof_reject
 lsd_o001_declass_reject
 lsd_o001_reject
 lsd_restr_removed_reject

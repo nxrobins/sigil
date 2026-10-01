@@ -1,0 +1,29 @@
+// T034 / CT008 — a `<<` / `>>` whose shift AMOUNT is `@SecretCT` is rejected.
+// expect-error: T034
+//
+// A shift by a data-dependent count is variable-time on cores without a
+// barrel shifter and on microcoded shift paths, so the count leaks through
+// timing. That is the class the `@SecretCT` sublattice promises to reject
+// ("variable-time operations on secret-tainted operands"), and until this
+// rule landed nothing did: this program compiled with an empty diagnostic set
+// on main `ae026aec` (measured 2026-09-20; closed 2026-09-30).
+//
+// Only the AMOUNT (the right operand) is checked. Shifting a `@SecretCT` VALUE
+// by a `@Public` amount stays legal: that latency depends on the public count
+// alone, never on the bits being moved, and it is exactly how constant-time
+// code masks and rotates a secret. Banning it would ban the sound idiom.
+//
+// The check is on the operand's taint LABEL, not its syntactic form, so a
+// `let`-copied or arithmetic-derived `@SecretCT` amount is rejected the same
+// way, and the compound forms `<<=` / `>>=` desugar to the same node.
+//
+// The MUTATION_SITE below is the parameter list. Swap the `@SecretCT`
+// annotation from `n` to `a` (`a: i64 @SecretCT, n: i64`) and the fixture
+// compiles cleanly, proving this pins the secret AMOUNT specifically and not
+// merely the presence of `@SecretCT` on a shift operand.
+module main;
+
+// MUTATION_SITE
+fn f(a: i64, n: i64 @SecretCT) -> i64 @SecretCT {
+    return a << n;
+}

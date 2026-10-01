@@ -53,8 +53,11 @@ Copy the template into that bundle only when assembling real measured evidence:
   `accepted_corpus_regressions` counts changes outside that approved set; the
   corpus artifact must account for both sets without silently reclassifying
   unexplained failures as approved policy rejections. The warm median must be below
-  one millisecond, the p95 at least the median, and the existing self-host trio
-  canary at most five seconds. Initialization is a separate measurement.
+  one millisecond, the p95 at least the median, and the isolated self-host trio
+  scaling canary (`SELFHOST_TRIO_CANARY_MS`, measured alone in the `Formal
+  verifier scaling canary` step — never under the parallel workspace lane, whose
+  wider `VALIDATE_BUDGET_MS` drop bound is not this number) at most five
+  seconds. Initialization is a separate measurement.
 - Record a positive peak-memory measurement, a separately reviewed positive
   memory limit, and successful execution of at least one million records. The
   validator checks the peak against the declared limit; it does not decide

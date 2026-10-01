@@ -181,6 +181,14 @@ An init or handler parameter has the same name as an actor state field. Rename t
 
 Use `declassify(value, cap)` with a consumed Declassify capability, or accept a higher-or-equal taint level on the binding/return.
 
+Scope note — heap floors. T001 is also the code the heap-content floors in `taint_check.rs` report under (BUG-2; `docs/CLAIMS.md` claim 53). Taint labels ride on values, not on heap contents, so a raw load (`load8`, `vec_load`, a `str_from_raw` view) or a typed memory read (`a[i]`, `r.f`, a state field, a `str` literal or f-string) is joined with a per-function floor raised by FFI and by every non-@Public memory write that can have reached its bytes first — including writes made by callees, closures and other actor handlers, and writes whose ADDRESS is secret. Reading such bytes into a @Public sink is reported as T001 at the sink the read flows into, not at the write that raised the floor. No separate code exists for this class. The floors are address-blind by design (a counted false positive: a callee reading its own fresh aggregate after the caller's secret raw store is rejected) and their open channels are recorded in `docs/RESIDUAL_RISKS.md` (SR-022 to SR-027) and `docs/CLAIMS.md` §C.
+
+### T034 — Secret-dependent shift amount (CT008)
+
+`<<` / `>>` by a `@SecretCT` AMOUNT is rejected: a shift by a data-dependent count is variable-time on cores without a barrel shifter and on microcoded shift paths, so the count leaks through timing. Only the right operand is checked — shifting a machine-width (`i32`/`u32`/`i64`/`u64`) `@SecretCT` VALUE by a `@Public` amount stays legal, because that latency depends on the public count alone (it is how constant-time code masks and rotates a secret). The exemption does not extend to `u256`: a `u256` `@SecretCT` value shifted by a `@Public` amount passes this rule (the taint pass runs first) but is then refused by the formal gate as `I013` on the `u256_shl`/`u256_shr` lowering — `{I013}` on `ae026aec` and on this branch, measured 2026-09-30 — so no `u256` shift involving `@SecretCT` compiles at all (a `u256` `@SecretCT` AMOUNT is `{T034}` like any other width). The check is on the taint label, so a `let`-copied or arithmetic-derived `@SecretCT` amount and the compound `<<=` / `>>=` forms are rejected the same way. Before this rule the shape compiled with an empty diagnostic set (measured 2026-09-20 on `ae026aec`; closed 2026-09-30, `tests/attack/KNOWN_GAPS.md` §CT008).
+
+Make the shift count public data — a literal, a loop index over a `@Public` bound, or a `@Public` parameter — and express a secret-dependent selection with `ct_select` over the constant-count shifts; or step the amount down with `declassify_ct` first if its secrecy is no longer required.
+
 ### T040 — Constant value type mismatch
 
 The constant's value type does not match its declared annotation. Either change the annotation or cast the value to the expected type.
@@ -606,13 +614,96 @@ Cannot move a value while a borrow (or active grant) is outstanding. Drop the bo
 
 Add the missing effect to this function's `! { ... }` row, or wrap the call site in a `handle <Effect> { ... }` block if you have authority for it.
 
+**Scope — E001 is raised by TWO PASSES.** The effect checker (`effect_check.rs`, four sites) and
+the type checker's generic call path (`bind_and_check_effect_rows`,
+`type_check/expressions/calls.rs`, one site) both raise it. They have different scoping rules and
+only the effect checker is ring-aware, so no single "E001 fires in ring X" sentence is true of the
+code. (E002, by contrast, has exactly one emitter, in the effect checker — see its entry.) All
+three paragraphs below are pinned as exact code sets: the non-generic and Emitter-2 paragraphs by
+`crates/sigil-compiler/tests/effect_ring_scope.rs`, the generic paragraph by
+`crates/sigil-compiler/tests/effect_ring_routing.rs`.
+
+**Emitter 1 (effect checker), non-generic code:** fires in `#[ring(outer)]` modules only. The
+effect checker skips inner-ring modules wholesale, and inner is the default ring when no `#[ring]`
+attribute is written — so an undeclared-effect call, an `alloc` under an empty row, or a closure
+defined and applied inside one inner-ring function under an empty row compiles clean there, and an
+outer-ring function placed after an inner-ring module still fires E001. That exemption is bounded
+by the host boundary, not by the absence of effects: `alloc` is an inner-ring primitive and it
+does perform the registered `Alloc` effect — it is simply not charged to a row there. What
+inner-ring code cannot do is reach the host, and two fences carry that: R003 rejects an inner-ring
+`extern` call and R004 rejects a direct inner→outer call (only `grant` crosses). E003 is a weaker,
+row-hygiene fence, not a host-boundary one (see its entry below).
+
+**Emitter 1 (effect checker), generic code:** a monomorphized generic instance — and any closure
+lambda-lifted while its body is re-checked — is walked unless EVERY module governing it is
+inner-ring. Its governing modules are the module that DEFINES the generic plus every module whose
+scope resolved names in the re-checked body: a free-fn generic resolves its callee names in the
+CALLING module's scope, and an impl-method generic falls back to the calling module's `use` scope.
+So an inner-ring generic instantiated from inner-ring code is exempt exactly as its non-generic
+twin is, an inner-ring generic instantiated from an outer-ring module is walked, and module order
+never matters. (On `main` at `ae026aec` the instance was checked under the program's FIRST
+module's ring instead: an inner-ring first module let an outer-ring generic escape this check and
+an outer-ring first module effect-checked an inner-ring generic; the governing meet closed both
+directions — see `docs/SOUNDNESS_MATRIX.md` SND-EFFECT-001 and SR-019.) The meet governs this
+CHECK only: the instance is still emitted in the ring of the module it is filed under (the
+program's first module), so where that ring differs from a calling module's ring the program is
+refused at emission with R007 whatever this check decided — an inner-ring generic instantiated
+from its own module behind an outer-ring first module passes this check and is refused there (see
+R007; issue #768). The type checker's generic call-site row
+check also raises E001 and consults no module at all — Emitter 2 below.
+
+**Emitter 2 (type checker, generic callees) — RING-BLIND, and not the routing gap above.** When
+the callee is a GENERIC function, `bind_and_check_effect_rows` enforces row contravariance on each
+of its `Fn`-typed formals — `actual_row ⊆ concrete(formal) ∪ binding(row variable)` — because the
+generic call path has no `type_compatible` argument loop to do it. It runs in the type-check pass,
+which is given no ring at all, and it consults no module ordering. Measured: passing an effectful
+closure to a generic callee's concrete `! { }` formal gives exactly `{E001}` under the default
+(inner) ring, under an explicit `#[ring(inner)]`, and under `#[ring(outer)]` — identical source,
+identical code set — and it is still exactly `{E001}` when every module in the program is
+inner-ring, where the monomorph routing above would end in the wholesale skip. A `handle` around
+the call site does not silence it (this checks the argument against the formal's declared row, not
+the available-effect set). Two boundaries keep it from being a general rule: with a row-VARIABLE
+formal (`! { e }`) the variable binds the argument's row and the program is clean, and the
+non-generic twin never reaches this code at all — `type_compatible` reports that shape as `{T071}`,
+a type error, in both rings.
+
 ### E002 — `handle Unsafe` requires a `#[trusted]` module
 
 Move this code into a `#[ring(outer)] #[trusted]` module, or remove the `handle Unsafe { ... }` block if it isn't actually needed.
 
-### E003 — Inner-ring function must not declare an effect row
+**Scope, non-generic code:** fires in `#[ring(outer)]` modules only. Unlike E001, E002 has exactly
+one emitter and it is the ring-aware one, so the effect checker's ring skip accounts for this
+code's whole scope — the only question left is which ring that skip sees, which is the generic
+paragraph below. The skip covers inner-ring (default-ring) modules, so a `handle Unsafe` block in
+a non-generic inner-ring function compiles clean. What it grants there is nothing reachable: a
+`handle Unsafe` block only widens the available effect set, and the call it would authorize — an
+`extern` — is still rejected by R003, while a direct call to an outer-ring wrapper is rejected by
+R004. Note that E003 does not cover this case at all: the function declares no row, so there is
+no `Unsafe` in a row for E003 to reject. Pinned by
+`crates/sigil-compiler/tests/effect_ring_scope.rs`.
 
-Remove the `! { ... }` clause from this inner-ring function — effect rows are only meaningful in outer-ring code.
+**Scope, generic code:** a `handle Unsafe` inside a generic function — bare or inside a closure
+written in it — holds the `#[trusted]` authority only if EVERY module governing the instance is
+trusted: the module that DEFINES the generic and every module whose scope resolved names in the
+re-checked body (the calling module, for a free-fn generic; the calling module's `use` scope, for
+an impl-method generic). So it is rejected in an untrusted module's generic whoever calls it, AND
+in a trusted module's generic instantiated from an untrusted module, in any module order — the
+instance's callee names resolve in the caller's scope, so the caller's code could run under the
+handle. The non-generic twin of the second case is accepted; to use `handle Unsafe` in a generic,
+instantiate it only from trusted modules, or make the function non-generic. Passing this check is
+not the whole story for a generic: an instance filed in another ring than its caller is refused at
+emission with R007 (see R007; #768).
+
+### E003 — Inner-ring function declares a privilege effect
+
+Inner-ring functions cannot declare `Unsafe` or `FFI` in their effect row — those are outer-ring privileges. Other effects (`Alloc`, user-declared domain effects) are fine to declare in inner ring. Either move the function to a `#[ring(outer)] #[trusted]` module if it genuinely needs the privilege effects, or drop just `Unsafe`/`FFI` from the row.
+
+**Scope:** this is row hygiene, not a host-boundary fence — it rejects the NAME appearing in a
+declared row and nothing else. A row-less inner-ring function may still write `handle Unsafe`,
+and the validator walks free `FnDef` items only, so an inner-ring impl method may declare
+`Unsafe` in its row with no diagnostic. Both limits are recorded in
+`tests/attack/KNOWN_GAPS.md`; the fences that actually stop inner-ring code from reaching the
+host are R003 and R004.
 
 ---
 
@@ -622,6 +713,16 @@ Remove the `! { ... }` clause from this inner-ring function — effect rows are 
 
 Capabilities live in the inner ring. Pass a borrowed capability via `grant(&cap, fn(ref) -> ...)` instead of taking ownership in outer-ring code.
 
+**Scope, generic code (R001 and R002):** a monomorphized generic instance is held to the
+outer-ring cap rules if ANY module governing it is outer-ring — the module that DEFINES the
+generic or any module whose scope resolved names in its re-checked body — whatever module sorts
+first. So an outer-ring generic that owns a cap is R001 (and one returning a cap-reference type is
+R002) even with an inner-ring module first, an inner-ring generic instantiated from inner-ring
+code is judged exactly as its non-generic twin, and the same inner-ring generic instantiated from
+an outer-ring module is held to the outer rules too. These rules decide the ring CHECK; emission
+still follows the filing module, so a generic this check accepts is refused with R007 when its
+instance is filed in another ring than its caller (see R007; #768).
+
 ### R002 — Capability reference escapes its grant scope
 
 A `&cap T` reference is only valid inside the `grant(...)` closure body. Return owned data, not the capability reference.
@@ -629,6 +730,13 @@ A `&cap T` reference is only valid inside the `grant(...)` closure body. Return 
 ### R003 — Inner-ring code cannot call `extern` functions
 
 Move the FFI call into a `#[ring(outer)] #[trusted]` module and expose it through a safe wrapper that the inner ring calls via grants.
+
+**Scope, generic code:** a monomorphized generic instance is held to R003 if ANY module governing
+it is inner-ring — the module that DEFINES the generic or any module whose scope resolved names in
+its re-checked body — whatever module sorts first. So an extern call in an inner-ring generic is
+R003 wherever it is instantiated, and so is an outer-ring generic whose body resolves an `extern`
+declared by its inner-ring caller. A generic this check accepts can still be refused with R007 at
+emission (see R007; #768).
 
 ### R004 — Direct cross-ring call requires a grant
 
@@ -638,6 +746,30 @@ Inner and outer rings can only interact via `grant(&cap, fn(ref) -> ...)`. Direc
 
 Retained for diagnostic-code compatibility; not emitted. Cross-ring rich errors are rejected as
 T109; use `ErrorCode` (`u32`).
+
+### R007 — Monomorphized generic instance is filed in the other ring
+
+A monomorphized generic instance is filed in the FIRST module of the compilation unit and takes
+that module's ring, so every caller of the generic must be in that ring. In a two-ring program a
+generic defined and called inside one ring can therefore land in the other ring, and the call has
+no emittable index even though the source contains no cross-ring call. If the generic is defined
+in the caller's own module, declare that module first; if it is defined in the other ring, the
+call crosses the ring boundary in source as well, so move the generic into the caller's ring.
+Otherwise keep the generic and its callers in a single-ring program.
+
+This gate runs AFTER the ring and effect checks, which judge an instance under the governing meet
+of its defining module and the modules whose scope resolved its names (see R001, R003, E001 and
+E002), not under its filing module. So a program those checks ACCEPT — for example an inner-ring
+generic instantiated from its own module behind an outer-ring first module — is still refused
+here when the instance's filing ring differs from its caller's. The refusal is fail-closed and
+stands until instances are emitted into their governing ring
+(issue #768).
+
+The gate checks the lowered program, so it catches only a call that still crosses the ring
+boundary after lowering. A generic currently resolves by bare name from ANY module of the
+compilation unit (bypassing module privacy and R004); when the instance lands in the caller's
+ring, that source-level cross-ring call is not caught here (open gap, recorded in
+`tests/attack/KNOWN_GAPS.md`).
 
 ### R010 — Non-capability spawn argument
 
@@ -673,6 +805,7 @@ diagnostic envelope (so the agent loop sees a uniform shape).
 | R815 | WASM outer-module fingerprint mismatch or missing |
 | R816 | Effect set mismatch between certificate and runtime |
 | R820 | Certificate provenance did not validate |
+| R821 | Shipped WASM module could not be bound to the certificate's source |
 
 ---
 
@@ -697,6 +830,18 @@ Z3 returned UNKNOWN — could neither prove nor refute the property within confi
 ### C005 — SMT query outside the decidable fragment (internal)
 
 The runtime fragment guard rejected a solver query before it reached Z3 (quantifier, disallowed op/sort, uninterpreted function, off-width bitvector, mixed theories, or oversized formula). Every query is compiler-constructed, so this is a compiler bug — please report it. The program is conservatively rejected, never accepted unverified.
+
+### C013 — Capability without a recognised full-authority origin put into an aliasable slot
+
+A capability may be put into a slot that other code can reach — a `Slot<Cap>` parameter, an actor-state slot, a copied, passed, stored or captured slot — only if its origin is one this gate recognises as full authority: a non-closure parameter, `mint`, an actor-state read, or a DIRECT call result, directly or through `let`, `draw` or `split`. A closure-call result (`CallIndirect`) and an FFI result (`ExternCall`) are NOT recognised: their arguments cross no full-mask sink, so passing a full capability through a closure and putting the result is C013. Anything else may only be put into a slot created by `slot_new` in the same function and used nowhere else but `slot_put`/`slot_take` there. Both authority checkers key a slot's contents on the taking function's own variable, so a put through an alias would be invisible to the take's authority meet. To narrow authority, put the full-authority capability and call `.restrict(...)` on the value returned by `slot_take` at the point of use. Unlike C001–C005 this check is structural and runs on every build, solver or not.
+
+The predicate is "no recognised full-authority origin", which is WIDER than "restricted", so this fires on programs containing no `.restrict` at all. The result of ANY `slot_take`, full or restricted, fails it — the gate does not track a slot's contents across functions — so taking a capability out of an aliasable slot and putting the very same capability straight back is C013, as are a refill cycle (take, draw a unit, put the budget back), moving a capability from one state slot to another, and relaying a full capability out of one slot into another slot that aliases. The same take-and-put-back through a CONFINED `slot_new` local compiles, because there the variable-keyed authority meet is exact. See `docs/RESIDUAL_RISKS.md` SR-020 for the measured accept/reject set.
+
+### C014 — Cap-typed actor-state field assigned a capability without a recognised full-authority origin
+
+Every read of a cap-typed actor-state field counts as FULL authority — in the slot escape gate (C013's actor-state-read origin), in the Z3 prover (a state-read capability variable gets the full mask) and in the Lean verifier — so the field may only be assigned a capability whose origin is one those checkers can trust: a non-closure parameter, `mint`, an actor-state read or a direct call result, directly or through `let`, `draw` or `split`. A `.restrict` result, a `slot_take` result, a closure-call or FFI result, or a field load may not be stored in state, in `init` or anywhere else. That includes a `restrict_deadline(..)` result, even one stored into a field already typed at the narrower deadline: the call lowers to the same restriction node as `.restrict`, so the gate cannot tell a deadline narrowing from an authority narrowing — an over-rejection, fail closed. Before this gate `init(f: Fuel) { fuel = f.restrict(burn); }` compiled and every handler then read `fuel` as full, so `use_full(fuel.draw(10))` handed a restricted capability to a full-authority sink (SR-021). Like C013 this check is structural and runs on every build, solver or not.
+
+Assign the bare `init` parameter (`fuel = f;`, or a `draw`/`split` off it) and call `.restrict(...)` on the value read from the field at the point of use; keep a narrowed capability in a local, never in state. The idiomatic empty-`init` positional population (`init(f: Fuel) {}`) carries no store and is unaffected; a handler write to a cap field is already T123 (non-`mut`) or C011 (`mut`) in the type checker, and C014 covers that store too rather than relying on the order.
 
 ---
 

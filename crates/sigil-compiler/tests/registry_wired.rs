@@ -60,6 +60,12 @@ const REQUIRED_FIXTURE_CODES: &[&str] = &[
     // Actor-state (MUTABLE-STATE S2 / F1, the decider): a `mut` state field must be
     // plain reassignable data — a cap/ref/borrow-bearing `mut` field is rejected.
     "C011",
+    // Slot escape gate: a possibly-restricted cap put into a slot that is not a
+    // confined `slot_new` local (here: a callee's `Slot<Fuel>` parameter).
+    "C013",
+    // State-cap origin gate: `init` storing a `.restrict` result into a cap-typed
+    // state field (the premise "a state-read cap is full" is enforced, not assumed).
+    "C014",
     // Actor-state (MUTABLE-STATE S2 / F3, definite-assignment): every state field must
     // be assigned exactly once, unconditionally, in `init` (T124 double / T125 missing).
     "T124", "T125",
@@ -98,6 +104,11 @@ const REQUIRED_FIXTURE_CODES: &[&str] = &[
     // `ct_eq`/`ct_select`/`ct_lt` are integer-only, so there is nothing to
     // build a constant-time `str` compare from.
     "T033",
+    // CT008: `<<`/`>>` by a `@SecretCT` AMOUNT. A data-dependent shift count is
+    // variable-time on cores without a barrel shifter, so the count leaks
+    // through timing. The VALUE side is exempt (a public count has a
+    // count-only latency); until this rule the shape compiled clean.
+    "T034",
 ];
 
 /// Codes documented as exempt from the fixture requirement, with

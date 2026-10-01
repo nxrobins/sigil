@@ -1,0 +1,19 @@
+// Heap floor S5 (BUG-2): the interprocedural STORE direction through a typed `@Mut` write.
+// The callee MINTS a @Secret and writes it into the caller's array through `@Mut`; the
+// same write made inline was already rejected, and without S5 the caller read `a[0]`
+// back as @Public. The call site raises the caller's typed-read floor, so returning
+// `a[0]` from a function declared @Public is T001. The @Public return is the fixture's
+// ONLY sink (precision lane: exactly one error).
+// Shape pinned by `callee_typed_write_of_its_own_secret_through_mut_is_t001`.
+// expect-error: T001
+#[ring(outer)] module ext;
+fn poke(a: [i64; 2] @Mut) -> i64 @Public {
+    let s: i64 @Secret = 42;
+    a[0] = s;
+    return 0;
+}
+fn probe() -> i64 @Public ! { Alloc } {
+    let mut a: [i64; 2] = [0, 0];
+    let ignored: i64 = poke(a);
+    return a[0];
+}

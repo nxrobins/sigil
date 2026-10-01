@@ -331,6 +331,43 @@ fn verify_function<'ctx>(
 ) {
     solver.push();
 
+    // Phase 0: fuel-literal pre-scan. The QF_LIA fuel family below names its
+    // constants by VarId (`fuel_<v>`, `split_amount_<v>`); nothing else in
+    // the encoding grounds them, so an amount is bound to a numeral ONLY when
+    // the AIR proves its value: the VarId has exactly one defining statement
+    // (`formal::air_stmt_destination`, the certificate's SSA source) and that
+    // statement is an `Assign` of an `IntLit`. Everything else — a cap
+    // parameter's or state field's budget, a computed amount, a copy
+    // (`let m = n`), a `let mut` amount — stays a FREE constant. Failure
+    // direction for the free case: the compile-time family is silent (no
+    // diagnostic) and the runtime capability table plus the signed wasm
+    // guard (`InsufficientFuel`) remain the enforcement.
+    let mut definition_count: std::collections::HashMap<VarId, usize> =
+        std::collections::HashMap::new();
+    let mut int_literal_defs: std::collections::HashMap<VarId, i64> =
+        std::collections::HashMap::new();
+    for block in &function.blocks {
+        for stmt in &block.stmts {
+            if let Some(dst) = crate::formal::air_stmt_destination(stmt) {
+                *definition_count.entry(dst).or_default() += 1;
+            }
+            if let AirStmt::Assign {
+                dst,
+                val: AirValue::IntLit(literal),
+            } = stmt
+            {
+                int_literal_defs.insert(*dst, *literal);
+            }
+        }
+    }
+    let literal_amount = |amount: VarId| -> Option<i64> {
+        if definition_count.get(&amount) == Some(&1) {
+            int_literal_defs.get(&amount).copied()
+        } else {
+            None
+        }
+    };
+
     // Phase 1: legitimacy constraints for all cap-typed variables.
     let mut legitimacy: std::collections::HashMap<(VarId, BlockId, usize), Bool<'ctx>> =
         std::collections::HashMap::new();
@@ -417,10 +454,14 @@ fn verify_function<'ctx>(
                         solver.assert(&dst_legit);
                     }
                     legitimacy.insert((*dst, block.id, stmt_idx), dst_legit);
-
-                    let src_perms = Int::new_const(ctx, format!("perms_{}", src.0).as_str());
-                    let dst_perms = Int::new_const(ctx, format!("perms_{}", dst.0).as_str());
-                    solver.assert(&dst_perms.le(&src_perms));
+                    // Attenuation is encoded ONCE, in phase 2's QF_BV family
+                    // (`dst_auth == src_auth & mask`, `dst_auth <=u src_auth`)
+                    // against the statement's concrete `restriction_mask`.
+                    // The former `perms_<dst> <= perms_<src>` Int pair was a
+                    // free-constant family bound to nothing — satisfiable for
+                    // every program, rejecting none — so it is gone rather
+                    // than left as a second, vacuous "attenuation" line
+                    // (docs/z3-theory-inventory.md §3 lists the live forms).
                 }
                 AirStmt::CapSplit { dst, src, amount } | AirStmt::CapDraw { dst, src, amount } => {
                     *checked_sites += 1;
@@ -438,10 +479,27 @@ fn verify_function<'ctx>(
                         Int::new_const(ctx, format!("split_amount_{}", amount.0).as_str());
                     let dst_fuel = Int::new_const(ctx, format!("fuel_{}", dst.0).as_str());
 
+                    // Fuel family (QF_LIA), asserted PER CALL SITE: the child
+                    // holds exactly the amount, the parent held at least it,
+                    // and both are non-negative. It is not cumulative — two
+                    // draws of 6 from a child holding 10 are SAT here and only
+                    // the runtime rejects the second (the same per-call
+                    // invariant `air.rs` documents on `CapDraw`).
                     solver.assert(&dst_fuel._eq(&split_amount));
                     solver.assert(&src_fuel.ge(&split_amount));
                     solver.assert(&split_amount.ge(&Int::from_i64(ctx, 0)));
                     solver.assert(&src_fuel.ge(&Int::from_i64(ctx, 0)));
+                    // Ground the amount when the AIR proves it (phase 0).
+                    // This is what makes the family reject anything: a chain
+                    // `a = p.draw(10); b = a.draw(20)` becomes
+                    // `fuel_a == 10 ∧ fuel_a >= 20` — UNSAT at the phase-3
+                    // consistency probe → C002 — and a negative literal
+                    // contradicts `split_amount >= 0` the same way. An
+                    // unbound amount leaves this site exactly as free as
+                    // before (see the phase-0 failure direction).
+                    if let Some(literal) = literal_amount(*amount) {
+                        solver.assert(&split_amount._eq(&Int::from_i64(ctx, literal)));
+                    }
                 }
                 AirStmt::MessageSend { msg, .. } | AirStmt::MessageAsk { msg, .. }
                     if function.var_kind(*msg).is_cap() =>
@@ -704,6 +762,14 @@ fn verify_function<'ctx>(
     }
 
     // Phase 3: global constraint-satisfiability check.
+    // This probe is the ONLY consumer of the fuel family: a literal-bound
+    // overdraw (phase 1) surfaces here as UNSAT → C002. Note the per-site
+    // probes above run against the same base assertions, so an UNSAT base
+    // makes every one of them answer Unsat (no C003 alongside the C002);
+    // compilation still fails, only the co-reported set is narrower.
+    // The `// theory:` line must stay within the 3 lines directly above the
+    // dispatch: `z3_corpus::every_solver_check_has_theory_comment` scans
+    // exactly that window.
     // theory: QF_BV<32> + QF_LIA (mixed, disjoint signatures).
     // See docs/z3-theory-inventory.md §2 site #3.
     match check_direct(solver) {

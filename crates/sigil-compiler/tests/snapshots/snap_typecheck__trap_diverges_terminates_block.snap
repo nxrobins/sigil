@@ -93,4 +93,5 @@ TypedProgram {
         next_id: 2,
     },
     effect_ops: {},
+    instance_homes: {},
 }

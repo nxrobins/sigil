@@ -1,3 +1,5 @@
+#[cfg(feature = "solver")]
+use sigil_compiler::diagnostics::Severity;
 use sigil_compiler::{
     CompileOptions, compile_named_module, compile_project, formal::CSIR_MODEL_VERSION,
     source::SourceFile,
@@ -331,9 +333,39 @@ fn go(fuel: Fuel, amount: i64, secret: bool @Secret) -> i64 {
     assert!(!codes.iter().any(|code| code == "I013"), "got {codes:?}");
 }
 
+/// A Public amount the prover cannot bound (here a parameter) compiles in every lane, and the
+/// emitted wasm carries the unconditional signed guard that traps a negative value at runtime.
+/// A negative LITERAL is the other case: since BUG-4 grounded literal amounts in the QF_LIA fuel
+/// family, a solver-enabled build rejects it at compile time (next test); a solver-off build
+/// still relies on this guard. Author decision 2026-10-01: compile-time rejection of negative
+/// literal amounts is the intended behaviour (docs/specs/forge-fuel-enforcement.md, item 1).
 #[test]
 fn negative_public_amount_compiles_with_an_unconditional_signed_wasm_guard() {
     let compilation = compile_named_module(
+        "negative_quantity.sigil",
+        r#"
+module negative_quantity;
+cap type Fuel {}
+fn go(fuel: Fuel, amount: i64) -> i64 {
+    let child: Fuel = fuel.split(amount);
+    return 0;
+}
+"#,
+    )
+    .expect("a Public amount the prover cannot bound is a guarded runtime trap, not a compile-time rejection");
+    let wat = wat_of(&compilation.wasm_inner);
+    assert!(wat.contains("i64.lt_s"), "signed guard absent:\n{wat}");
+    assert!(wat.contains("unreachable"), "guard trap absent:\n{wat}");
+}
+
+/// Solver lane only: a negative literal amount is grounded (`split_amount == -1`) and contradicts
+/// the family's `split_amount >= 0`, so the pipeline rejects with exactly C002 and never reaches
+/// the runtime guard. Without the solver feature the Z3 verifier does not run and the test above
+/// is the whole story, which is why this one is feature-gated rather than a sibling assertion.
+#[cfg(feature = "solver")]
+#[test]
+fn negative_public_literal_amount_is_rejected_at_compile_time_in_the_solver_lane() {
+    let err = compile_named_module(
         "negative_quantity.sigil",
         r#"
 module negative_quantity;
@@ -344,8 +376,14 @@ fn go(fuel: Fuel) -> i64 {
 }
 "#,
     )
-    .expect("negative Public quantities are guarded runtime traps, not compile-time rejection");
-    let wat = wat_of(&compilation.wasm_inner);
-    assert!(wat.contains("i64.lt_s"), "signed guard absent:\n{wat}");
-    assert!(wat.contains("unreachable"), "guard trap absent:\n{wat}");
+    .expect_err("a negative literal amount must fail compilation in the solver lane");
+    let mut codes: Vec<String> = err
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.severity() == Severity::Error)
+        .map(|diagnostic| diagnostic.code().as_str().to_owned())
+        .collect();
+    codes.sort();
+    codes.dedup();
+    assert_eq!(codes, vec!["C002".to_string()], "got {codes:?}");
 }

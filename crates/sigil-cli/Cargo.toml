@@ -29,6 +29,10 @@ sigil-frontends = { path = "../sigil-frontends" }
 sigil-registry = { path = "../sigil-registry" }
 sigil-runtime = { path = "../sigil-runtime" }
 wasmprinter = "0.245.1"
+# `verify-cert --wasm`: the shipped bytes must validate as a WebAssembly
+# module BEFORE any hash comparison (fail closed on non-modules). Same minor
+# as sigil-compiler/sigil-runtime so no second copy enters the lockfile.
+wasmparser = "0.246.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ring = "0.17.14"

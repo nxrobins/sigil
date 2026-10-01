@@ -60,8 +60,8 @@ PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 454894
 PIN_FLOOR_SRC_CHARS = 1000000
 PIN_FLOOR_MODULE_BYTES = 400000
 PIN4_KNOWN_DIVERGENCES = 0
-PIN_AXIOM_TARGETS = 1304
-PIN_DIAGNOSTIC_TEST_GAPS = 61
+PIN_AXIOM_TARGETS = 1308
+PIN_DIAGNOSTIC_TEST_GAPS = 59
 PIN_STRIP_LIST_ENTRIES = 6
 ```
 
@@ -187,6 +187,11 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     pinned, and every id in their union has an explicit side classification and reason** — drift or
     an unexplained difference fails. This is deliberately NOT a 1:1 Rust↔Lean correspondence: some
     Lean rules map to solver-lane fixture families, and some mechanisms exist on only one side.
+    The higher-order E001 pair and the explicit-`trap` accept are shared ids tied to the same
+    program on both sides (a closure applied under a row that omits / declares its effect; a
+    function whose body is `trap`, called); the direct-call E001 fixtures and the value-position
+    `trap()` reject are classified Rust-only, and fuel exhaustion / bounds failure are unpairable
+    because the core calculus has no fuel counter and no arrays.
     *(Corrected, task #254: the prior claim said the two lists "match". They do not — the test that
     "backed" it never read Lean.)*
     @test:fixture_ids_match_expected_ids @test:lean_obligation_ids_are_pinned
@@ -621,8 +626,17 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
 
 45. **The production formal verifier retains bounded large-envelope coverage.** The real self-host
     trio projects roughly a quarter-million CSIR records and must pass the exact linked Lean verifier
-    inside the corpus validator's unchanged five-second fail-closed budget. A separate structural
-    canary rejects the measured regression patterns: rebuilding graph adjacency per cell;
+    within two fail-closed bounds that have different owners. The tight one is the isolated scaling
+    canary, `SELFHOST_TRIO_CANARY_MS` (five seconds): the `Formal verifier scaling canary` step runs
+    the canary test alone with `SIGIL_CORPUS_SCALING_CANARY` set, so its wall clock measures the
+    verifier and nothing else, and a malformed arming value panics rather than disarming. The wider
+    one is the corpus extractor's drop bound, `VALIDATE_BUDGET_MS` (thirty seconds): it exists to
+    bound a hung compile and is asserted by the same test in every lane, armed or not, because a
+    timeout there drops every self-host idiom from the corpus. They are separate on purpose — the
+    parallel workspace lane's load once pushed the trio past five seconds while the isolated step
+    passed, and widening the drop bound to fix that must not loosen the canary. A separate structural
+    canary (`lean_kernel_caches_whole_program_indexes_outside_inner_loops`) remains the pattern-level
+    detector and rejects the measured regression patterns: rebuilding graph adjacency per cell;
     rescanning every semantic record for owners, references, or policy masks; using linear
     visited-list membership inside structured-CFG traversal; and materializing the dynamic
     closure×function taint-edge product. It also forbids reconstructing the complete decoded
@@ -630,13 +644,350 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     dynamic-call summary cells, cached decoded/occurrence-raised machines, and bounded
     tail-recursive operand traversal. The canary has an
     explicit command in a required CI lane, and another test
-    prevents that command from disappearing. This is regression evidence for the measured fixture
+    prevents that command or its arming line from disappearing. This is regression evidence for the measured fixture
     and known bug classes, not an asymptotic proof or a claim that all one-million-record inputs
     finish within five seconds.
     @test:selfhost_trio_completes_within_validation_budget
     @test:lean_kernel_caches_whole_program_indexes_outside_inner_loops
     @test:linked_lean_indexes_large_single_function_without_nested_copying
     @test:ci_keeps_formal_verifier_scaling_canary
+46. **A shift by a `@SecretCT` amount is rejected (CT008).** A shift by a data-dependent count is
+    variable-time on cores without a barrel shifter and on microcoded shift paths, so the count
+    leaks through timing — the class the `@SecretCT` sublattice promises to reject. Until
+    2026-09-30 nothing did: `a << n` with `n: i64 @SecretCT` compiled with an empty diagnostic set
+    on main `ae026aec`, for `>>`, for `i32` and `u64`, and with both operands secret (the taint
+    pass checked only `/`, the formal gate has no shift policy class). The CT008 arm beside CT007's
+    in `taint_check.rs` rejects a `<<`/`>>` whose AMOUNT (right operand) carries `@SecretCT` with
+    `T034`, on the label rather than the syntax, so a `let`-copied or arithmetic-derived amount and
+    the compound `<<=`/`>>=` forms (the same `Binary` node) are rejected identically. The shifted
+    VALUE is exempt at machine width (`i32`/`u32`/`i64`/`u64`) — a shift by a `@Public` count has a
+    count-only latency and is how constant-time code masks and rotates a secret — and a plain
+    `@Secret` amount is outside the discipline; both still compile. A `u256` `@SecretCT`
+    value shifted by a `@Public` amount passes the taint pass but is then refused by the formal gate
+    as `I013` on the `u256_shl`/`u256_shr` lowering (measured 2026-09-30 on `ae026aec` and on this
+    branch), so the exemption is not a `u256` statement; a `u256` `@SecretCT` amount is `T034`.
+    `T034` is oracle-only: the selfhost shadow has no shift rule and the SH-TAINT differential
+    filters both sides to its compared core set. The dedicated fixture is a parity
+    manifest row and a `registry_wired` requirement.
+    @test:ct008_shl_by_secret_ct_amount_rejected
+    @test:ct008_shr_by_secret_ct_amount_rejected
+    @test:ct008_shift_by_secret_ct_amount_rejected_for_i32_and_u64
+    @test:ct008_shift_with_both_operands_secret_ct_rejected
+    @test:ct008_let_copied_secret_ct_amount_rejected
+    @test:ct008_arithmetic_derived_secret_ct_amount_rejected
+    @test:ct008_compound_shift_assign_by_secret_ct_amount_rejected
+    @test:ct008_secret_ct_value_shifted_by_public_amount_accepted
+    @test:ct008_public_shift_accepted
+    @test:ct008_secret_non_ct_amount_is_not_a_ct_violation
+    @test:ct008_anti_stub_planted_secret_ct_amount_in_the_accepted_shape_is_detected
+    @test:t034_message_and_hint_name_the_amount_and_the_sound_alternative
+
+47. **`verify-cert --wasm` binds the shipped module to a fresh compilation of the source, never to
+    the certificate's own fingerprint field.** The certificate is unsigned JSON, so its
+    `wasm_inner_fingerprint` is attacker-writable; a certificate honest for its source and rebound
+    to a foreign module's bytes used to verify OK because re-derivation compared only source-derived
+    fields. Re-derivation now diffs the fresh module's inner and outer fingerprints (typed R814 /
+    R815), the shipped bytes must validate as a WebAssembly module before they are hashed, and a
+    skipped re-derivation (compiler-version skew) fails the `--wasm` verdict closed (R821) instead
+    of degrading to hash equality against the certificate. Each rejection is asserted as an exact
+    code set on the pure verifier and on the binary's JSON envelope; the comparator ships an
+    anti-stub that fires on a planted rebinding of each fingerprint. Source-only verification under
+    version skew is unchanged, as is the `run`/`forge --cert` gate.
+    @test:verify_cert_rejects_cert_rebound_to_foreign_wasm
+    @test:verify_cert_refuses_junk_wasm_bytes
+    @test:verify_cert_refuses_wasm_binding_under_version_skew
+    @test:verify_cert_wasm_binding_verdicts_are_typed_and_fail_closed
+    @test:diff_certificates_flags_rebound_wasm_fingerprints
+
+### Effect checker scope
+
+48. **The inner-ring effect-check exemption is pinned and fenced, for non-generic code.** The
+    effect checker skips every inner-ring module — the default ring when no `#[ring]` attribute
+    is written — so an undeclared-effect direct call, a closure DEFINED AND APPLIED inside one
+    inner-ring function under an empty row, an `alloc` under an empty row, and a `handle Unsafe`
+    all compile clean there, while
+    byte-identical programs under `#[ring(outer)]` reject with exactly E001, E001, E001 and E002.
+    The closure clause is scoped to that shape because that is the shape the pin measures; it is
+    not a statement about effectful closures in general.
+    For non-generic code the exemption is confined to the inner ring (a non-generic outer-ring fn
+    placed after an inner-ring module still rejects with exactly E001). It is bounded by the host
+    boundary, not by an absence of effects: `alloc` is an inner-ring primitive that performs the
+    registered `Alloc` effect and is simply not charged to a row there, which is what the
+    exempt-versus-E001 alloc pin measures. What inner-ring code cannot do is reach the host, and
+    two fences carry that weight, each pinned as an exact code set: an inner-ring `extern` call is
+    exactly R003, and a direct inner→outer call is exactly R004. E003 — `FFI`/`Unsafe` in an
+    inner-ring free-fn row is exactly E003 — is pinned here too but is row hygiene, not a
+    host-boundary fence: it does not reach a row-less `handle Unsafe`, and its validator walks
+    free `FnDef` items only. This is a pin on the documented design decision and those codes, not
+    a claim that inner-ring effect rows are checked, and it says nothing about generic code:
+    monomorphized instances are filed under the program's first module regardless of their
+    defining module, and on `main` at `ae026aec` the check keyed on that filing, so an outer-ring
+    generic escaped the check (and R001/R002) when the first module was inner-ring, and an
+    inner-ring generic was checked (E001/E002) and escaped R003 when the first module was
+    outer-ring; claim 50 governs the CHECKING of generic code by the meet now (an instance is
+    still emitted in its filing module's ring, so a meet-accepted instance filed in another ring
+    than its caller is refused at emission with R007 until #768), SND-RING-001 records the
+    ring-code side, and SND-EFFECT-001 and `tests/attack/KNOWN_GAPS.md` record the closed gap.
+    The exemption fails open if
+    an inner-ring primitive that performs a host effect is ever added without removing the skip.
+    Finally, this exemption does not scope the CODE E001, only the effect checker: the type
+    checker's generic call path raises E001 too, for row contravariance on a generic callee's
+    `Fn`-typed formal, and it is ring-blind. An effectful closure passed to such a formal with a
+    concrete `! { }` row is exactly E001 under the default ring, an explicit `#[ring(inner)]` and
+    `#[ring(outer)]` alike, and still exactly E001 when every module is inner-ring — so it is
+    neither the exemption nor the routing gap. It is narrower than "generic callees are
+    effect-checked": a row-variable formal or a pure closure argument is clean, the non-generic
+    twin is exactly T071 rather than E001, and a `handle` at the call site does not silence it.
+    E002, having its single emitter in the effect checker, IS scoped by the exemption.
+    @test:inner_ring_direct_call_is_exempt_outer_fires_e001
+    @test:inner_ring_closure_apply_is_exempt_outer_fires_e001
+    @test:inner_ring_alloc_is_exempt_outer_fires_e001
+    @test:inner_ring_handle_unsafe_is_exempt_outer_fires_e002
+    @test:explicit_ring_inner_matches_the_default_ring
+    @test:outer_ring_nongeneric_fn_after_inner_module_still_fires_e001
+    @test:inner_ring_extern_call_is_fenced_by_r003
+    @test:inner_ring_privilege_row_is_fenced_by_e003
+    @test:inner_to_outer_cross_ring_call_is_fenced_by_r004
+    @test:generic_callee_concrete_row_fires_e001_in_every_ring
+    @test:generic_callee_e001_is_not_the_monomorph_routing_path
+    @test:generic_callee_pure_closure_argument_is_clean
+    @test:generic_callee_row_variable_absorbs_the_effectful_argument
+    @test:nongeneric_callee_effectful_closure_argument_is_t071_not_e001
+    @test:handle_at_the_call_site_does_not_silence_the_generic_row_check
+
+49. **Two-ring emission resolves every direct call and every closure table slot to the function
+    the AIR names.** Each ring's wasm module numbers its functions by position in that ring,
+    while the AIR names global `FuncId`s (the id a direct call carries and the slot a closure
+    stores). The emitter, and only the emitter, bridges the two: direct calls go through a
+    per-ring `FuncId -> index` map, and each module's `call_indirect` table spans the whole
+    program's ids with the ring's functions placed at their own global slots, so an
+    inner-first layout (the default-ring layout) emits the same call indices as the swapped
+    layout and a same-signature neighbour — a plain function or a closure — is never invoked
+    in place of the named one. A lowered call whose callee sits in the other ring is never
+    emitted: R004 rejects one in source, and because a monomorphized generic instance is filed
+    under the first module (inheriting ITS ring), R004-clean source can still lower to one — the
+    AIR-level gate `ring_check::check_air_ring_placement` rejects that with R007 before
+    emission, in both layouts, and is shown silent on every correctly placed two-ring fixture
+    and firing on a planted cross-ring call. The emitter's narrated ICE is that gate's backstop,
+    reachable only from hand-built AIR. Bound: such a program is a refused compile, not an
+    emitted module (see SR-018). The static checkers decode every emitted `call` and every element
+    segment, and are shown rejecting the old call formula planted at the exact call site and the
+    old compact table planted over the sections, both in modules the wasm validator accepts;
+    the runtime witnesses cover the outer->outer, inner->inner, same-signature function,
+    closure, same-signature closure, and actor-handler shapes.
+    @test:inner_first_outer_calls_resolve_to_the_named_callee
+    @test:outer_first_twin_resolves_and_outer_bytes_are_layout_independent
+    @test:outer_first_inner_calls_resolve_and_inner_bytes_are_layout_independent
+    @test:same_signature_neighbour_is_not_called
+    @test:closure_table_slot_is_its_global_id_and_the_ring_table_places_it_there
+    @test:same_signature_closure_neighbour_is_not_in_the_named_closures_slot
+    @test:actor_handler_calls_resolve_with_an_outer_module_first
+    @test:cross_ring_call_reaching_emission_is_an_ice
+    @test:a_generic_across_the_ring_boundary_is_rejected_in_both_layouts
+    @test:the_generic_shape_returns_a_diagnostic_instead_of_panicking
+    @test:the_gate_is_silent_on_two_ring_programs_that_are_placed_correctly
+    @test:the_gate_rejects_the_hand_built_cross_ring_air
+    @test:anti_stub_old_formula_index_is_detected_although_it_validates
+    @test:anti_stub_old_compact_table_is_detected_although_it_validates
+    @test:inner_first_outer_call_returns_the_named_callees_value
+    @test:inner_first_same_signature_neighbour_is_not_invoked
+    @test:inner_first_outer_closure_calls_through_the_ring_table
+    @test:inner_first_same_signature_closure_neighbour_is_not_invoked
+    @test:outer_first_inner_call_returns_the_named_callees_value
+    @test:outer_first_actor_handler_calls_the_named_inner_helper
+
+50. **A monomorphized generic instance — and any closure lambda-lifted while its body is
+    re-checked — is effect- and ring-checked under the MEET of the module that DEFINED the generic
+    and every module whose scope resolved names in the re-checked body, whatever module sorts
+    first.** The meet: exempt from the effect walk only if EVERY governing module is inner-ring;
+    `handle Unsafe` authority (E002) only if EVERY governing module is `#[trusted]`; the outer-ring
+    rules (R001/R002) if ANY governing module is outer-ring and R003 if ANY is inner-ring. That is
+    the whole rule and nothing stronger: an instance never holds a privilege some governing module
+    lacks, a generic instantiated from its OWN module gets exactly its non-generic twin's checker
+    verdict, and a generic instantiated from another module gets at most the lesser module's
+    privileges. The meet decides what the CHECKERS accept; it does not move where an instance is
+    emitted. An instance whose filing module sits in another ring than a module that calls it is
+    refused at emission with exactly R007 (the two-ring placement gate of claim 49), whatever the
+    meet decided, until instances are emitted into their governing ring
+    (issue #768 in nxrobins/sigil-dev; landed this way by the author's decision of
+    2026-10-01). Every such meet-accepted layout is pinned at two layers: the checker layer
+    (parse, resolve, type-check, ring/effect/taint, before AIR) accepts it and the pipeline
+    refuses it with exactly R007.
+    Why the definer alone is not enough: a generic body is re-checked per instantiation, and its
+    callee names do not resolve in the definer's scope — a FREE-FN instance is re-checked in the
+    CALLING module's context, and an IMPL-METHOD instance, though it takes its function sigs from
+    its definer, still falls back to the checked module's `use` scope. Instances stay FILED under
+    the first module (the self-host monomorphizer's emission-order pin; re-homing them moves the
+    certified selfhost bytes because the ambient stdlib rides along as separate modules); the walks
+    read the home recorded at instantiation (`TypedProgram::governing_context`). History, each
+    step pinned as an exact code set beside a non-generic twin or a same-layout control (SC-P4):
+    keyed on the filing module, an inner-ring first module exempted an outer-ring generic's
+    instance (an empty-row instance reaching `NetIO`, or an FFI chain behind an empty `tool_main`
+    row, compiled clean and was certified) and an outer-ring first module let an inner-ring
+    generic call an extern past R003; keyed on the name prefix (the CALLING module), an untrusted
+    module's `handle Unsafe`, bare or wrapped in a closure, passed E002 from a trusted caller;
+    keyed on the DEFINER alone, the reverse held — an inner-ring generic hid an outer caller's FFI
+    chain (certified), an untrusted outer module discharged FFI through an inner generic's `handle
+    Unsafe` (in either module order), a trusted generic's `handle Unsafe` ran an untrusted
+    caller's own same-named helper, a trusted generic impl method's `handle Unsafe` reached an
+    untrusted module through the caller's `use` scope, and an inner module reached an `extern`
+    through an outer generic. All of these reject under the meet. Behavior against main
+    `ae026aec`, where main's verdict was a filing artifact: a generic instantiated from its own
+    inner-ring module with an outer module first now passes every checker, as its twin always did
+    (main: E001/E002), and is refused at emission with exactly R007 (its instance is filed in the
+    outer ring); an outer-ring generic that declares its effect, with an inner module first, is
+    likewise checker-accepted and refused with R007 (main accepted it and miscompiled the
+    cross-ring call indices — the bug claim 49 closes); a trusted generic's `handle Unsafe`
+    instantiated from an untrusted module is now exactly E002 in every module order, including
+    the trusted-first order main accepted, whereas its non-generic twin (which resolves only in
+    its trusted module) stays accepted. Not claimed: the wasm ring an instance is EMITTED into
+    still follows the filing module (hence the R007 refusals above, #768); the ring-blind
+    second E001 emitter (`bind_and_check_effect_rows`) reads no module at all, so the meet neither
+    enables nor suppresses it (pinned, with a pure-closure control); NON-generic inner-ring code
+    stays exempt from the effect walk by design — this claim is about WHICH modules govern a
+    generic's body, not about whether the inner-ring exemption and its R003/E003/R004 fences are
+    sound; and a generic free fn is still RESOLVED program-wide by bare name, bypassing `use` and
+    R004 at every checker (a pinned known gap, `tests/attack/KNOWN_GAPS.md`) — the meet bounds what
+    such an instance may do, not whether the call is visible; end to end an inner module's call to
+    an outer generic is refused with R007 only when the instance happens to be filed in the outer
+    ring, and is accepted when the inner caller sorts first. The principled replacement (re-check a
+    free-fn instance in its definer's scope, as impl methods nearly are) is SR-019's follow-up.
+    @test:inner_first_outer_generic_fn_is_effect_checked
+    @test:inner_first_outer_generic_impl_method_is_effect_checked
+    @test:inner_first_outer_ffi_chain_rejects_without_certificate
+    @test:outer_first_inner_generic_extern_call_is_r003
+    @test:nongeneric_twins_prove_the_detectors_fire
+    @test:outer_generic_declaring_its_effect_is_accepted
+    @test:use_imported_generic_is_checked_under_definer_trust
+    @test:nongeneric_and_same_module_twins_prove_e002_fires
+    @test:trusted_generic_instantiated_from_untrusted_caller_is_e002
+    @test:caller_scope_helper_under_trusted_generic_handle_is_e002
+    @test:impl_method_use_scope_fallback_is_governed_by_the_meet
+    @test:inner_ring_generic_leak_is_exempt_only_when_every_governing_module_is_inner
+    @test:inner_ring_generic_handle_unsafe_is_exempt_only_when_every_governing_module_is_inner
+    @test:outer_generic_resolving_an_inner_callers_extern_is_r003
+    @test:outer_ring_cap_rules_follow_the_governing_context_for_generics
+    @test:closure_lifted_in_an_instance_is_checked_under_definer_trust
+    @test:closure_trust_twins_prove_e002_fires_through_a_closure
+    @test:trusted_generic_closure_instantiated_from_untrusted_caller_is_e002
+    @test:review_repros_borrowing_a_trusted_modules_authority_are_e002
+    @test:inner_ring_definer_accept_does_not_reach_the_ring_blind_row_check
+    @test:known_gap_generic_free_fn_call_bypasses_use_and_r004
+
+51. **A restricted capability cannot enter a slot through an alias.** Both authority checkers key
+    a slot's contents on the taking function's own AIR variable (the Z3 meet over same-variable
+    puts; the Lean at-ceiling cell for a parameter or state slot), so a `.restrict`ed cap put
+    through a callee's `Slot<Cap>` parameter, an actor-state slot in another handler, or a
+    `let s2 = s` copy was invisible to the take and reached a full-authority sink. The
+    solver-independent slot escape gate (C013) rejects every possibly-restricted put into a slot
+    that is not a confined `slot_new` local of the same function, on every build; the documented
+    cross-handler pattern (a handler putting its own full payload parameter into a state slot)
+    stays accepted. On the solver lane the prover alone is pinned as still accepting the aliased
+    put — the fact that makes the gate load-bearing — while the pipeline rejects it (SR-020).
+    The gate's predicate is WIDER than its motive and the exclusion is stated as such: a cap may
+    be put into an aliasable slot only if its origin is one the gate recognises as full (a
+    non-closure parameter, `mint`, an actor-state read or a DIRECT call result — a closure-call
+    or FFI result is not), and the result of ANY `slot_take`, full or restricted, is not. So
+    take-and-put-back, a refill cycle and moving a cap between two state slots are C013 with no
+    `.restrict` anywhere in the program, while the same take-and-put-back through a confined
+    local still compiles, and the C013 message states that predicate. The actor-state-read origin
+    is not an assumption: claim 52 (C014) enforces that a cap-typed state field only ever holds a
+    capability with a recognised full origin. These wider-residue pins are default-lane:
+    `slot_alias_escape.rs` is compiled out under `solver`.
+    @test:restricted_put_through_a_callee_slot_parameter_is_c013
+    @test:restricted_put_into_an_actor_state_slot_is_c013
+    @test:restricted_put_through_a_copied_local_slot_is_c013
+    @test:take_and_put_back_through_an_actor_state_slot_is_c013_with_no_restrict
+    @test:take_and_put_back_through_a_slot_parameter_is_c013_with_no_restrict
+    @test:relaying_a_full_cap_out_of_a_local_slot_into_a_parameter_slot_is_c013
+    @test:a_refill_cycle_through_an_actor_state_slot_is_c013_with_no_restrict
+    @test:moving_a_cap_between_two_state_slots_is_c013_with_no_restrict
+    @test:take_and_put_back_through_a_confined_local_slot_still_compiles
+    @test:anti_stub_aliasing_the_confined_cycle_slot_is_what_makes_it_c013
+    @test:c013_message_on_a_put_back_states_the_predicate_not_the_motive
+    @test:anti_stub_a_planted_restrict_in_the_accepted_twin_is_detected
+    @test:documented_cross_handler_state_slot_pattern_stays_accepted
+    @test:slot_alias_through_callee_parameter_is_outside_the_meet_and_closed_by_c013
+
+52. **A capability read from actor state is full, because nothing narrower can be stored there.**
+    Every authority checker classifies a capability read from a cap-typed actor-state field as
+    full authority: the slot escape gate's state-read origin (claim 51), the Z3 prover's full mask
+    for a state-read cap variable, and the Lean verifier's cell binding. Until C014 that was an
+    unenforced premise. The type checker makes a non-`mut` field writable only in `init` (T123)
+    and forbids a `mut` cap field (C011) but never checked the AUTHORITY of the stored value, so
+    `init(f: Fuel) { fuel = f.restrict(burn); }` compiled and a handler's `use_full(fuel.draw(n))`
+    sank a restricted capability — with no slot involved, and through an actor-state slot with
+    C013 silent. The solver-independent state-cap origin gate (C014, the same module as C013)
+    rejects every `StateWrite` of a capability whose origin the C013 classifier does not accept —
+    a bare `init` parameter, `mint`, a state read or a direct call result, through
+    `let`/`draw`/`split` — in `init` and in every handler alike, on every build. Storing the bare
+    parameter or a `draw` off it still compiles, as do the corpus actors that populate the field
+    positionally through an empty `init`; the handler-narrowing form keeps its earlier type-check
+    rejection, and the gate's own coverage of a handler store is pinned at the AIR level in
+    `slot_escape`'s unit tests. These pins run on the default lane from a file with no lane
+    `cfg`; its solver-lane run is CI's (SR-021).
+    @test:init_restricting_its_parameter_into_a_state_cap_is_c014
+    @test:init_restricting_through_a_let_into_a_state_cap_is_c014
+    @test:a_state_cap_narrowed_in_init_cannot_reach_a_state_slot
+    @test:init_storing_a_slot_take_result_into_a_state_cap_is_c014
+    @test:a_handler_narrowing_a_state_cap_keeps_the_immutability_rejection
+    @test:init_storing_the_bare_parameter_still_compiles
+    @test:init_storing_a_draw_off_its_parameter_still_compiles
+    @test:anti_stub_a_planted_restrict_in_the_bare_parameter_init_is_detected
+    @test:c014_message_and_hint_name_the_store_and_the_sound_alternative
+    @test:c013_rule_names_a_direct_call_result_and_rejects_a_closure_call_result
+    @test:the_empty_init_positional_corpus_actors_stay_accepted
+
+### Heap contents (taint)
+
+53. **Heap contents are floored, not trusted: a raw load or typed memory read reaches a @Public
+    sink only if no non-@Public write can have reached its bytes first.** Taint labels ride on
+    values and on a pointer local's alloc-site region, never on heap contents, so before this rule
+    a `load8` through an address the checker could not tie to a labeled region — a host-written
+    digest at a predicted bump address, a stored @Secret read back through a fresh region's
+    pointer — was read at the pointer's @Public label (BUG-2, verified end-to-end). `taint_check.rs`
+    now carries two monotone per-function floors, raw-load and typed-read, joined into every raw
+    load and every typed memory read. They are raised by FFI (S1); by every non-@Public memory
+    write, keyed on the value's static type at one choke point (S2), including a store's address
+    operands (S6); by raw stores that can land inside a live typed aggregate (S4) and by projected
+    writes read back through an alias (S7); at a call site by what the callee can have written (S5)
+    and read (S8), transitively over the call graph, with unnamed callees at the program-wide
+    bound; by a closure body flowing back to its construct site (S9); by the least fixpoint of what
+    every handler of an actor leaves in persistent state (S10); and by string literals and
+    f-strings, which are reads of shared static data (S11). Which intrinsics read or write memory
+    is one total classification with a planted-variant census. Every switch only ever raises a
+    label (fail closed), is `pub const` and measurable off, and is on as shipped except S3 (the
+    pinned configuration). The floors label what a READ returns; a pointer that reaches a sink
+    UNREAD — `tool_main` returning its output buffer's packed pointer, the host reading the
+    buffer — carries the M6 region taint instead, which every raw write raises for every operand
+    that is a REGIONED LOCAL (a local bound to `alloc`, or to `+`/`-` arithmetic over `alloc` calls
+    and regioned locals — `alloc(8)`, `alloc(8) + k`, `out + i`, at a `let` or a rebind; a write
+    through any other pointer expression is attributed to no region — §C HF-1), with the value,
+    address and bound
+    joined with the pc; which a callee's summary carries per parameter slot so the call site
+    taints the argument it wrote through; which a closure body flows back to its construct site;
+    and whose region facts are joined at every control-flow merge — loop back-edges, `if` and
+    `match` arms, block shadows — so a pointer rebound on one path is attributed to every
+    candidate region at the store. Each closed channel is pinned exact-set on both sides — the
+    leak as `T001`, a clean twin accepted — and the coarse rules' false positives are pinned as
+    counted costs rather than hidden. What this does NOT cover is §C HF-1 and §D.
+    @test:ffi_digest_read_through_predicted_address_is_t001
+    @test:callee_storing_its_own_secret_through_a_returned_caller_pointer_is_t001
+    @test:pointer_rebound_across_a_loop_back_edge_taints_the_returned_region_is_t001
+    @test:alloc_plus_zero_bound_directly_then_stored_through_and_returned_is_t001
+    @test:secret_store_read_back_through_fresh_region_is_t001
+    @test:secret_raw_store_into_typed_array_read_back_via_index_is_t001
+    @test:public_value_stored_at_a_secret_address_is_t001
+    @test:alias_taken_before_a_secret_element_write_is_t001
+    @test:callee_typed_write_of_its_own_secret_through_mut_is_t001
+    @test:helper_returning_a_raw_read_after_callers_ffi_is_t001
+    @test:str_from_raw_over_the_ffi_digest_is_t001
+    @test:grant_closure_writing_its_own_secret_into_a_capture_is_t001
+    @test:handler_reading_state_another_handler_wrote_at_a_secret_index_is_t001
+    @test:named_callee_reading_a_string_literal_after_a_secret_store_into_it_is_t001
+    @test:f_string_compare_after_a_secret_store_is_t001
+    @test:intrinsic_memory_census_is_total
+    @test:heap_floor_switch_configuration_is_pinned
 
 ---
 
@@ -714,7 +1065,7 @@ them.** They are stated as anti-claims so a future reader cannot quietly widen t
   writing an implementation from the specification without reading ours, or reproducing the seed
   from source on their own machines.
 
-Three further scope limits, equally load-bearing:
+Four further scope limits, equally load-bearing:
 
 * **The byte capstones are RELATIONAL.** Their headline assertion is Stage-1 == Stage-2, which
   stays green when both stages move together. Absolute size is carried by the §A pins, which now
@@ -725,14 +1076,66 @@ Three further scope limits, equally load-bearing:
 * **The SIGIL checker is partial.** Refinement types absent; capabilities reduced to a bitwise
   shadow valid only on slot-free, full-mask-sink programs; ring, effect, taint and ownership all
   restricted to named code subsets. Post-AIR memory/fuel lowering is absent.
+* **HF-1 — the heap floors (claim 53) are address-blind, Rust-only, and leave three channels
+  OPEN.** Address-blind: no floor knows WHICH cell a raw store hit, so a callee that reads its own
+  fresh aggregate after the caller's secret raw store is rejected — a counted cost, pinned — and
+  nothing narrower than "any non-@Public write anywhere in the function" is sound without bounds
+  proofs the checker does not have. Coarse on intrinsics too: every intrinsic result is treated as
+  a typed read, so `let b: i64 = alloc(1)` after a secret raw store is rejected although `alloc`
+  reads nothing — a counted cost, pinned, whose narrower rule (classify intrinsics by
+  `intrinsic_memory`) is an open author decision. Coarse on the returned-pointer sink too: the
+  label a callee's write puts on the pointer it wrote through is the callee's annotation bound,
+  so a callee that MENTIONS a secret and stores a @Public byte through the caller's pointer
+  taints it — a counted cost, pinned. Coarse across loop iterations: the loop fixpoint mints a
+  body `alloc`'s region at the same id on every pass (all iterations' buffers from one site
+  share a region — what keeps the state finite), so a pointer allocated in a loop body and sunk
+  before that iteration's store reads the taint an earlier iteration stored through the same
+  site — a counted cost, pinned. Rust-only: S1–S11 are rules over the typed AST with no Lean
+  counterpart; the CSIR occurrence model has no memory cell (§D). OPEN, each pinned as an exact
+  ACCEPT so it cannot drift silently: the sink-INSIDE-callee form of the interprocedural load
+  direction — a helper or closure that raw-loads (or reads a captured aggregate) after its
+  caller's FFI or secret store and sinks the value inside its own body, the caller discarding the
+  result; S3 `HEAP_FLOOR_PROGRAM_ENTRY` closes it at a measured corpus cost and is kept off —
+  the allocation-size channel, where `alloc((s & 1) + 1)` moves the bump pointer and a later
+  `alloc` difference reads the bit back with no write carrying the secret — and the UNREGIONED
+  POINTER through the returned-pointer sink: the M6 region model regions only locals bound to
+  `alloc`, or to `+`/`-` arithmetic over `alloc` calls and regioned locals (`alloc(8)`,
+  `alloc(8) + k`, `out + i`), so a raw write through ANY other pointer expression — a parameter,
+  including `tool_main`'s own `input_ptr` (the host's buffer, the most natural tool shape:
+  `store8(input_ptr, s & 1); return input_ptr << 32 | 1`); a callee's result; arithmetic other
+  than `+`/`-`; a pointer reloaded from memory or read out of an aggregate (`let a = [out];
+  store8(a[0], s)`, a record field) or a state field — is attributed to no region, inline or
+  through a callee, and the returned buffer carries the secret unlabeled. The floors are
+  untouched (they label reads; nothing here is read). The region also bounds neither the packed
+  LENGTH the host reads — an over-long length on a clean neighbouring buffer exposes the tainted
+  region beside it, which is also how an `alloc` never bound to a local is reached — nor a
+  `+`/`-` offset that leaves its buffer, so the returned-pointer sink is open on those two shapes
+  as well (disclosed, not pinned: a bounds model, not a region model, would close them). Closing
+  the unregioned surface needs a rule total over every pointer-valued expression kind, a design
+  not made here. None is claimed closed anywhere: the three are registered as SR-025
+  (sink-inside callee), SR-026 (allocation size) and SR-027 (unregioned pointer, packed length,
+  escaping offset), tracked as #764. A
+  sink violation inside an assignment place's index is rejected as I013 rather than T001: a
+  worse message, not an accept.
+  @test:named_callee_reading_its_own_fresh_array_after_callers_secret_store_is_a_counted_false_positive
+  @test:let_binding_of_an_alloc_after_a_secret_raw_store_is_a_counted_false_positive
+  @test:callee_mentioning_a_secret_but_storing_public_through_the_returned_pointer_is_a_counted_false_positive
+  @test:pointer_allocated_inside_a_loop_body_sunk_before_the_iterations_store_is_a_counted_false_positive
+  @test:helper_sinking_a_raw_read_inside_itself_after_callers_ffi_is_the_interprocedural_boundary
+  @test:closure_sinking_an_aggregate_read_inside_itself_after_a_secret_write_is_open
+  @test:secret_allocation_size_observed_through_the_bump_pointer_is_open
+  @test:secret_stored_through_the_parameter_pointer_then_returned_is_open
+  @test:pointer_smuggled_through_an_array_element_then_stored_through_is_open
+  @test:secret_stored_through_a_record_field_pointer_then_returned_is_open
+  @test:secret_in_an_assignment_place_index_is_an_integrity_error_not_a_taint_one
 
 ---
 
 ## §D — Claims with NO executable proof
 
 This deduplicated census accounts for 55 audit findings: **45 fixed**, **5 duplicate reports**,
-**1 stale-note correction**, and **4 open** below. Treat 4 as a floor from that audit, not a claim
-that no further gaps exist.
+**1 stale-note correction**, and **4 open** below, plus **1 disclosed at the BUG-2 heap-floor
+landing** (5 unproven rows in all). Treat 5 as a floor, not a claim that no further gaps exist.
 
 ### Self-hosting and the capstones
 
@@ -755,6 +1158,15 @@ code generation/runtime, Wasm emission, Wasmtime, scheduling, and hardware corre
 trusted assumptions (SR-017); this specifically includes the Rust projector's security-only SSA
 versioning, phi placement, and type-proved unreachable-edge facts. The linked verifier does not
 prove those layers.
+
+### Heap contents (taint)
+
+@unproven **The heap floors are Rust-only.** S1–S11 (claim 53) are rules over the typed AST in
+`taint_check.rs`. The Lean CSIR occurrence gate (`V9OccurrenceDataflow.lean`, `hostSeed`) has no
+memory cell, so it models neither a raw store nor a shared-static-data read, and the λ-SIGIL taint
+calculus is first-order over values; no Lean artifact says anything about heap contents. Their
+evidence is the exact-set pin suite and the per-arm mutation runs recorded at landing — executable,
+not mechanized (SR-022).
 
 ## §D2 — Known documentation drift (not claims; defects awaiting a fix)
 

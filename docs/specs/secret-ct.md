@@ -58,9 +58,19 @@ control violations are rejected before descending into the selected body, so
 the stack never uses `SecretCT` as a substitute for rejecting the timing
 channel.
 
-Function parameters, actor handler parameters, generic instantiations, and
-closure captures preserve their declared or source taint. A closure body is
-checked in an environment seeded from the taints of its actual captures.
+Function parameters, actor handler parameters, and closure captures preserve
+their declared or source taint. A closure body is checked in an environment
+seeded from the taints of its actual captures.
+
+Generic instantiations do not: a monomorphized instance declares every
+parameter `@Public` (the declared label is dropped when the instance's
+parameters are rebuilt, `type_check/expressions/calls.rs`), so a labelled
+argument is rejected at the call boundary with `T001` before the instance body
+is checked. The direction is closed — no generic function can accept
+`@SecretCT` data at all — and the result of a generic call still carries the
+argument's label, so a forbidden operation in the caller fires its CT code.
+Measured 2026-09-20 and pinned by
+`ct013_generic_concrete_secret_ct_param_label_is_dropped_at_monomorphization`.
 
 ## 3. Rejection inventory
 
@@ -75,13 +85,13 @@ T-code in the third column.
 | CT004 | `match` scrutinee or guard is `@SecretCT` | `T023` |
 | CT005 | Array index is `@SecretCT` | `T024` |
 | CT006 | `load8`/`store8` pointer, or `vec_load`/`vec_store` base or index, is `@SecretCT` | `T025` |
-| CT007 | Either division operand is `@SecretCT` | `T026` |
-| CT008 | Variable shift by `@SecretCT` | Reserved; no current source operator |
-| CT009 | Short-circuit Boolean control by `@SecretCT` | Reserved; no current source operator |
+| CT007 | Either division operand is `@SecretCT` | `T026` for `/`. `%` with a `@SecretCT` operand is refused by the formal gate's DivRem policy and surfaces as `I013`, not `T026` (measured 2026-09-20) |
+| CT008 | Variable shift by a `@SecretCT` AMOUNT | `T034`. Only the right operand of `<<` / `>>` (the shift count) is checked, on its label — so `let`-copied and arithmetic-derived amounts and the compound `<<=` / `>>=` forms are rejected too. A machine-width (`i32`/`u32`/`i64`/`u64`) `@SecretCT` VALUE shifted by a `@Public` amount is accepted: that latency depends on the public count alone, and it is how constant-time code masks and rotates a secret. `u256` is outside the exemption: a `u256` `@SecretCT` value shifted by a `@Public` amount passes this rule but is then refused by the formal gate (`I013`) on the `u256_shl`/`u256_shr` lowering (measured 2026-09-30: `{I013}` on `ae026aec` and on this branch); a `u256` `@SecretCT` amount is `{T034}` like any other width. Unenforced until 2026-09-30 (measured 2026-09-20 on main `ae026aec`; closed entry in `tests/attack/KNOWN_GAPS.md` §CT008). Oracle-only: the selfhost shadow has no shift rule |
+| CT009 | Short-circuit Boolean control by `@SecretCT` | `T020` (CT001's rule): a `@SecretCT` left operand of `&&` / `\|\|` is a secret-dependent branch. A `@SecretCT` right operand only labels the result |
 | CT010 | Any extern-call argument is `@SecretCT` | `T027` |
 | CT011 | A `DeclassifyCT` capability is consumed more than once | `O001` |
 | CT012 | A closure capture carries `@SecretCT` into a forbidden operation | The applicable `T020`-`T031` code |
-| CT013 | Generic monomorphization carries `@SecretCT` into a forbidden operation | The applicable `T020`-`T031` code |
+| CT013 | Generic monomorphization carries `@SecretCT` into a forbidden operation | `T001` at the call boundary (see §2: the instance's parameters are `@Public`, so the label never reaches the body); the caller's own forbidden operation on the call's result fires its `T020`-`T031` code |
 | CT014 | `send`, `ask`, or `spawn` carries an `@SecretCT` payload or timeout | `T028` |
 | CT015 | `alloc` or `region` size is `@SecretCT` | `T029` |
 | CT016 | `@Internal` or `@Secret` is assigned, returned, or passed as `@SecretCT` | `T030` |

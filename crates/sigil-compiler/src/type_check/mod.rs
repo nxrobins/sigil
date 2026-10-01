@@ -343,6 +343,9 @@ pub fn check_collecting(
         // Set per-module context for cross-module dispatch.
         tracker.current_use_scope = resolved_module.use_scope.clone();
         tracker.current_module_ring = ast_module.ring;
+        // BUG-5b round 3: every instance re-checked while this module is checked
+        // resolves names through the scope above, so it joins each instance's meet.
+        tracker.current_scope_module = ast_module.name.clone();
 
         // R006: `#[trusted]` is only meaningful in the outer ring. The trust
         // privilege unlocks `handle Unsafe` (effect_check.rs E002 path) and
@@ -880,7 +883,8 @@ pub fn check_collecting(
         });
     }
 
-    // Drain monomorphized outputs into the module that DEFINED them.
+    // Drain monomorphized outputs: lifted closures into the module that
+    // DEFINED them, generic instances into `modules[0]` (see SCOPE below).
     //
     // Lambda-lifted closures and monomorphized functions carry a module-qualified
     // name (`{module}::__closure_{id}` — see `expressions.rs`), so the definer is
@@ -898,17 +902,64 @@ pub fn check_collecting(
     //      module's type section, so emitting it from a different module hit
     //      `ICE: call_indirect signature not found in type map` in `wasm.rs`.
     //
-    // SCOPE: lambda-lifted CLOSURES only. Monomorphized generic instances keep
-    // their historical destination — their emission order is pinned by the
-    // SH-MONO self-hosting differential (`monomorph_differential.rs`), which the
-    // self-hosted shadow must reproduce instance-for-instance, and re-homing them
-    // reorders that census for no security benefit. The fail-open demonstrated
-    // here is a closure one; narrowing the fix keeps the blast radius to it.
+    // SCOPE: lambda-lifted CLOSURES only — for FILING. Monomorphized generic
+    // instances keep their historical destination (`modules[0]`): their
+    // emission order is pinned by the SH-MONO self-hosting differential
+    // (`monomorph_differential.rs`), which the self-hosted shadow reproduces
+    // instance-for-instance, and the certified selfhost compile carries the
+    // ambient stdlib (`vec`, `option`, `strings`, ...) as SEPARATE modules, so
+    // re-homing their instances reorders the FuncId basis and moves every
+    // certified-artifact byte pin (measured: `pin_certified_artifact_digest`,
+    // `seed_is_the_oracle_emit_of_the_certified_source`,
+    // `ag6_5_with_driver_byte_capstone` all fail on a re-homing drain).
+    //
+    // #654's "no security benefit" for instances was FALSE (BUG-5b): filing
+    // decided what ring and trust `check_effects` / `check_rings` ran under,
+    // so an inner-ring `modules[0]` exempted an outer-ring generic's instance
+    // from the effect walk (an `! {}` instance reaching `! { NetIO }`, or an
+    // FFI chain behind an empty `tool_main` row, compiled clean and was
+    // certified — E001 escaped) and from the outer-ring cap rules (an
+    // instance owning a cap, or returning a cap-reference type, escaped R001
+    // / R002), an outer `modules[0]` let an inner generic's instance call an
+    // extern past R003, and a trusted `modules[0]` lent its E002 authority to
+    // an untrusted definer's `handle Unsafe`. Every one of those is pinned in
+    // `tests/effect_ring_routing.rs` beside its non-generic twin. Re-homing
+    // instances would have closed them, but moves the certified bytes (SCOPE
+    // above), so the fix separates CHECKING from FILING instead:
+    // `instance_homes` records each instance's governing home at its push
+    // (`calls.rs`, `methods.rs`), rides on `TypedProgram`, and both walks
+    // resolve it through `TypedProgram::governing_context`. The home is
+    // recorded rather than recovered from the name because a free-fn instance
+    // is named after the CALLING module: a `use`-imported generic's instance
+    // would otherwise be checked under the caller's trust alone, and an
+    // untrusted module's `handle Unsafe` body would pass E002 from a trusted
+    // caller. Round 2 extends the recording to every closure lambda-lifted
+    // WHILE an instance body is re-checked (`expressions.rs`,
+    // `MonomorphTracker::current_instance_home`): those carry the caller's
+    // prefix too, so the prefix re-home below filed AND checked them under the
+    // caller — wrapping the `handle Unsafe` in a closure defeated the routing.
+    // Round 3 makes the home the MEET of the definer and every module whose
+    // scope resolved names in the re-checked body (a free-fn body resolves in
+    // the caller's scope, and every body consults the checked module's `use`
+    // scope): the definer ALONE was fail-open in the other direction. The
+    // re-home itself is unchanged: filing stays with the prefix module, whose
+    // type section holds the closure's signature.
+    //
+    // What filing still decides: the wasm ring an instance is EMITTED into
+    // (`air::lower` takes it from the filing module). An outer-ring generic's
+    // instance with an inner `modules[0]` therefore still lands in the inner
+    // wasm module, and its outer caller's lowered call crosses rings. That call
+    // has no per-ring index, so `ring_check::check_air_ring_placement` refuses
+    // the program with R007 before emission (SR-018) — fail-closed, even when
+    // the governing meet accepts the instance. The fix here closes the
+    // CHECK-side exemption; it does not claim placement, and emitting instances
+    // into their governing ring is issue #768.
     //
     // Longest-prefix match, because a name may contain further `::` segments
     // (e.g. `app::Type::method$...`) and a plain `rfind` would mis-attribute it.
     // A name matching no module keeps the historical destination rather than
     // being dropped.
+    let instance_homes = std::mem::take(&mut tracker.instance_homes);
     for func in tracker.functions {
         let owner = if func.name.contains("::__closure_") {
             modules
@@ -967,6 +1018,9 @@ pub fn check_collecting(
                 (name, sigs)
             })
             .collect(),
+        // BUG-5b: the governing home of every monomorphized instance, for the effect
+        // and ring walks (see the drain above and `TypedProgram::governing_context`).
+        instance_homes: instance_homes.into_iter().collect(),
     };
     (program, universe.authority_registry, diagnostics)
 }

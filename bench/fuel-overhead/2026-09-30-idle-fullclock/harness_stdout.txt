@@ -1,0 +1,124 @@
+block 1/24: B L=1000
+block 2/24: A' L=1000
+block 3/24: A' L=500
+block 4/24: D L=1000
+block 5/24: A' L=0
+block 6/24: C L=1000
+block 7/24: B' L=0
+block 8/24: B L=0
+block 9/24: A' L=100
+block 10/24: A L=100
+block 11/24: C L=0
+block 12/24: C L=500
+block 13/24: B L=500
+block 14/24: A L=1000
+block 15/24: A L=0
+block 16/24: A L=500
+block 17/24: B' L=100
+block 18/24: B' L=1000
+block 19/24: B' L=500
+block 20/24: D L=0
+block 21/24: B L=100
+block 22/24: C L=100
+block 23/24: D L=500
+block 24/24: D L=100
+# Fuel-instrumentation runtime overhead — task098 Levenshtein
+
+Harness `crates/sigil-runtime/examples/fuel_overhead.rs`; profile release; seed 6000845620020262144 (0x5347494c2d443500); lengths [0, 100, 500, 1000]; convergence trailing-30 CV < 5% or 500 samples; 1 warm-up per block discarded; wall time 6 s.
+
+## Workload
+
+- Tool: `task098_levenshtein_distance.sigil` (sha256 `03697a0878001312c0666792c8ebbe65cce40256900061d934c1bbf3d59abbd4`)
+- Sanity: `kitten\nsitting` returned `3` on every condition.
+- Inputs (two `[a-z]` strings of length L joined by one `\n`; L=0 is the bare `\n`):
+
+| L | input bytes | sha256 | expected output | fuel consumed (A) | budget passed |
+|---:|---:|---|---:|---:|---:|
+| 0 | 1 | `01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b` | 0 | 8 | 16 |
+| 100 | 201 | `138ba85631c07ac11a69014829c9732c5f4eb4b7633bb3d3ff40045e23030192` | 91 | 60714 | 121428 |
+| 500 | 1001 | `5f7ecdd7b1c5ac0c1ebaef83fe4880187dcc0f9cb669ddfc453553b66c7d0c77` | 445 | 1503516 | 3007032 |
+| 1000 | 2001 | `e51a7408e07ac53c728c9d477c4b9f29d9ff09efee43590e1e6ced3f772f0d1a` | 887 | 6007016 | 12014032 |
+
+## Modules
+
+- A0: 2012 bytes, sha256 `f6fc24c739d58518b22558461644c51588298e693993e62c1ab6f593b47f8e8f`, 5 functions, compiler static fuel budget 264; imports: sigil.fuel_decrement, sigil.send, sigil.ask, sigil.spawn, sigil.alloc, sigil.cap_restrict, sigil.cap_split, sigil.cap_mint.
+- A1: 1997 bytes, sha256 `ad693b12487fdb7c3117b923a235a3a788182485db9605db387a21a69baa1d50`; 15 `call 0` sites replaced by `drop` across 5 function bodies; 8 non-code sections copied byte-for-byte (digests equal); validates; zero `call 0` remain.
+
+## Cold first call (shipped path, includes Wasmtime compilation)
+
+| call | condition | µs |
+|---:|---|---:|
+| 1 | A | 3987.8 |
+| 2 | B | 3505.3 |
+| 3 | A | 3437.3 |
+| 4 | B | 3364.5 |
+| 5 | A | 3529.5 |
+| 6 | B | 3289.7 |
+
+Mirror `Module::from_binary` alone:
+
+| module | wasmtime fuel | µs |
+|---|---|---:|
+| A0 | on | 3564.8 |
+| A0 | off | 2633.4 |
+| A1 | on | 3122.1 |
+| A1 | off | 2558.6 |
+| A0 | on | 3466.1 |
+| A0 | off | 2975.0 |
+| A1 | on | 3250.1 |
+| A1 | off | 2660.2 |
+| A0 | on | 3402.7 |
+| A0 | off | 2879.9 |
+| A1 | on | 3226.5 |
+| A1 | off | 2633.6 |
+
+## Per-block results
+
+| Condition | Module | Path | Fuel | L | n | Warm-up (µs) | Min (µs) | Median (µs) | P90 (µs) | Max (µs) | CV % | Flag | fuel_consumed |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|:-:|---:|
+| A | A0 | shipped execute_ephemeral | host decrements + backstop | 0 | 30 | 84.5 | 56.6 | 57.2 | 59.3 | 65.3 | 3.2 | ✓ | 8 |
+| B | A1 | shipped execute_ephemeral | backstop only | 0 | 30 | 92.9 | 55.9 | 56.7 | 59.2 | 62.8 | 3.1 | ✓ | 0 |
+| C | A1 | mirror, wasmtime fuel off | none | 0 | 30 | 53.3 | 30.4 | 31.1 | 31.8 | 34.5 | 2.1 | ✓ | 0 |
+| D | A0 | mirror, wasmtime fuel off | host decrements only | 0 | 31 | 47.9 | 30.8 | 31.6 | 34.9 | 43.4 | 7.6 | ⚠ | 8 |
+| A' | A0 | mirror, wasmtime fuel on | host decrements + backstop | 0 | 31 | 51.9 | 30.6 | 31.2 | 32.4 | 39.3 | 5.1 | ⚠ | 8 |
+| B' | A1 | mirror, wasmtime fuel on | backstop only | 0 | 30 | 48.4 | 30.3 | 31.3 | 33.2 | 37.2 | 4.3 | ✓ | 0 |
+| A | A0 | shipped execute_ephemeral | host decrements + backstop | 100 | 30 | 4308.9 | 420.9 | 427.0 | 438.5 | 443.3 | 1.6 | ✓ | 60714 |
+| B | A1 | shipped execute_ephemeral | backstop only | 100 | 53 | 3937.0 | 200.4 | 204.8 | 213.8 | 277.8 | 5.6 | ⚠ | 0 |
+| C | A1 | mirror, wasmtime fuel off | none | 100 | 30 | 149.2 | 118.2 | 121.3 | 124.5 | 134.5 | 3.2 | ✓ | 0 |
+| D | A0 | mirror, wasmtime fuel off | host decrements only | 100 | 30 | 367.3 | 351.6 | 356.1 | 361.2 | 400.6 | 2.7 | ✓ | 60714 |
+| A' | A0 | mirror, wasmtime fuel on | host decrements + backstop | 100 | 48 | 427.1 | 396.3 | 402.5 | 414.5 | 496.3 | 4.7 | ✓ | 60714 |
+| B' | A1 | mirror, wasmtime fuel on | backstop only | 100 | 32 | 205.8 | 174.2 | 175.3 | 181.2 | 226.7 | 5.2 | ⚠ | 0 |
+| A | A0 | shipped execute_ephemeral | host decrements + backstop | 500 | 30 | 9148.7 | 9108.8 | 9220.6 | 9514.1 | 9773.1 | 1.9 | ✓ | 1503516 |
+| B | A1 | shipped execute_ephemeral | backstop only | 500 | 49 | 7218.0 | 3649.1 | 3667.9 | 3710.0 | 4963.3 | 5.4 | ⚠ | 0 |
+| C | A1 | mirror, wasmtime fuel off | none | 500 | 30 | 2322.0 | 2271.5 | 2282.1 | 2316.0 | 2370.7 | 1.0 | ✓ | 0 |
+| D | A0 | mirror, wasmtime fuel off | host decrements only | 500 | 30 | 8170.8 | 7954.3 | 8007.6 | 8122.6 | 9057.9 | 2.4 | ✓ | 1503516 |
+| A' | A0 | mirror, wasmtime fuel on | host decrements + backstop | 500 | 30 | 9215.4 | 9159.0 | 9246.0 | 9519.6 | 9613.2 | 1.5 | ✓ | 1503516 |
+| B' | A1 | mirror, wasmtime fuel on | backstop only | 500 | 32 | 3643.0 | 3639.5 | 3669.3 | 3743.9 | 5595.6 | 9.1 | ⚠ | 0 |
+| A | A0 | shipped execute_ephemeral | host decrements + backstop | 1000 | 30 | 40210.2 | 36368.0 | 36567.2 | 37861.0 | 38054.1 | 1.7 | ✓ | 6007016 |
+| B | A1 | shipped execute_ephemeral | backstop only | 1000 | 43 | 14616.3 | 14439.9 | 14526.5 | 15310.9 | 18362.4 | 5.7 | ⚠ | 0 |
+| C | A1 | mirror, wasmtime fuel off | none | 1000 | 30 | 9018.3 | 8972.5 | 9009.2 | 9056.9 | 9319.4 | 0.7 | ✓ | 0 |
+| D | A0 | mirror, wasmtime fuel off | host decrements only | 1000 | 30 | 31817.0 | 31734.8 | 31844.6 | 32264.9 | 33334.7 | 1.0 | ✓ | 6007016 |
+| A' | A0 | mirror, wasmtime fuel on | host decrements + backstop | 1000 | 30 | 36721.0 | 36541.5 | 36693.1 | 37767.3 | 38041.8 | 1.2 | ✓ | 6007016 |
+| B' | A1 | mirror, wasmtime fuel on | backstop only | 1000 | 30 | 14496.8 | 14381.2 | 14455.8 | 14622.8 | 14826.0 | 0.8 | ✓ | 0 |
+
+## Derived on medians, per L (net: each condition minus its own L=0 median)
+
+| L | A (µs) | B (µs) | C (µs) | D (µs) | A/C | B/C | D/C | (A−B)/L² ns | (B−C)/L² ns | (A−B)/fuel ns | A'/A | B'/B |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 57.2 | 56.7 | 31.1 | 31.6 | — | — | — | — | — | — | — | — |
+| 100 | 427.0 | 204.8 | 121.3 | 356.1 | 4.10 | 1.64 | 3.60 | 22.17 | 5.79 | 3.65 | 1.004 | 0.972 |
+| 500 | 9220.6 | 3667.9 | 2282.1 | 8007.6 | 4.07 | 1.60 | 3.54 | 22.21 | 5.44 | 3.69 | 1.006 | 1.007 |
+| 1000 | 36567.2 | 14526.5 | 9009.2 | 31844.6 | 4.07 | 1.61 | 3.54 | 22.04 | 5.49 | 3.67 | 1.004 | 0.997 |
+
+## Derived on minima, per L (net: each condition minus its own L=0 minimum)
+
+| L | A (µs) | B (µs) | C (µs) | D (µs) | A/C | B/C | D/C | (A−B)/L² ns | (B−C)/L² ns | (A−B)/fuel ns | A'/A | B'/B |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 56.6 | 55.9 | 30.4 | 30.8 | — | — | — | — | — | — | — | — |
+| 100 | 420.9 | 200.4 | 118.2 | 351.6 | 4.15 | 1.65 | 3.65 | 21.98 | 5.67 | 3.62 | 1.004 | 0.996 |
+| 500 | 9108.8 | 3649.1 | 2271.5 | 7954.3 | 4.04 | 1.60 | 3.54 | 21.84 | 5.41 | 3.63 | 1.008 | 1.004 |
+| 1000 | 36368.0 | 14439.9 | 8972.5 | 31734.8 | 4.06 | 1.61 | 3.55 | 21.93 | 5.44 | 3.65 | 1.005 | 0.998 |
+
+## Block order
+
+B:L1000, A':L1000, A':L500, D:L1000, A':L0, C:L1000, B':L0, B:L0, A':L100, A:L100, C:L0, C:L500, B:L500, A:L1000, A:L0, A:L500, B':L100, B':L1000, B':L500, D:L0, B:L100, C:L100, D:L500, D:L100

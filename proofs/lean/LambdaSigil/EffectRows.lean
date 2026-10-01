@@ -5,14 +5,16 @@ import LambdaSigil.Safety
 
 The base development *synthesizes* an effect row and proves `effect_safety` about it
 (`Preservation.lean`).  SIGIL's `effect_check.rs` instead *checks* a synthesized row against a
-**declared** annotation (`callee ⊆ caller`), and `Differential.lean` records the difference honestly
-as the **E001 mechanism gap**:
+**declared** annotation (`callee ⊆ caller`), and `Differential.lean` once recorded the difference
+honestly as the **E001 mechanism gap** (quoting its original note):
 
 > `E001` (undeclared effect) — mechanism gap. λ-SIGIL *synthesizes* the effect row rather than
 > *checking* a synthesized row against a declared annotation … There is no annotation-mismatch
 > *rejection* to mirror.
 
-This module closes the Lean side of that gap.  It adds a **checking judgment** `Chk` carrying a
+This module closed the Lean side of that gap, and `Differential.lean` now pairs the witness pair
+below with a same-shape `.sigil` fixture pair by id (`LSD-E001-hof` / `LSD-ACC-E001-hof`, via the
+aliases `lsd_e001_hof_reject` / `lsd_acc_e001_hof`).  It adds a **checking judgment** `Chk` carrying a
 declared row `δ`, proves it sound relative to the synthesizing judgment, lifts `effect_safety` to
 declared rows, and proves the higher-order property that motivates the whole exercise:
 
@@ -136,8 +138,11 @@ def hofProg : Term := .app hofClosure .unit
 /-- **The rejection.**  Applying the effectful closure while declaring the EMPTY row has no
     derivation — the latent `{hofEff}` cannot be laundered through the application.
 
-    This is the compile-time rejection SIGIL currently lacks: the shipped checker defers this case
-    to a runtime effect check at the construction-site frame. -/
+    This is the compile-time rejection the shipped checker once lacked (it deferred the case to a
+    runtime effect check at the construction-site frame) and now has: `walk_expr_effects`'s
+    `IndirectCall` arm discharges the latent row (PR #655).  The `.sigil` twin is the M7 fixture
+    `LSD-E001-hof`, asserted to reject with exactly `{E001}` in
+    `crates/sigil-runtime/tests/lambda_sigil_differential.rs`. -/
 theorem hof_latent_leak_rejected {m : Authority} {τ : Ty} :
     ¬ ∃ U', Chk demoSig [] [] hofProg τ ∅ m U' := by
   rintro ⟨U', h⟩

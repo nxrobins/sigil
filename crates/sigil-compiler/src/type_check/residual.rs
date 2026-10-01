@@ -462,6 +462,7 @@ mod tests {
             enums: BTreeMap::new(),
             effect_registry: EffectRegistry::default(),
             effect_ops: BTreeMap::new(),
+            instance_homes: BTreeMap::new(),
         }
     }
 

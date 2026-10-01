@@ -1277,6 +1277,12 @@ fn compile_ast_with_options(
     let (air, fuel_plan) = fuel::insert(air);
     let runtime_module = build_runtime_module(&typed, &air, fuel_plan.recommended_budget)
         .map_err(|diagnostic| to_err(vec![*diagnostic]))?;
+    // P2B-TWORING round 2: the LAST gate before emission. `wasm::emit` numbers each ring's
+    // functions by position in its own slice, so a call that crosses the ring boundary after
+    // lowering has no encodable index — this returns a source-anchored R007 instead, and the
+    // `Call` arm's ICE in `wasm.rs` is its unreachable backstop. Runs on the final, memory- and
+    // fuel-lowered AIR (exactly what `emit` sees), so no later rewrite can reintroduce one.
+    ring_check::check_air_ring_placement(&air).map_err(to_err)?;
     let mut wasm_output = wasm::emit(&air);
     if let Some(requirement) = context.host_requirement() {
         wasm::append_host_profile_requirement(&mut wasm_output, requirement);

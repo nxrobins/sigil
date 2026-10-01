@@ -1378,6 +1378,27 @@ fn infer_user_method_expr(
                             if routes_to_persistent {
                                 tracker.state_mono_depth += 1;
                             }
+                            // BUG-5b: an impl-method body takes its function
+                            // sigs from the DEFINER (CF-D9, above), but the call
+                            // resolver still consults the CHECKED module's `use`
+                            // scope and ring (`tracker.current_use_scope`), so a
+                            // name the definer lacks resolves in the caller's
+                            // scope. Round 3: the instance is governed by the
+                            // MEET of the definer and every resolving scope, not
+                            // the definer alone. If the defining sigs were ever
+                            // missing (unreachable: every AST module registers
+                            // its sigs), the caller's sigs are used above, and the
+                            // caller's module joins the meet — fails CLOSED.
+                            // Round 2: published for the lift site too, so a
+                            // closure lifted out of this body gets the same home.
+                            let sigs_module = if defining_sigs.is_some() {
+                                method_module.as_str()
+                            } else {
+                                module_name
+                            };
+                            let home = tracker.instance_home(&method_module, sigs_module);
+                            let saved_instance_home =
+                                tracker.current_instance_home.replace(home.clone());
                             let body = check_function_block(
                                 &mono_params,
                                 &substituted_ret,
@@ -1409,6 +1430,8 @@ fn infer_user_method_expr(
                                 super::super::BodyKind::Free,
                             );
 
+                            tracker.current_instance_home = saved_instance_home;
+
                             if routes_to_persistent {
                                 tracker.state_mono_depth -= 1;
                             }
@@ -1416,6 +1439,10 @@ fn infer_user_method_expr(
                             // N13-PRD: tracker.functions append-only.
                             // N11-PRD: export_name = mangled_callee so
                             // wasm emission resolves the call.
+                            // BUG-5b: the effect and ring walks key the
+                            // instance on its governing home (the meet above),
+                            // not on `modules[0]` where it is filed.
+                            tracker.instance_homes.insert(mangled_callee.clone(), home);
                             tracker.functions.push(TypedFunction {
                                 ret_flow: false,
                                 name: mangled_callee.clone(),
@@ -1799,7 +1826,7 @@ fn infer_associated_fn_call(
     tracker: &mut MonomorphTracker,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TypedExpr {
-    let (function_sigs, actor_sigs, _module_name, universe) = context.parts();
+    let (function_sigs, actor_sigs, caller_module, universe) = context.parts();
     // The reroute already resolved `sig` — locally, or via the global sibling
     // scan (PR C2) — and confirmed it is a no-`self` associated function.
 
@@ -2015,6 +2042,16 @@ fn infer_associated_fn_call(
                         &method_module,
                         universe,
                     );
+                    // BUG-5b: governed by the MEET of the definer and every
+                    // resolving scope, published for the lift site (see the
+                    // instance-method site above; same unreachable-fallback rule).
+                    let sigs_module = if defining_sigs.is_some() {
+                        method_module.as_str()
+                    } else {
+                        caller_module
+                    };
+                    let home = tracker.instance_home(&method_module, sigs_module);
+                    let saved_instance_home = tracker.current_instance_home.replace(home.clone());
                     let body = check_function_block(
                         &mono_params,
                         &substituted_ret,
@@ -2045,9 +2082,13 @@ fn infer_associated_fn_call(
                         &std::collections::HashSet::new(),
                         super::super::BodyKind::Free,
                     );
+                    tracker.current_instance_home = saved_instance_home;
                     if inherits_state_backing {
                         tracker.state_mono_depth -= 1;
                     }
+                    // BUG-5b: checked under its governing home (see the
+                    // instance-method site above).
+                    tracker.instance_homes.insert(mangled_callee.clone(), home);
                     tracker.functions.push(TypedFunction {
                         ret_flow: false,
                         name: mangled_callee.clone(),

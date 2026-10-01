@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::TaintLabel;
 use crate::registries::{AuthorityRegistry, EffectRegistry, EffectSet};
-use crate::typed_ast::TypedFunction;
+use crate::typed_ast::{InstanceHome, TypedFunction};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -441,8 +441,12 @@ pub(super) struct TypeUniverse {
     /// construction time (N9-S6 — the i-th binding maps to the i-th
     /// declared field).
     pub(super) enum_variant_field_names: HashMap<(String, String), Vec<Option<String>>>,
-    /// Generic function definitions: fn_name → AST FnDef (for monomorphization)
-    pub(super) generic_fns: HashMap<String, crate::ast::FnDef>,
+    /// Generic function definitions: fn_name → (defining module name, AST FnDef)
+    /// for monomorphization. The module is recorded because an instance's
+    /// NAME is prefixed with the CALLING module (`calls.rs`), so the definer —
+    /// one of the modules whose MEET the instance is effect/ring-checked under —
+    /// is not recoverable from the name (BUG-5b; see `instance_homes`).
+    pub(super) generic_fns: HashMap<String, (String, crate::ast::FnDef)>,
     /// PR D: generic impl-method ASTs + impl-block type-params + owning
     /// module name, keyed by MODULE-QUALIFIED method name (per N8-PRD:
     /// `"{module}::{TypeName}::{method_name}"`). Populated for every
@@ -504,6 +508,28 @@ pub(super) struct RangeLoopFact {
 
 pub(crate) struct MonomorphTracker {
     pub(super) functions: Vec<TypedFunction>,
+    /// BUG-5b: monomorphized instance name → the modules that GOVERN its
+    /// security walks (`InstanceHome`: the generic's definer plus every module
+    /// whose scope resolved names in the re-checked body). Carried onto
+    /// `TypedProgram::instance_homes`, where `check_effects` (inner-ring
+    /// exemption, E002 trust) and `check_rings` (R001-R003) take the MEET over
+    /// them — never `modules[0]`'s ring and trust (where instances stay FILED),
+    /// and, since round 3, never the definer's alone. Recorded at every
+    /// `functions.push` of an instance, and — round 2 — at every lambda-lift
+    /// performed while an instance body is being re-checked
+    /// (`current_instance_home`): such a closure is named after the CALLING
+    /// module, and its body resolves names exactly as the enclosing instance's
+    /// does. A closure lifted outside any instance has no entry: its prefix
+    /// module IS its source module and the scope its names resolved in.
+    pub(super) instance_homes: HashMap<String, InstanceHome>,
+    /// BUG-5b round 2: the governing modules of the instance body being
+    /// re-checked right now, or `None` outside any instance body. Set (and
+    /// restored) around every monomorphized re-check in `calls.rs` /
+    /// `methods.rs`, and read at the lambda-lift site so a closure lifted inside
+    /// an instance records the SAME home as the instance. `None` means "the
+    /// enclosing body is where it was written and resolves in its own module",
+    /// which is exactly the pre-existing prefix rule.
+    pub(super) current_instance_home: Option<InstanceHome>,
     pub(super) records: HashMap<String, Vec<(String, Type)>>,
     pub(super) enums: HashMap<String, Vec<(String, Vec<Type>)>>,
     pub(super) cache: HashSet<String>,
@@ -547,6 +573,12 @@ pub(crate) struct MonomorphTracker {
     pub(super) current_use_scope: crate::name_resolution::UseScope,
     /// Ring of the currently checking module.
     pub(super) current_module_ring: crate::ast::Ring,
+    /// BUG-5b round 3: NAME of the currently checking module — the owner of
+    /// `current_use_scope` and `current_module_ring`, which the call resolver
+    /// consults inside every monomorphized re-check, including an impl-method
+    /// body whose function sigs come from its definer. Recorded as a resolving
+    /// scope in every `InstanceHome`, so the meet covers it.
+    pub(super) current_scope_module: String,
     /// Wall 4 Step 6: stack of per-match-arm refinement attachments.
     /// Each entry maps a pattern-bound identifier name to the variant
     /// refinement clauses applicable to that binding (filtered per
@@ -732,9 +764,27 @@ impl RegionId {
 }
 
 impl MonomorphTracker {
+    /// BUG-5b round 3: the governing home of an instance of a generic written in
+    /// `definer` whose body is re-checked with `sigs_module`'s function sigs.
+    /// The checked module (`current_scope_module`) is always added: its `use`
+    /// scope and ring feed the call resolver in every re-check, so a name the
+    /// definer lacks can resolve through it. Over-approximating the resolving
+    /// scopes fails CLOSED (the meet can only lose privileges); omitting one is
+    /// the fail-open this records.
+    pub(super) fn instance_home(&self, definer: &str, sigs_module: &str) -> InstanceHome {
+        InstanceHome {
+            definer: definer.to_owned(),
+            scopes: [sigs_module.to_owned(), self.current_scope_module.clone()]
+                .into_iter()
+                .collect(),
+        }
+    }
+
     pub(super) fn new() -> Self {
         Self {
             functions: Vec::new(),
+            instance_homes: HashMap::new(),
+            current_instance_home: None,
             records: HashMap::new(),
             enums: HashMap::new(),
             cache: HashSet::new(),
@@ -747,6 +797,7 @@ impl MonomorphTracker {
             module_rings: std::collections::BTreeMap::new(),
             current_use_scope: crate::name_resolution::UseScope::default(),
             current_module_ring: crate::ast::Ring::Inner,
+            current_scope_module: String::new(),
             pattern_refinement_stack: Vec::new(),
             range_loop_facts: Vec::new(),
             current_expected_type: None,

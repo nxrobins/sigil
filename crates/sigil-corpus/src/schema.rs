@@ -9,8 +9,43 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_VERSION: &str = "1";
 
 // ── §9 Constraints & Fallbacks: the dumb physical bounds ──────────────────────
-/// Per-record compile budget; a slower compile drops the record (ET-C1).
-pub const VALIDATE_BUDGET_MS: u64 = 5_000;
+/// The EXTRACTOR's per-compile drop bound (ET-C1): a compile that has not
+/// answered within this many milliseconds drops its record(s), counted as
+/// `VALIDATE_TIMEOUT` (ET-C6) — never emitted unvalidated. Its job is to bound a
+/// HUNG compile, which is minutes, not to detect a slow one; the slow-compile
+/// detector is `SELFHOST_TRIO_CANARY_MS`, measured in isolation.
+///
+/// Why thirty seconds and not the canary's five: the three selfhost files share
+/// ONE memoized compile (`selfhost-trio`, the slowest unit by an order of
+/// magnitude — 2.4 s alone and 3.0 s under three concurrent full builds on a
+/// developer machine, 2026-09-30, where the next-slowest unit is 315 ms), so a
+/// single timeout drops EVERY selfhost idiom and the corpus stops being
+/// deterministic (ET-C5: 3962 vs 4140 records on PR #765, where the same trio
+/// passed the five-second bound twice in the isolated `checks` step and failed
+/// it only inside the parallel workspace `test` lane). Load contention, not a
+/// scaling regression — and a drop bound that flips on contention is a
+/// nondeterminism generator. Six times the failed bound leaves the hung-compile
+/// case (minutes) still caught; every drop stays counted.
+///
+/// Note the bound is on the WAIT: the abandoned worker thread is not cancelled
+/// and runs to completion in the background (`validate::compile_within_budget`).
+pub const VALIDATE_BUDGET_MS: u64 = 30_000;
+/// The linked Lean verifier's SCALING-CANARY bound: the selfhost trio must
+/// compile within this many milliseconds when measured IN ISOLATION. This fixed
+/// five-second bound caught two accidental O(n²) verifier scans, so it stays
+/// tight and deliberately separate from `VALIDATE_BUDGET_MS`: widening the
+/// extractor's drop bound cannot disguise a verifier regression, and the canary
+/// cannot be loosened by the lane it happens to run in. Asserted by
+/// `validate::tests::selfhost_trio_completes_within_validation_budget` only when
+/// `SCALING_CANARY_ENV` is `1` — the `Formal verifier scaling canary` step in
+/// `ci.yml` sets it and runs that test alone; the parallel workspace lane, which
+/// does not set it, still asserts the extractor bound.
+pub const SELFHOST_TRIO_CANARY_MS: u64 = 5_000;
+/// Arms the tight `SELFHOST_TRIO_CANARY_MS` assertion when set to exactly `1`.
+/// Absent = the extractor bound only (a contended lane must not fail on timing
+/// it cannot control); any OTHER value panics (fail closed — a typo in the CI
+/// `env:` block must not silently disarm the canary).
+pub const SCALING_CANARY_ENV: &str = "SIGIL_CORPUS_SCALING_CANARY";
 /// Stack reserved for the compiler worker that enforces the validation budget.
 pub const VALIDATE_STACK_BYTES: usize = 32 * 1024 * 1024;
 /// Max bytes of any `intent`/`reasoning` field (ET-C3).

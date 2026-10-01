@@ -1,0 +1,33 @@
+// An `init` that stores a `.restrict`ed capability into a cap-typed actor-state
+// field. Every later read of that field — by the slot escape gate, the Z3
+// prover and the Lean verifier — counts as full authority, so the narrowed cap
+// would reach the full-authority `use_full` sink through `fuel.draw`. The
+// state-cap origin gate rejects the store itself (C014); the sound shape
+// stores the bare parameter and restricts the value read from the field at
+// the point of use.
+// expect-error: C014
+module fixture;
+
+cap type Fuel { burn, query }
+
+fn use_full(f: Fuel) -> i64 { return 1; }
+
+actor Vault {
+    state { fuel: Fuel }
+    init(f: Fuel) { fuel = f.restrict(burn); }
+    on Use() -> i64 {
+        let d = fuel.draw(10);
+        return use_full(d);
+    }
+}
+
+entry actor Main {
+    state { fuel: Fuel }
+
+    on Start() -> i64 {
+        let vf = fuel.draw(100);
+        let v = spawn::<Vault>(vf);
+        v.send(Use());
+        return 1;
+    }
+}

@@ -1,0 +1,22 @@
+// Heap floor S11 (BUG-2): shared STATIC data read by a named callee after the caller's store.
+// Every distinct string literal is interned ONCE from the static base; a use allocates only
+// a header pointing at the shared bytes, which are ordinary writable linear memory. The
+// caller raw-stores its secret at the literal's own address (`as_output() >> 32` is the data
+// pointer) and a callee materializing the SAME literal read it back as @Public (`sigil forge`
+// printed 2a / 07 before the floor). A literal is a typed read of shared memory and a callee
+// with any typed read joins the caller's typed-read floor, so returning the callee's result
+// from a function declared @Public is T001. The @Public return is the fixture's ONLY sink
+// (precision lane: exactly one error).
+// Shape pinned by `named_callee_reading_a_string_literal_after_a_secret_store_into_it_is_t001`.
+// expect-error: T001
+#[ring(outer)] module ext;
+fn peek() -> i64 @Public ! { Alloc } {
+    let l: str = "AAAAAAAA";
+    return l.byte_at(3);
+}
+fn probe(s: i64 @Secret) -> i64 @Public ! { Alloc } {
+    let l: str = "AAAAAAAA";
+    let addr: i64 = l.as_output() >> 32;
+    store8(addr + 3, s);
+    return peek();
+}

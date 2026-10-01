@@ -7,10 +7,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
-use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
+// `fs` and `Read` serve only the descriptor-anchored Unix paths below; the
+// `not(unix)` side refuses before touching a file, so it never names them.
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::io::Read as _;
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
 
@@ -1710,13 +1714,19 @@ impl PackageDirectory {
         }
 
         #[cfg(not(unix))]
-        Err(PackageError::new(
-            "E_UNSUPPORTED_PLATFORM",
-            format!(
-                "secure package traversal is unavailable on this platform for `{}`",
-                self.path.join(relative).display()
-            ),
-        ))
+        {
+            // Fails closed: the missing-directory code is only ever attached to
+            // an `openat` ENOENT on Unix; here nothing is opened, so the
+            // platform refusal below is the sole outcome.
+            let _ = missing_code;
+            Err(PackageError::new(
+                "E_UNSUPPORTED_PLATFORM",
+                format!(
+                    "secure package traversal is unavailable on this platform for `{}`",
+                    self.path.join(relative).display()
+                ),
+            ))
+        }
     }
 
     fn read_regular_file(
@@ -1799,13 +1809,19 @@ impl PackageDirectory {
         }
 
         #[cfg(not(unix))]
-        Err(PackageError::new(
-            "E_UNSUPPORTED_PLATFORM",
-            format!(
-                "secure package traversal is unavailable on this platform for `{}`",
-                path.display()
-            ),
-        ))
+        {
+            // Fails closed: the byte cap and the caller's error code only apply
+            // once bytes are read on Unix; here nothing is read, so the
+            // platform refusal below is the sole outcome.
+            let _ = (cap, code);
+            Err(PackageError::new(
+                "E_UNSUPPORTED_PLATFORM",
+                format!(
+                    "secure package traversal is unavailable on this platform for `{}`",
+                    path.display()
+                ),
+            ))
+        }
     }
 }
 
@@ -3009,6 +3025,7 @@ const COMPILER_ID_INPUTS: &[(&str, &[u8])] = &[
     ("src/parser/limits.rs", include_bytes!("parser/limits.rs")),
     ("src/registries.rs", include_bytes!("registries.rs")),
     ("src/ring_check.rs", include_bytes!("ring_check.rs")),
+    ("src/slot_escape.rs", include_bytes!("slot_escape.rs")),
     ("src/source.rs", include_bytes!("source.rs")),
     ("src/span.rs", include_bytes!("span.rs")),
     ("src/taint_check.rs", include_bytes!("taint_check.rs")),

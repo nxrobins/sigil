@@ -3,8 +3,12 @@
 **67 attack programs. 15/15 tournament vectors defended. 0 gaps.**
 
 Phase 2H (Constant-Time, `@SecretCT`) ships 13 net-new attacks:
-CT001–CT007 + CT010–CT017 (CT008/CT009 spec-reserved, no current
-language surface for variable shifts or short-circuit boolean operators).
+CT001–CT007 + CT010–CT017. CT008 is enforced by `T034` since 2026-09-30 (a
+`@SecretCT` shift AMOUNT is rejected; the shifted value is exempt — it
+compiled clean until then). CT009 is spec-reserved but enforced: `&&`/`||`
+exist and a `@SecretCT` left operand is rejected under CT001's rule, `T020`
+(measured 2026-09-30 on `ae026aec` and this branch: exactly `{T020}` for
+both operators) — see the Phase 2H rows.
 Spec name ↔ diagnostic code mapping in `docs/specs/secret-ct.md`.
 
 135 tests total across workspace (54 prior attacks + 81 positive/
@@ -143,7 +147,7 @@ Phase 2H test files.
 See `docs/specs/secret-ct.md` for the full discipline. Algorithmic
 timing only; microarchitectural channels (Spectre, cache, SMT, EM/
 power) are explicit anti-goal per spec §9.1. Spec names CT001–CT017
-map to diagnostic codes T020–T032 (with O001 for CT011 cap-reuse).
+map to diagnostic codes T020–T034 (with O001 for CT011 cap-reuse).
 
 | #  | Attack | Defense | Error | Type |
 |----|--------|---------|-------|------|
@@ -154,12 +158,12 @@ map to diagnostic codes T020–T032 (with O001 for CT011 cap-reuse).
 | CT005 | array index by `@SecretCT` | Taint checker (CT pass) | T024 | reject |
 | CT006 | `load8` / `store8` at `@SecretCT` address | Taint checker (CT pass) | T025 | reject |
 | CT007 | `div` with `@SecretCT` operand | Taint checker (CT pass) | T026 | reject |
-| CT008 | variable shift by `@SecretCT` | Spec-reserved (no `Shl`/`Shr` BinaryOp in language) | — | reserved |
-| CT009 | short-circuit `&&` / `\|\|` on `@SecretCT` | Spec-reserved (no short-circuit operator in language) | — | reserved |
+| CT008 | variable shift by a `@SecretCT` AMOUNT | Taint checker (CT pass): the right operand of `<<`/`>>`, on its label; the shifted VALUE is exempt (`ct008_shl_by_secret_ct_amount_rejected`, `ct008_secret_ct_value_shifted_by_public_amount_accepted`). Enforced 2026-09-30; compiled clean before (closed entry in `tests/attack/KNOWN_GAPS.md` §CT008) | T034 | reject |
+| CT009 | short-circuit `&&` / `\|\|` on `@SecretCT` | Enforced by CT001's rule, no code of its own: `&&`/`\|\|` DO exist and a `@SecretCT` left operand is a secret-dependent branch (`ct009_short_circuit_with_secret_ct_left_operand_rejected`; measured exactly `{T020}` for both operators on `ae026aec`) | T020 | reject (via CT001) |
 | CT010 | `@SecretCT` passed to extern fn | Taint checker (CT pass) | T027 | reject |
 | CT011 | `declassify_ct` cap reuse | Ownership (linear cap) | O001 | reject |
 | CT012 | `@SecretCT` smuggled via closure capture | Closure CT propagation (§3.7) → CT001–CT017 | T020–T031 | reject |
-| CT013 | `@SecretCT` smuggled via generic monomorphization | Monomorphization preserves taint → CT001–CT017 | T020–T031 | reject |
+| CT013 | `@SecretCT` smuggled via generic monomorphization | Call-boundary flow check: a monomorphized instance declares every param `@Public`, so the labelled argument is rejected before the body (`ct013_generic_branch_on_secret_ct_argument_rejected_at_call_boundary`) | T001 | reject |
 | CT014 | `@SecretCT` payload to `send` / `ask` | Taint checker (CT pass) | T028 | reject |
 | CT015 | `alloc(n)` / `region(n)` with `@SecretCT` size | Taint checker (CT pass) | T029 | reject |
 | CT016 | `@Internal` / `@Secret` → `@SecretCT` upcast | Taint checker (source-of-CT, E1) | T030 | reject |

@@ -1,0 +1,56 @@
+{
+  "during_run": {
+    "compiler_procs_seen": [],
+    "max_pct": 11.2,
+    "mean_pct": 7.43,
+    "n_samples": 11,
+    "samples_over_15_pct": 0,
+    "wall_s": 11.0
+  },
+  "harness": {
+    "argv_after_out": [],
+    "exit_code": 0,
+    "path": "P2-BENCH-RERUN-fuel_overhead.exe",
+    "sha256": "91cb65480b03731fbb00909c46d01cc23f3c98ee98d27a85ee311bf87e036e2c"
+  },
+  "host": {
+    "cpu_freq_mhz_after_run": {
+      "current": 3203.0,
+      "max": 3504.0
+    },
+    "cpu_freq_mhz_before_idle_check": {
+      "current": 3203.0,
+      "max": 3504.0
+    },
+    "logical_cpus": 16,
+    "physical_cores": 8,
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "Intel64 Family 6 Model 167 Stepping 1, GenuineIntel",
+    "psutil": "7.2.2",
+    "python": "3.14.3"
+  },
+  "idle_window_accepted": {
+    "attempts": 1,
+    "max_pct": 7.8,
+    "mean_pct": 1.67,
+    "seconds": 60
+  },
+  "pinned_cpu": 15,
+  "priority": "HIGH_PRIORITY_CLASS",
+  "runner": "bench/fuel-overhead/quiet_run.py",
+  "started_utc": "2026-09-30T14:14:13+00:00",
+  "thresholds": {
+    "disqualifying_processes": [
+      "cargo",
+      "clippy-driver",
+      "lake",
+      "lean",
+      "rustc",
+      "rustdoc"
+    ],
+    "idle_max_pct_below": 15.0,
+    "idle_mean_pct_below": 5.0,
+    "idle_seconds": 60,
+    "max_wait_s": 1200
+  }
+}
