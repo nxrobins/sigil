@@ -151,6 +151,76 @@ fn workflow_plain_scalars_have_no_colon_space() {
     );
 }
 
+/// The lines of the workflow step that contains line `index`: from that step's
+/// `- name:` line up to (not including) the next step's `- name:` or the next
+/// top-level job. A pin that only asks "is this line somewhere in the file"
+/// would be satisfied by an `env:` line sitting in a NEIGHBOURING step, where
+/// it arms nothing, so the canary pin scopes both of its lines to one step.
+fn step_block<'a>(lines: &[&'a str], index: usize) -> Vec<&'a str> {
+    let is_step_start = |line: &str| line.trim_start().starts_with("- name:");
+    let start = (0..=index)
+        .rev()
+        .find(|&i| is_step_start(lines[i]))
+        .unwrap_or_else(|| {
+            panic!(
+                "line {} of the workflow is not inside a `- name:` step",
+                index + 1
+            )
+        });
+    let end = (index + 1..lines.len())
+        .find(|&i| is_step_start(lines[i]) || top_level_job_name(lines[i]).is_some())
+        .unwrap_or(lines.len());
+    lines[start..end].to_vec()
+}
+
+/// SC-P4 anti-stub for `step_block`: the arming line planted in the NEXT step
+/// must not count for the canary step, and the one in the canary step must.
+#[test]
+fn step_block_scopes_to_one_step() {
+    let sample = [
+        "  checks:",
+        "    steps:",
+        "      - name: Formal verifier scaling canary",
+        "        env:",
+        "          ARMED_HERE: \"1\"",
+        "        run: cargo test canary",
+        "      - name: The next step",
+        "        env:",
+        "          PLANTED_ELSEWHERE: \"1\"",
+        "        run: cargo test other",
+        "  next-job:",
+    ];
+    let run_at = sample
+        .iter()
+        .position(|line| line.trim() == "run: cargo test canary")
+        .expect("the sample carries the canary run line");
+    let block = step_block(&sample, run_at);
+    assert_eq!(
+        block.first().copied(),
+        Some(sample[2]),
+        "block starts at its own `- name:`"
+    );
+    assert!(
+        block.iter().any(|line| line.trim() == "ARMED_HERE: \"1\""),
+        "the step's own env line is inside its block"
+    );
+    assert!(
+        !block
+            .iter()
+            .any(|line| line.trim() == "PLANTED_ELSEWHERE: \"1\""),
+        "an env line planted in the NEXT step must be outside the block"
+    );
+    let other_at = sample
+        .iter()
+        .position(|line| line.trim() == "run: cargo test other")
+        .expect("the sample carries the other run line");
+    assert_eq!(
+        step_block(&sample, other_at).last().copied(),
+        Some(sample[9]),
+        "the last step's block ends before the next top-level job"
+    );
+}
+
 #[test]
 fn ci_keeps_formal_verifier_scaling_canary() {
     let workflow = repo_root().join(".github/workflows/ci.yml");
@@ -159,10 +229,29 @@ fn ci_keeps_formal_verifier_scaling_canary() {
     let command = "run: cargo test -p sigil-corpus --no-default-features --lib \
                    validate::tests::selfhost_trio_completes_within_validation_budget \
                    -- --exact --nocapture";
+    // The arming line. The step's `env:` sets `sigil_corpus::schema::SCALING_CANARY_ENV`
+    // to exactly `1`, which turns on the five-second `SELFHOST_TRIO_CANARY_MS` assertion
+    // inside that test. Without it the step still runs the test, but the test then asserts
+    // only the corpus extractor's wider drop bound — a verifier scaling regression would
+    // pass this required lane unseen. So the pin covers BOTH lines, in ONE step.
+    let arming = "SIGIL_CORPUS_SCALING_CANARY: \"1\"";
 
+    let lines: Vec<&str> = text.lines().collect();
+    let run_at = lines
+        .iter()
+        .position(|line| line.trim() == command)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} must run the linked formal-verifier scaling canary in required CI",
+                workflow.display()
+            )
+        });
+    let step = step_block(&lines, run_at);
     assert!(
-        text.lines().any(|line| line.trim() == command),
-        "{} must run the linked formal-verifier scaling canary in required CI",
+        step.iter().any(|line| line.trim() == arming),
+        "{} runs the formal-verifier scaling canary but its step lost the arming line \
+         {arming:?} — unarmed, the test asserts only the extractor's drop bound, so the \
+         required lane would stop detecting a verifier scaling regression",
         workflow.display()
     );
 }

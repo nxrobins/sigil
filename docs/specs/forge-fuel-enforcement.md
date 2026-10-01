@@ -11,7 +11,10 @@ or emitted Wasm.
 
 For a requested decrement:
 
-1. negative amounts trap;
+1. negative amounts trap (a negative *literal* amount never reaches this trap in a
+   solver-enabled build: since BUG-4 grounded literal amounts, the compile-time QF_LIA fuel
+   family rejects it with C002 — author decision 2026-10-01; a solver-off build still relies on
+   the trap);
 2. an amount greater than `fuel_remaining` sets `fuel_exhausted` and traps; and
 3. an affordable amount is subtracted exactly.
 

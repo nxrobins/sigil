@@ -1,0 +1,16 @@
+// R007: inner module first; the outer tool calls its OWN generic, whose instance is filed under the first (inner) module, so the lowered call crosses the ring boundary
+// expect-error: R007
+module first;
+fn dummy() -> i64 {
+    return 0;
+}
+#[ring(outer)]
+module tool;
+fn ident<T>(x: T) -> T {
+    return x;
+}
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 {
+    let v: i64 = 42;
+    let w: i64 = ident(v); // MUTATION_SITE
+    return v;
+}

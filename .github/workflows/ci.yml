@@ -427,9 +427,22 @@ jobs:
 
       - name: Formal verifier scaling canary
         # The production v9 envelope retains the complete v8 prefix and adds occurrence records
-        # across the self-host trio. This fixed five-second corpus budget caught two accidental O(n²)
-        # verifier scans. Keep the real linked-verifier path here, in a required
-        # lane, so widening a timeout cannot disguise a scaling regression.
+        # across the self-host trio. This fixed five-second bound (SELFHOST_TRIO_CANARY_MS in
+        # crates/sigil-corpus/src/schema.rs) caught two accidental O(n²) verifier scans. Keep the
+        # real linked-verifier path here, in a required lane, so widening a timeout cannot
+        # disguise a scaling regression.
+        #
+        # The env line ARMS the five-second assertion. This step runs the test ALONE, so its
+        # wall clock measures the verifier and nothing else. The parallel workspace `test` lane
+        # runs the same test unarmed and asserts only the corpus extractor's wider drop bound
+        # (VALIDATE_BUDGET_MS): on PR #765 the trio passed here twice and failed only there,
+        # under that lane's load — contention, not a regression, and a tight bound asserted
+        # where it is not measured is a flake. Any value other than "1" makes the test panic
+        # (fail closed) rather than silently disarming it. Both this step's env line and its
+        # run line are pinned verbatim by
+        # crates/sigil-runtime/tests/workflow_yaml_lint.rs::ci_keeps_formal_verifier_scaling_canary.
+        env:
+          SIGIL_CORPUS_SCALING_CANARY: "1"
         run: cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget -- --exact --nocapture
 
       - name: CSIR v9 dual-gate rollout and retained constructor inventory
@@ -875,6 +888,17 @@ jobs:
         run: >-
           python -m pytest bench/tests/
           -W error::pytest.PytestCollectionWarning -v
+
+      # PERFORMANCE.md's fuel-overhead section against the committed evidence.
+      # Pure stdlib Python over bench/fuel-overhead/*/{samples.tsv,
+      # host_state.json,summary.md}: fails closed when any pinned table or
+      # scalar does not appear in the document exactly its expected number
+      # of times, and the self-test proves the check fires on planted changes
+      # (SC-P4) before the pins are trusted.
+      - name: Check PERFORMANCE.md fuel-overhead numbers against the evidence
+        run: |
+          python bench/fuel-overhead/check_doc.py --self-test
+          python bench/fuel-overhead/check_doc.py
 
   solver:
     # Required solver-feature lane. It installs the pinned Z3 release and runs

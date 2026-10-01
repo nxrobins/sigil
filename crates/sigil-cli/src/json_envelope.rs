@@ -189,6 +189,22 @@ pub fn emit_generic_error_with_data(
     Envelope::error_with_data(command, vec![diag], data).emit();
 }
 
+/// Like [`emit_generic_error_with_data`] but with one diagnostic per
+/// `(code, message)` pair, in the given order. Used when a single verdict
+/// carries a headline code plus typed sub-failures (verify-cert: R809 plus
+/// the module-binding ladder), so a pipeline can assert the exact code set.
+pub fn emit_generic_errors_with_data(
+    command: &'static str,
+    diagnostics: Vec<(DiagnosticCode, String)>,
+    data: serde_json::Value,
+) {
+    let diagnostics = diagnostics
+        .into_iter()
+        .map(|(code, message)| build_generic_diagnostic(code, message))
+        .collect();
+    Envelope::error_with_data(command, diagnostics, data).emit();
+}
+
 fn build_generic_diagnostic(code: DiagnosticCode, message: String) -> DiagnosticJson {
     let diag = Diagnostic::error(code, message, None);
     DiagnosticJson {

@@ -25,6 +25,11 @@ const FUEL: u64 = 300_000_000;
 
 /// The in-core taint-code surface (13 — T028 demoted, ET-T15). Both sides filter to
 /// this set so the composed typecheck's T-codes can never pollute the comparison (ET-T5).
+/// Two oracle codes are deliberately OUTSIDE it and so oracle-only: T033 (CT018, `str`
+/// content compare) and T034 (CT008, `@SecretCT` shift amount). The shadow has neither
+/// rule; filtering them here means the shadow LAGS the oracle on those two rather than
+/// disagreeing with it, and adding either to this set without a shadow rule turns the
+/// differential red (fails closed).
 const CORE_T_CODES: &[&str] = &[
     "T001", "T020", "T021", "T022", "T023", "T024", "T025", "T026", "T027", "T029", "T030", "T031",
     "T032",

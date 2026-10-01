@@ -383,7 +383,7 @@ end LambdaSigil.Combined.V9.CommentProbe
 
 #[test]
 fn lean_axiom_gate_covers_every_declared_theorem() {
-    const PIN_AXIOM_TARGETS: usize = 1304;
+    const PIN_AXIOM_TARGETS: usize = 1308;
     let targets = manifest_identifiers(LEAN_AXIOM_TARGETS, "Lean axiom-target manifest");
     assert_eq!(
         targets.len(),
@@ -408,7 +408,7 @@ fn lean_axiom_gate_covers_every_declared_theorem() {
     for contract in [
         "readonly AXIOM_TARGETS=\"axiom-targets.txt\"",
         "readonly AXIOM_ALLOWLIST=\"axiom-allowlist.txt\"",
-        "readonly PIN_AXIOM_TARGETS=1304",
+        "readonly PIN_AXIOM_TARGETS=1308",
         "readonly PIN_ALLOWED_AXIOMS=3",
         "readonly PIN_NATIVE_DECIDE=0",
         // The environment-derived census is this scraper's own backstop: it catches any
@@ -435,13 +435,13 @@ fn diagnostic_security_surface_is_censused() {
         .iter()
         .map(|entry| entry.code.as_str().to_string())
         .collect();
-    assert_eq!(registered.len(), 321, "registered diagnostic pin moved");
+    assert_eq!(registered.len(), 326, "registered diagnostic pin moved");
     let security: BTreeSet<String> = registered
         .iter()
         .filter(|code| matches!(code.as_bytes()[0], b'C' | b'E' | b'O' | b'R' | b'T'))
         .cloned()
         .collect();
-    assert_eq!(security.len(), 247, "security diagnostic pin moved");
+    assert_eq!(security.len(), 252, "security diagnostic pin moved");
 
     let exceptions: BTreeSet<String> = DIAGNOSTIC_EXCEPTIONS
         .lines()
@@ -500,7 +500,7 @@ fn diagnostic_security_surface_is_censused() {
         unwired, exceptions,
         "every unwired security code must be an explicit compatibility alias"
     );
-    assert_eq!(wired.len(), 245, "production-wired security-code pin moved");
+    assert_eq!(wired.len(), 250, "production-wired security-code pin moved");
 
     let mut test_refs = BTreeSet::new();
     for file in source_files_under(&root.join("crates"), &["rs", "sigil"]) {
@@ -519,7 +519,7 @@ fn diagnostic_security_surface_is_censused() {
                 .filter(|code| security.contains(code)),
         );
     }
-    assert_eq!(test_refs.len(), 186, "direct test-reference pin moved");
+    assert_eq!(test_refs.len(), 193, "direct test-reference pin moved");
     let gaps: BTreeSet<String> =
         manifest_identifiers(DIAGNOSTIC_TEST_GAPS, "diagnostic direct-test gap manifest")
             .into_iter()
@@ -528,7 +528,7 @@ fn diagnostic_security_surface_is_censused() {
     // `NAME: usize = …` constants, and a bare literal here is invisible to it. Claim 29 stated
     // this count as prose and drifted (it read 65 against an asserted 64) precisely because no
     // named constant existed to check it.
-    const PIN_DIAGNOSTIC_TEST_GAPS: usize = 61;
+    const PIN_DIAGNOSTIC_TEST_GAPS: usize = 59;
     assert_eq!(
         gaps.len(),
         PIN_DIAGNOSTIC_TEST_GAPS,
@@ -554,7 +554,7 @@ fn diagnostic_security_surface_is_censused() {
         })
         .filter(|stem| registered.contains(stem))
         .count();
-    assert_eq!(fixtures, 51, "dedicated diagnostic-fixture pin moved");
+    assert_eq!(fixtures, 54, "dedicated diagnostic-fixture pin moved");
 
     let mut selfhost = BTreeSet::new();
     for file in source_files_under(&root.join("selfhost"), &["sigil"]) {
@@ -572,13 +572,13 @@ fn diagnostic_security_surface_is_censused() {
     // reconciled a pre-existing drift where the doc lagged the asserts by the
     // P031 registration and the T069 test-reference/gap movement).
     for pin in [
-        "PIN_REGISTERED_CODES = 321",
-        "PIN_SECURITY_CODES = 247",
-        "PIN_PRODUCTION_WIRED_SECURITY_CODES = 245",
-        "PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 186",
-        "PIN_DEDICATED_SOURCE_FIXTURES = 51",
+        "PIN_REGISTERED_CODES = 326",
+        "PIN_SECURITY_CODES = 252",
+        "PIN_PRODUCTION_WIRED_SECURITY_CODES = 250",
+        "PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 193",
+        "PIN_DEDICATED_SOURCE_FIXTURES = 54",
         "PIN_SELFHOST_SHADOW_CODES = 28",
-        "PIN_DIRECT_TEST_GAPS = 61",
+        "PIN_DIRECT_TEST_GAPS = 59",
         "PIN_NONEMITTING_COMPATIBILITY_ALIASES = 2",
     ] {
         assert!(DIAGNOSTIC_CENSUS.contains(pin), "census lost pin {pin}");

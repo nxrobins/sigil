@@ -23,7 +23,10 @@ enum Outcome {
 
 /// Run the full compiler within `VALIDATE_BUDGET_MS`. Returns `None` on timeout
 /// — the worker thread is abandoned (the process exits soon after a build), so
-/// a pathological input can never hang the whole run (ET-C1).
+/// a pathological input can never hang the whole run (ET-C1). The bound is on
+/// the WAIT, not the work: the abandoned worker is not cancelled and keeps
+/// competing for CPU until it finishes or the process exits, which is one more
+/// reason the drop bound is sized for a hung compile rather than a slow one.
 fn compile_within_budget(name: String, src: String) -> Option<Outcome> {
     let (tx, rx) = mpsc::channel();
     thread::Builder::new()
@@ -254,7 +257,10 @@ fn is_hex_literal_digits(bytes: &[u8], run_start: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
+    use crate::schema::{SCALING_CANARY_ENV, SELFHOST_TRIO_CANARY_MS};
 
     #[test]
     fn well_formed_codes() {
@@ -339,8 +345,66 @@ mod tests {
         );
     }
 
+    /// `SCALING_CANARY_ENV` parsed fail-closed: absent → not armed (the
+    /// extractor bound alone), exactly `1` → armed, anything else → `Err` (the
+    /// caller panics). A typo in the CI `env:` block therefore fails the step
+    /// loudly instead of silently running the canary with its tight bound off.
+    fn scaling_canary_armed_from(value: Option<&str>) -> Result<bool, String> {
+        match value {
+            None => Ok(false),
+            Some("1") => Ok(true),
+            Some(other) => Err(format!(
+                "{SCALING_CANARY_ENV}={other:?} is neither absent nor exactly \"1\" — \
+                 refusing to guess whether the formal verifier scaling canary is armed"
+            )),
+        }
+    }
+
+    /// SC-P4 (no assertion of absence without an anti-stub) for the arming
+    /// detector: it must tell armed, unarmed and malformed apart, or the canary's
+    /// five-second bound could be skipped without anyone noticing.
+    #[test]
+    fn scaling_canary_arming_is_fail_closed() {
+        assert_eq!(scaling_canary_armed_from(None), Ok(false));
+        assert_eq!(scaling_canary_armed_from(Some("1")), Ok(true));
+        for malformed in ["", "0", "true", "yes", " 1", "1 "] {
+            assert!(
+                scaling_canary_armed_from(Some(malformed)).is_err(),
+                "{malformed:?} must be refused, not read as armed or unarmed"
+            );
+        }
+    }
+
+    /// WHY THIS TEST EXISTS. The selfhost trio is the corpus's largest validation
+    /// unit AND the linked Lean verifier's scaling canary: a fixed five-second
+    /// bound on it caught two accidental O(n²) verifier scans. It asserts TWO
+    /// bounds with different owners:
+    ///
+    /// * always — the trio validates within the EXTRACTOR's drop bound
+    ///   (`VALIDATE_BUDGET_MS`), because a timeout there drops every selfhost
+    ///   idiom from the corpus (they share one memoized unit) and breaks ET-C5;
+    /// * only when `SCALING_CANARY_ENV` is `1` — the wall-clock compile stays
+    ///   within `SELFHOST_TRIO_CANARY_MS`. The `Formal verifier scaling canary`
+    ///   step in `ci.yml` arms it and runs this test ALONE, so the clock measures
+    ///   the verifier and nothing else. The parallel workspace `test` lane runs
+    ///   the same test unarmed: on PR #765 the trio passed the five-second bound
+    ///   twice in the isolated step and failed it only under that lane's load —
+    ///   contention, not a regression — and a tight bound asserted where it is
+    ///   not measured is a flake, not evidence.
+    ///
+    /// Unarmed is not "asserts nothing": the extractor bound still holds, and a
+    /// malformed arming value panics rather than disarming (fail closed).
     #[test]
     fn selfhost_trio_completes_within_validation_budget() {
+        let armed = match std::env::var(SCALING_CANARY_ENV) {
+            Ok(value) => scaling_canary_armed_from(Some(&value)),
+            Err(std::env::VarError::NotPresent) => scaling_canary_armed_from(None),
+            Err(err) => Err(format!(
+                "{SCALING_CANARY_ENV} is unreadable ({err}) — refusing to guess"
+            )),
+        }
+        .unwrap_or_else(|why| panic!("{why}"));
+
         let lexer =
             include_str!("../../../selfhost/lexer.sigil").replace("\nmodule lexer;\n", "\n");
         let parser =
@@ -349,10 +413,32 @@ mod tests {
             .replace("\nmodule typecheck;\n", "\n");
         let unit = format!("module tool;\n{lexer}\n{parser}\n{typecheck}\n");
 
-        assert_eq!(
-            validate_unit("selfhost-trio-budget-canary", &unit),
-            Ok(()),
-            "the fixed corpus validation budget must retain self-host source evidence"
+        let started = Instant::now();
+        let verdict = validate_unit("selfhost-trio-budget-canary", &unit);
+        let elapsed = started.elapsed();
+        // Under `--nocapture` this line is the CI step's measured figure — the one
+        // the release-evidence `selfhost_trio_seconds` field is read from.
+        eprintln!(
+            "selfhost trio validated in {} ms (scaling-canary bound {SELFHOST_TRIO_CANARY_MS} ms, \
+             armed={armed}; extractor drop bound {VALIDATE_BUDGET_MS} ms)",
+            elapsed.as_millis()
         );
+
+        assert_eq!(
+            verdict,
+            Ok(()),
+            "the corpus extractor's drop bound (VALIDATE_BUDGET_MS = {VALIDATE_BUDGET_MS} ms) \
+             must retain self-host source evidence"
+        );
+        if armed {
+            assert!(
+                elapsed <= Duration::from_millis(SELFHOST_TRIO_CANARY_MS),
+                "formal verifier scaling canary: the selfhost trio took {} ms in isolation, over \
+                 the fixed SELFHOST_TRIO_CANARY_MS = {SELFHOST_TRIO_CANARY_MS} ms bound that caught \
+                 two O(n²) verifier scans — treat as a verifier scaling regression, not as a \
+                 budget to widen",
+                elapsed.as_millis()
+            );
+        }
     }
 }

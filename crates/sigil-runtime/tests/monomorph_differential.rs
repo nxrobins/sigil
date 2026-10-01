@@ -17,7 +17,11 @@
 //!   `inner__i64` BEFORE `outer__i64` (the callee's TypedFunction is pushed when its body-check
 //!   completes, inside the caller's own instantiation);
 //! - args-before-call: `id(wrap(5))` registers `wrap__i64` before `id__i64`;
-//! - ALL instances drain into the FIRST module (`modules.first_mut()`), even a later module's;
+//! - ALL instances drain into the FIRST module (`modules.first_mut()`), even a later module's —
+//!   that is the FILING (emission-order) target only: since BUG-5b the effect and ring walks key
+//!   an instance on `TypedProgram::instance_homes` (the meet of its DEFINING module's and its
+//!   resolving scopes' ring/trust), so the first-module filing decides FuncId order, not what
+//!   the instance is checked under;
 //! - the binding rule is FIRST-TOP-LEVEL-BINDING-WINS (resolve.rs:886-903): `id2(5, x: u32)`
 //!   → `id2__i64` (the literal binds T weakly but top-level concretes do NOT override);
 //!   `id2(x, 5)` → `id2__u32` — the X-M7 discriminator pair;

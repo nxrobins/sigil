@@ -32,6 +32,13 @@ dev = [
 agentic = [
     "openai>=1.40",
 ]
+# The fuel-overhead quiet-window runner (bench/fuel-overhead/quiet_run.py) samples
+# host load, pins the harness to one CPU and raises its priority through psutil,
+# and exits with a message when it is missing (fail closed: no load sampling, no
+# publishable run). Nothing else in sigil-bench imports it.
+fuel-overhead = [
+    "psutil>=5.9",
+]
 
 [project.scripts]
 sigil-bench = "sigil_bench.cli:main"

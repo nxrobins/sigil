@@ -496,7 +496,12 @@ pub(super) fn collect_type_universe(program: &crate::ast::Program) -> TypeUniver
                     }
                 }
                 Item::FnDef(def) if !def.type_params.is_empty() => {
-                    universe.generic_fns.insert(def.name.clone(), def.clone());
+                    // Keyed by BARE name program-wide: a later module's generic of the
+                    // same name replaces an earlier one (pre-existing; the drain and the
+                    // effect/ring walks key on whichever definer is recorded here).
+                    universe
+                        .generic_fns
+                        .insert(def.name.clone(), (module.name.clone(), def.clone()));
                 }
                 // PR D: register every method that needs dispatch-time
                 // monomorphization for later body re-checking. A method needs it

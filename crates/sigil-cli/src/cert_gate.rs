@@ -7,9 +7,12 @@
 //! both gate on the freshly derived `solver_verified` (R817) whether
 //! or not `--cert` was supplied (sole override:
 //! `SIGIL_ALLOW_UNVERIFIED_CERT=1`); every `--cert` mismatch aborts
-//! before instantiation with the `GateFailure` ladder R810..R820,
-//! asserted by code, never by message substring. Pinned by the
-//! in-file `verify_cert_tests`, `gate_tests`, and `forge_gate_tests`.
+//! before instantiation with the `GateFailure` ladder R810..R821,
+//! asserted by code, never by message substring. `verify-cert --wasm`
+//! binds the shipped module to a FRESH compilation of the source, never
+//! to the cert's own fingerprint field alone (R814/R815/R821 — fails
+//! closed on non-module bytes and on a skipped re-derivation). Pinned by
+//! the in-file `verify_cert_tests`, `gate_tests`, and `forge_gate_tests`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,11 +73,25 @@ pub(crate) struct VerifyResult {
     /// unfingerprinted `compiler_version`) or failed — an unconfirmed,
     /// unsigned solver claim is rejected rather than given false assurance.
     solver_claim_ok: bool,
-    /// `None` if no WASM file was provided; `Some(true)` if the hash
-    /// matched `cert.wasm_inner_fingerprint`; `Some(false)` otherwise.
-    /// Step 22: lets a deployment pipeline verify the deployable
-    /// artifact without needing the source.
+    /// `None` if no WASM file was provided; `Some(true)` if the bytes
+    /// validated as a module AND hashed to `cert.wasm_inner_fingerprint`;
+    /// `Some(false)` otherwise. On its own this is only "the file matches
+    /// the cert's own field" — the cert is unsigned, so that field is
+    /// attacker-writable. The binding to the SOURCE is `wasm_binding_ok`.
     wasm_inner_match: Option<bool>,
+    /// `None` if no WASM file was provided. `Some(true)` only when the
+    /// shipped module is bound to a fresh compilation of the source:
+    /// the bytes are a valid module, they hash to the cert's
+    /// `wasm_inner_fingerprint`, AND re-derivation confirmed that
+    /// fingerprint from the source (so shipped == fresh transitively via
+    /// SHA-256). `Some(false)` on any broken link, including a skipped
+    /// re-derivation — a `--wasm` verdict is never OK on hash equality
+    /// against the cert's own field alone.
+    wasm_binding_ok: Option<bool>,
+    /// Typed module-binding failures (R814 / R815 / R821), surfaced as
+    /// their own diagnostics beside the R809 headline so a pipeline can
+    /// assert the exact code set. Empty unless a binding link broke.
+    module_binding_failures: Vec<GateFailure>,
     /// Effects that the caller forbade via `--forbid-effect <NAME>` AND
     /// were present in the cert's `effects_required`. Empty means the
     /// cert satisfies all policy gates (or no gates were requested).
@@ -107,6 +124,17 @@ impl VerifyResult {
             && self.unauthorized_effects_present.is_empty()
             && self.solver_claim_ok
             && self.context_rederivation_ok
+            && self.module_binding_failures.is_empty()
+    }
+
+    /// The exact set of typed codes this verdict carries beyond the R809
+    /// headline. Tests assert on this set, never on message substrings.
+    #[cfg(test)]
+    fn failure_codes(&self) -> std::collections::BTreeSet<&'static str> {
+        self.module_binding_failures
+            .iter()
+            .map(|failure| failure.code().as_str())
+            .collect()
     }
 }
 
@@ -191,40 +219,70 @@ pub(crate) fn verify_certificate_with_context(
         }
     };
 
+    let mut module_binding_failures: Vec<GateFailure> = Vec::new();
+
     // Step 22: optional WASM-byte verification. If a wasm buffer is
     // supplied, hash it and compare against `cert.wasm_inner_fingerprint`.
     // None when no wasm was provided — that's a downgrade to source-
     // only verification, not a failure (the gate uses a stricter helper
     // that requires WASM bytes to be supplied).
-    let wasm_inner_match =
-        wasm_inner.map(
-            |bytes| match supplied.wasm_inner_fingerprint.recompute(bytes) {
-                Some(fresh) => {
-                    let hash_match = supplied.wasm_inner_fingerprint.hash == fresh.hash;
-                    let bytes_match = supplied.wasm_inner_fingerprint.bytes == fresh.bytes;
-                    if !hash_match {
-                        differences.push(format!(
-                            "wasm_inner_fingerprint.hash: supplied={}, fresh={}",
-                            supplied.wasm_inner_fingerprint.hash, fresh.hash
-                        ));
-                    }
-                    if !bytes_match {
-                        differences.push(format!(
-                            "wasm_inner_fingerprint.bytes: supplied={}, fresh={}",
-                            supplied.wasm_inner_fingerprint.bytes, fresh.bytes
-                        ));
-                    }
-                    hash_match && bytes_match
-                }
-                None => {
+    //
+    // BUG-3 fix, link 1 of 3: the bytes are parsed and validated as a
+    // WebAssembly module BEFORE any hash comparison. Fails closed: bytes
+    // that are not a module are refused (R821) without ever being hashed,
+    // so a cert rebound to arbitrary non-module bytes cannot reach the
+    // fingerprint comparison at all.
+    let wasm_inner_match = wasm_inner.map(|bytes| match validate_wasm_module(bytes) {
+        Err(reason) => {
+            differences.push(format!("wasm module: {reason}"));
+            module_binding_failures.push(GateFailure::ModuleBindingUnverifiable { reason });
+            false
+        }
+        Ok(()) => match supplied.wasm_inner_fingerprint.recompute(bytes) {
+            Some(fresh) => {
+                let hash_match = supplied.wasm_inner_fingerprint.hash == fresh.hash;
+                let bytes_match = supplied.wasm_inner_fingerprint.bytes == fresh.bytes;
+                if !hash_match {
                     differences.push(format!(
-                        "wasm_inner_fingerprint.algorithm `{}` not recognized",
-                        supplied.wasm_inner_fingerprint.algorithm
+                        "wasm_inner_fingerprint.hash: supplied={}, fresh={}",
+                        supplied.wasm_inner_fingerprint.hash, fresh.hash
                     ));
-                    false
                 }
-            },
-        );
+                if !bytes_match {
+                    differences.push(format!(
+                        "wasm_inner_fingerprint.bytes: supplied={}, fresh={}",
+                        supplied.wasm_inner_fingerprint.bytes, fresh.bytes
+                    ));
+                }
+                if !(hash_match && bytes_match) {
+                    // Typed like every other inner-module disagreement
+                    // (R814): here the shipped module is a valid module
+                    // that is not the one the cert names.
+                    module_binding_failures.push(GateFailure::WasmInnerMismatch {
+                        supplied_hash: supplied.wasm_inner_fingerprint.hash.clone(),
+                        fresh_hash: fresh.hash,
+                        supplied_bytes: supplied.wasm_inner_fingerprint.bytes,
+                        fresh_bytes: fresh.bytes,
+                    });
+                }
+                hash_match && bytes_match
+            }
+            None => {
+                // Fails closed: an algorithm this binary cannot recompute
+                // leaves the shipped bytes uncompared, so the verdict is
+                // `false` (and `all_ok` rejects on it) rather than trusting
+                // the cert's self-reported hash. No typed sub-failure —
+                // the disagreement is with the cert's own algorithm field,
+                // not with a module link, so the R809 headline is the
+                // whole story.
+                differences.push(format!(
+                    "wasm_inner_fingerprint.algorithm `{}` not recognized",
+                    supplied.wasm_inner_fingerprint.algorithm
+                ));
+                false
+            }
+        },
+    });
 
     // NOT the CLI's own `env!("CARGO_PKG_VERSION")`: certs are stamped by
     // sigil-compiler, so the comparison has to read sigil-compiler's
@@ -250,11 +308,18 @@ pub(crate) fn verify_certificate_with_context(
         ) {
             Ok(compilation) => {
                 let fresh = certificate_from_compilation(&compilation, source_text);
+                // BUG-3 fix, link 2 of 3: `diff_certificates` compares the
+                // cert's wasm_inner/wasm_outer fingerprints against the
+                // FRESH module's (deterministic emission is what
+                // `gate_cert` R814/R815 already rely on). The same
+                // comparator yields the typed R814/R815 failures so the
+                // text lines and the codes cannot drift apart.
                 let field_diffs = diff_certificates(supplied, &fresh);
                 if field_diffs.is_empty() {
                     rederivation_ok = true;
                 } else {
                     differences.extend(field_diffs);
+                    module_binding_failures.extend(wasm_fingerprint_failures(supplied, &fresh));
                 }
             }
             Err(err) => {
@@ -336,6 +401,35 @@ pub(crate) fn verify_certificate_with_context(
             .push("profile-aware certificate checking requires fresh rederivation".to_owned());
     }
 
+    // BUG-3 fix, link 3 of 3: a `--wasm` verdict is OK only when the shipped
+    // module is bound to a FRESH compilation of the source — bytes valid,
+    // bytes hash to the cert's `wasm_inner_fingerprint`, and re-derivation
+    // confirmed that fingerprint from the source. When re-derivation was
+    // skipped (compiler_version differs from this binary) the only check
+    // left would be hash equality against the cert's own, attacker-writable
+    // field, so the verdict fails closed (R821) instead of reporting OK.
+    // When re-derivation was attempted and failed, the precise mismatch is
+    // already on the ladder (R814/R815 or a source-derived diff line), so
+    // this arm adds nothing: one failure, one cause.
+    let wasm_binding_ok = wasm_inner.map(|_| {
+        let bound = wasm_inner_match == Some(true) && rederivation_ok;
+        if !bound && !rederivation_attempted && wasm_inner_match == Some(true) {
+            let reason = format!(
+                "the shipped module hashes to the cert's own wasm_inner_fingerprint, but that \
+                 field could not be re-derived from the source (re-derivation skipped: {}); an \
+                 unsigned cert's self-reported module fingerprint is not trusted — rejected",
+                if !compiler_version_match {
+                    "compiler_version differs from this binary"
+                } else {
+                    "prerequisite checks did not pass"
+                }
+            );
+            differences.push(format!("wasm module binding: {reason}"));
+            module_binding_failures.push(GateFailure::ModuleBindingUnverifiable { reason });
+        }
+        bound
+    });
+
     VerifyResult {
         schema_ok,
         hash_ok,
@@ -345,6 +439,8 @@ pub(crate) fn verify_certificate_with_context(
         rederivation_ok,
         solver_claim_ok,
         wasm_inner_match,
+        wasm_binding_ok,
+        module_binding_failures,
         forbidden_effects_present,
         unauthorized_effects_present,
         differences,
@@ -352,6 +448,67 @@ pub(crate) fn verify_certificate_with_context(
         supplied_compiler_version: supplied.compiler_version.clone(),
         current_compiler_version,
     }
+}
+
+/// Parse and validate `bytes` as a WebAssembly module. Runs BEFORE any
+/// fingerprint comparison in `verify-cert --wasm`: a file that is not a
+/// module is refused outright rather than hashed, so a certificate rebound
+/// to arbitrary bytes can never reach the hash check. Default wasmparser
+/// features — the same envelope the compiler's own emit tests validate
+/// against. Fails closed: any parse or validation error is a refusal.
+fn validate_wasm_module(bytes: &[u8]) -> Result<(), String> {
+    wasmparser::Validator::new()
+        .validate_all(bytes)
+        .map(|_types| ())
+        .map_err(|err| {
+            format!(
+                "--wasm bytes are not a valid WebAssembly module ({} bytes): {err}",
+                bytes.len()
+            )
+        })
+}
+
+/// The typed R814/R815 failures for a supplied cert whose wasm fingerprints
+/// differ from a freshly compiled one. Single comparator shared with
+/// `diff_certificates` (which renders these as text lines), so the human
+/// list and the code set cannot disagree about whether a module mismatched.
+fn wasm_fingerprint_failures(
+    supplied: &sigil_compiler::certificate::CertificateJson,
+    fresh: &sigil_compiler::certificate::CertificateJson,
+) -> Vec<GateFailure> {
+    let mut failures = Vec::new();
+    if supplied.wasm_inner_fingerprint.hash != fresh.wasm_inner_fingerprint.hash
+        || supplied.wasm_inner_fingerprint.bytes != fresh.wasm_inner_fingerprint.bytes
+    {
+        failures.push(GateFailure::WasmInnerMismatch {
+            supplied_hash: supplied.wasm_inner_fingerprint.hash.clone(),
+            fresh_hash: fresh.wasm_inner_fingerprint.hash.clone(),
+            supplied_bytes: supplied.wasm_inner_fingerprint.bytes,
+            fresh_bytes: fresh.wasm_inner_fingerprint.bytes,
+        });
+    }
+    match (&supplied.wasm_outer_fingerprint, &fresh.wasm_outer_fingerprint) {
+        (Some(claimed), Some(derived)) => {
+            if claimed.hash != derived.hash || claimed.bytes != derived.bytes {
+                failures.push(GateFailure::WasmOuterMismatch {
+                    reason: format!(
+                        "supplied hash={} ({} bytes), fresh hash={} ({} bytes)",
+                        claimed.hash, claimed.bytes, derived.hash, derived.bytes
+                    ),
+                });
+            }
+        }
+        (Some(_), None) => failures.push(GateFailure::WasmOuterMismatch {
+            reason: "cert claims wasm_outer_fingerprint but the fresh compilation has no outer module"
+                .to_string(),
+        }),
+        (None, Some(_)) => failures.push(GateFailure::WasmOuterMismatch {
+            reason: "the fresh compilation has an outer module but cert does not claim a wasm_outer_fingerprint"
+                .to_string(),
+        }),
+        (None, None) => {}
+    }
+    failures
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +591,13 @@ pub(crate) enum GateFailure {
     /// R820: authenticated certificate provenance is required or present but
     /// does not validate under the active trust policy.
     ProvenanceMismatch { reason: String },
+    /// R821: `verify-cert --wasm` could not bind the shipped module to a
+    /// fresh compilation of the source — the bytes are not a valid
+    /// WebAssembly module, or re-derivation was skipped (compiler_version
+    /// differs) so only the cert's own attacker-writable fingerprint field
+    /// was available to compare against. Fails closed rather than report
+    /// OK on hash equality against the cert alone.
+    ModuleBindingUnverifiable { reason: String },
 }
 
 impl GateFailure {
@@ -449,6 +613,7 @@ impl GateFailure {
             Self::SolverUnverified => codes::R817,
             Self::FormalEvidenceMismatch { .. } => codes::R819,
             Self::ProvenanceMismatch { .. } => codes::R820,
+            Self::ModuleBindingUnverifiable { .. } => codes::R821,
         }
     }
 
@@ -525,6 +690,9 @@ impl GateFailure {
             }
             Self::ProvenanceMismatch { reason } => {
                 format!("certificate provenance check failed: {reason}")
+            }
+            Self::ModuleBindingUnverifiable { reason } => {
+                format!("shipped wasm module could not be bound to the source: {reason}")
             }
         }
     }
@@ -978,10 +1146,12 @@ pub(crate) fn run_verify_cert(
     let supplied = loaded.certificate;
     let provenance = loaded.provenance;
 
-    // Step 22: optionally hash a WASM artifact and verify it against
-    // the cert's wasm_inner_fingerprint. When --wasm is provided this
-    // is the deployment-time check: pipeline holds the binary + the
-    // cert, no source required.
+    // Step 22: optionally bind a shipped WASM artifact to the cert. The
+    // source IS required (`args.rs` rejects `--wasm` without `--source`):
+    // the verdict binds the shipped module to a fresh compilation of the
+    // source, not to the cert's own fingerprint field — see
+    // `VerifyResult::wasm_binding_ok`. The bytes are validated as a
+    // module before they are hashed.
     let wasm_inner_bytes = command
         .wasm_path
         .as_ref()
@@ -1007,6 +1177,7 @@ pub(crate) fn run_verify_cert(
             "schema_version_ok": result.schema_ok,
             "fingerprint_ok": result.hash_ok && result.bytes_ok,
             "wasm_inner_match": result.wasm_inner_match,
+            "wasm_binding_ok": result.wasm_binding_ok,
             "compiler_version_match": result.compiler_version_match,
             "rederivation_attempted": result.rederivation_attempted,
             "rederivation_ok": result.rederivation_ok,
@@ -1030,10 +1201,19 @@ pub(crate) fn run_verify_cert(
                     result.differences.join("\n  - ")
                 )
             };
-            json_envelope::emit_generic_error_with_data(
+            // R809 stays the headline (unchanged for existing consumers);
+            // the typed module-binding failures follow it so the exact
+            // code set names WHICH link broke (R814/R815/R821).
+            let mut diagnostics = vec![(codes::R809, diag_message)];
+            diagnostics.extend(
+                result
+                    .module_binding_failures
+                    .iter()
+                    .map(|failure| (failure.code(), failure.message())),
+            );
+            json_envelope::emit_generic_errors_with_data(
                 CommandKind::VerifyCert.json_name(),
-                codes::R809,
-                diag_message,
+                diagnostics,
                 data,
             );
         }
@@ -1066,6 +1246,9 @@ pub(crate) fn run_verify_cert(
         for diff in result.differences.iter() {
             eprintln!("  - {diff}");
         }
+        for failure in result.module_binding_failures.iter() {
+            eprintln!("error: {}: {}", failure.code().as_str(), failure.message());
+        }
     }
 
     if all_ok {
@@ -1082,11 +1265,21 @@ pub(crate) fn run_verify_cert(
 /// state — first compile is all misses, second is mostly hits, but
 /// the verdict is identical). Returns a list of human-readable diff
 /// lines; empty if all compared fields match.
+///
+/// The `source_fingerprint` is deliberately NOT compared here: the caller
+/// already checked it against the source text (`hash_ok`/`bytes_ok`) as a
+/// precondition of re-derivation. The wasm fingerprints ARE compared —
+/// they are the only link between the cert and the module it certifies,
+/// and before BUG-3 a cert honest for its source but rebound to foreign
+/// module bytes passed this diff unnoticed.
 fn diff_certificates(
     supplied: &sigil_compiler::certificate::CertificateJson,
     fresh: &sigil_compiler::certificate::CertificateJson,
 ) -> Vec<String> {
-    let mut diffs = Vec::new();
+    let mut diffs: Vec<String> = wasm_fingerprint_failures(supplied, fresh)
+        .iter()
+        .map(GateFailure::message)
+        .collect();
     if supplied.source_name != fresh.source_name {
         diffs.push(format!(
             "source_name: supplied={:?}, fresh={:?}",
@@ -1167,8 +1360,10 @@ mod verify_cert_tests {
     //! Each test constructs an in-memory cert + source and calls
     //! `verify_certificate` directly. No file I/O, no subprocesses — keeps
     //! the test fast and deterministic.
+    use std::collections::BTreeSet;
+
     use super::*;
-    use sigil_compiler::certificate::CertificateJson;
+    use sigil_compiler::certificate::{ArtifactFingerprint, CertificateJson};
 
     /// A trivially-compileable Sigil program. Picked because it produces a
     /// non-empty certificate (a primary module name, capability/ownership
@@ -1477,12 +1672,185 @@ mod verify_cert_tests {
         );
         assert!(result.all_ok(), "differences: {:?}", result.differences);
         assert_eq!(result.wasm_inner_match, Some(true));
+        // The unchanged accept case after BUG-3: the module is BOUND to the
+        // fresh compilation, not merely hash-equal to the cert's own field.
+        assert_eq!(result.wasm_binding_ok, Some(true));
+        assert!(result.rederivation_ok);
+        assert!(
+            result.failure_codes().is_empty(),
+            "an honest cert + its own module carries no typed failure: {:?}",
+            result.failure_codes()
+        );
+    }
+
+    /// A second program that compiles to a DIFFERENT inner module than
+    /// `HAPPY_SOURCE` (the return value differs). Both compile cleanly, so a
+    /// cert honest for one source can be rebound to the other's bytes —
+    /// the BUG-3 shape.
+    const FOREIGN_SOURCE: &str = "module sigil;\ncap type Fuel {}\nentry actor Main { state { fuel: Fuel } on Start() -> i64 { return 2; } }\n";
+
+    /// BUG-3: a certificate honest for its source, with ONLY its
+    /// `wasm_inner_fingerprint` rebound to a foreign module's bytes, must
+    /// NOT verify OK when that foreign module is shipped as `--wasm`. Before
+    /// the fix the shipped hash matched the cert's own (rebound) field and
+    /// `diff_certificates` never compared wasm fingerprints, so this passed.
+    #[test]
+    fn verify_cert_rejects_cert_rebound_to_foreign_wasm() {
+        let happy = compile_named_module("happy.sigil".to_string(), HAPPY_SOURCE.to_string())
+            .expect("HAPPY_SOURCE compiles");
+        let foreign = compile_named_module("happy.sigil".to_string(), FOREIGN_SOURCE.to_string())
+            .expect("FOREIGN_SOURCE compiles");
+        assert_ne!(
+            happy.wasm_inner, foreign.wasm_inner,
+            "the two sources must compile to different inner modules"
+        );
+
+        let mut rebound = fresh_cert(HAPPY_SOURCE);
+        rebound.wasm_inner_fingerprint = ArtifactFingerprint::new(&foreign.wasm_inner);
+
+        // Shipped: the foreign module the cert now names.
+        let result = verify_certificate(
+            &rebound,
+            "happy.sigil",
+            HAPPY_SOURCE,
+            Some(&foreign.wasm_inner),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            result.wasm_inner_match,
+            Some(true),
+            "the shipped bytes DO hash to the cert's own (rebound) field — that is the attack"
+        );
+        assert!(result.rederivation_attempted);
+        assert!(!result.rederivation_ok);
+        assert_eq!(result.wasm_binding_ok, Some(false));
+        assert!(
+            !result.all_ok(),
+            "a cert rebound to foreign wasm must not verify OK: {:?}",
+            result.differences
+        );
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R814.as_str()]),
+            "exactly the inner-module fingerprint mismatch, typed"
+        );
+
+        // Source-only verification (no --wasm) catches the rebinding too:
+        // the cert's wasm fingerprint is now part of the re-derivation diff.
+        let source_only = verify_certificate(&rebound, "happy.sigil", HAPPY_SOURCE, None, &[], &[]);
+        assert!(!source_only.all_ok());
+        assert_eq!(source_only.wasm_binding_ok, None);
+        assert_eq!(
+            source_only.failure_codes(),
+            BTreeSet::from([codes::R814.as_str()])
+        );
+    }
+
+    /// BUG-3: `--wasm` bytes that are not a WebAssembly module are refused
+    /// (R821) BEFORE any hash comparison — an honest cert with junk shipped
+    /// fails on the module check alone; a cert rebound to the junk's hash
+    /// additionally fails the fresh-fingerprint diff (R814).
+    #[test]
+    fn verify_cert_refuses_junk_wasm_bytes() {
+        let junk = b"this is not a wasm module at all";
+        let honest = fresh_cert(HAPPY_SOURCE);
+        let result = verify_certificate(&honest, "happy.sigil", HAPPY_SOURCE, Some(junk), &[], &[]);
+        assert!(
+            !result.all_ok(),
+            "junk bytes must not verify: {:?}",
+            result.differences
+        );
+        assert_eq!(result.wasm_inner_match, Some(false));
+        assert_eq!(result.wasm_binding_ok, Some(false));
+        assert!(
+            result.rederivation_ok,
+            "the cert itself is honest — only the shipped bytes are wrong"
+        );
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R821.as_str()])
+        );
+
+        let mut rebound = fresh_cert(HAPPY_SOURCE);
+        rebound.wasm_inner_fingerprint = ArtifactFingerprint::new(junk);
+        let result =
+            verify_certificate(&rebound, "happy.sigil", HAPPY_SOURCE, Some(junk), &[], &[]);
+        assert!(!result.all_ok());
+        assert_eq!(
+            result.wasm_inner_match,
+            Some(false),
+            "non-module bytes are refused before hashing, so the rebound hash never 'matches'"
+        );
+        assert_eq!(result.wasm_binding_ok, Some(false));
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R814.as_str(), codes::R821.as_str()])
+        );
+    }
+
+    /// BUG-3: under version skew re-derivation is skipped, so the only
+    /// check left for `--wasm` would be hash equality against the cert's
+    /// own attacker-writable field. The verdict fails closed (R821) instead
+    /// of reporting OK. Source-only skew verification is unchanged
+    /// (`different_compiler_version_skips_rederivation_but_can_pass`).
+    #[test]
+    fn verify_cert_refuses_wasm_binding_under_version_skew() {
+        let happy = compile_named_module("happy.sigil".to_string(), HAPPY_SOURCE.to_string())
+            .expect("HAPPY_SOURCE compiles");
+        let mut cert = fresh_cert(HAPPY_SOURCE);
+        // Honest witness under both feature resolutions (see the source-only
+        // skew test for why): the subject here is the module binding.
+        cert.capability = sigil_compiler::certificate::CapabilityReportJson {
+            solver_verified: false,
+            ..cert.capability.clone()
+        };
+        cert.compiler_version = "9.9.9-not-this-build".to_string();
+
+        let result = verify_certificate(
+            &cert,
+            "happy.sigil",
+            HAPPY_SOURCE,
+            Some(&happy.wasm_inner),
+            &[],
+            &[],
+        );
+        assert!(!result.compiler_version_match);
+        assert!(!result.rederivation_attempted);
+        assert_eq!(
+            result.wasm_inner_match,
+            Some(true),
+            "the bytes match the cert's own field — which is exactly what is not enough"
+        );
+        assert_eq!(result.wasm_binding_ok, Some(false));
+        assert!(
+            !result.all_ok(),
+            "a --wasm verdict must not be OK when the module binding is unverifiable: {:?}",
+            result.differences
+        );
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R821.as_str()])
+        );
+
+        // Control: the same skewed cert WITHOUT --wasm keeps the pinned
+        // fingerprint-only verdict — no module was claimed, none is bound.
+        let source_only = verify_certificate(&cert, "happy.sigil", HAPPY_SOURCE, None, &[], &[]);
+        assert!(source_only.all_ok(), "{:?}", source_only.differences);
+        assert_eq!(source_only.wasm_binding_ok, None);
+        assert!(source_only.failure_codes().is_empty());
     }
 
     /// Step 22: a cert paired with tampered WASM (any byte changed)
-    /// fails the WASM-fingerprint check. This is the deployment-time
-    /// trust handover: if the binary was modified after cert issuance,
-    /// verification rejects it even if the cert and source match.
+    /// fails verification. This is the deployment-time trust handover:
+    /// if the binary was modified after cert issuance, verification
+    /// rejects it even if the cert and source match. Two shapes: a byte
+    /// flip that breaks the module encoding is refused before hashing
+    /// (R821 — measured, the emitted module's last byte is `0x0b`, the
+    /// `end` opcode closing the final function body, so incrementing it
+    /// leaves that body unterminated and validation refuses the bytes);
+    /// a VALID foreign module that is simply not the certified one is a
+    /// typed inner fingerprint mismatch (R814).
     #[test]
     fn tampered_wasm_bytes_break_verification() {
         let compilation = compile_named_module("wasm.sigil".to_string(), HAPPY_SOURCE.to_string())
@@ -1490,6 +1858,17 @@ mod verify_cert_tests {
         let cert = fresh_cert(HAPPY_SOURCE);
         let mut tampered_wasm = compilation.wasm_inner.clone();
         // Flip the last byte — any single-bit change must be detected.
+        // Pinned at its MEASURED value so the doc comment above cannot
+        // drift from the encoding: if emission ever appends a section
+        // after the code section, this fails loudly rather than silently
+        // testing a different tamper shape (a trailing custom-section
+        // byte would break the hash but might still validate, moving the
+        // verdict from R821 to R814).
+        assert_eq!(
+            tampered_wasm.last().copied(),
+            Some(0x0b),
+            "the emitted module must end with the `end` opcode of its last function body"
+        );
         if let Some(last) = tampered_wasm.last_mut() {
             *last = last.wrapping_add(1);
         }
@@ -1503,13 +1882,34 @@ mod verify_cert_tests {
         );
         assert!(!result.all_ok());
         assert_eq!(result.wasm_inner_match, Some(false));
+        assert_eq!(result.wasm_binding_ok, Some(false));
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R821.as_str()]),
+            "bytes that no longer decode as a module are refused before hashing"
+        );
+
+        let foreign = compile_named_module("happy.sigil".to_string(), FOREIGN_SOURCE.to_string())
+            .expect("FOREIGN_SOURCE compiles");
+        let result = verify_certificate(
+            &cert,
+            "happy.sigil",
+            HAPPY_SOURCE,
+            Some(&foreign.wasm_inner),
+            &[],
+            &[],
+        );
+        assert!(!result.all_ok());
+        assert_eq!(result.wasm_inner_match, Some(false));
+        assert_eq!(result.wasm_binding_ok, Some(false));
         assert!(
-            result
-                .differences
-                .iter()
-                .any(|d| d.contains("wasm_inner_fingerprint")),
-            "expected wasm_inner_fingerprint diff; got: {:?}",
-            result.differences
+            result.rederivation_ok,
+            "the cert is honest for its source; only the shipped module is wrong"
+        );
+        assert_eq!(
+            result.failure_codes(),
+            BTreeSet::from([codes::R814.as_str()]),
+            "a valid module that is not the certified one is a typed inner mismatch"
         );
     }
 
@@ -2512,6 +2912,48 @@ fn run(value: i64) -> i64 @Internal ! { FFI, Unsafe } {
             !clean.iter().any(|d| d.contains("solver_verified")),
             "identical solver_verified must not diff; got {clean:?}"
         );
+    }
+
+    /// SC-P4 anti-stub for the BUG-3 comparator: `diff_certificates` and
+    /// `wasm_fingerprint_failures` must fire on a PLANTED rebinding of each
+    /// wasm fingerprint (inner rebound; outer claimed where the fresh
+    /// compilation has none) and stay silent on identical certs. Asserted by
+    /// typed code, never by message substring.
+    #[test]
+    fn diff_certificates_flags_rebound_wasm_fingerprints() {
+        let compilation = fresh_compilation();
+        let honest = fresh_cert(&compilation);
+        assert!(
+            wasm_fingerprint_failures(&honest, &honest).is_empty(),
+            "identical wasm fingerprints must not diff"
+        );
+        assert!(diff_certificates(&honest, &honest).is_empty());
+
+        let mut inner_rebound = fresh_cert(&compilation);
+        inner_rebound.wasm_inner_fingerprint = ArtifactFingerprint::new(b"planted foreign module");
+        let codes_seen: Vec<_> = wasm_fingerprint_failures(&inner_rebound, &honest)
+            .iter()
+            .map(GateFailure::code)
+            .collect();
+        assert_eq!(codes_seen, vec![codes::R814]);
+        assert!(
+            !diff_certificates(&inner_rebound, &honest).is_empty(),
+            "a rebound inner fingerprint must reach the re-derivation diff"
+        );
+
+        let mut outer_planted = fresh_cert(&compilation);
+        assert!(
+            outer_planted.wasm_outer_fingerprint.is_none(),
+            "HAPPY_SOURCE is single-ring: no outer module to claim"
+        );
+        outer_planted.wasm_outer_fingerprint =
+            Some(ArtifactFingerprint::new(b"planted outer module"));
+        let codes_seen: Vec<_> = wasm_fingerprint_failures(&outer_planted, &honest)
+            .iter()
+            .map(GateFailure::code)
+            .collect();
+        assert_eq!(codes_seen, vec![codes::R815]);
+        assert!(!diff_certificates(&outer_planted, &honest).is_empty());
     }
 
     // ── load_cert_file: R810 / R811 ──────────────────────────────────

@@ -71,18 +71,25 @@ USAGE:
 COMMANDS:
   check <FILE...>        Compile and verify; emits no artifact by default
     --package <ROOT>       Check one explicit offline locked package root (no FILE args)
-	    --host-profile <NAME>  Compile against a declared host profile (`ephemeral` = the built-in host)
-	    --entry <MODULE>       Entry module for a multi-file compile
-	    --cert                 Emit the verification certificate as JSON
-	    --cert-signer <ID>     Sign the emitted cert envelope with signer ID
-	    --cert-sign-key-hex <HEX>  32-byte Ed25519 signing seed for --cert
-	    --cert-context <CTX>   Deployment context string covered by the cert signature
-	    --emit-wasm <FILE>     Write the inner-module WASM to FILE
+    --host-profile <NAME>  Compile against a declared host profile (`ephemeral` = the built-in host)
+    --entry <MODULE>       Entry module for a multi-file compile
+    --cert                 Emit the verification certificate as JSON
+    --cert-signer <ID>     Sign the emitted cert envelope with signer ID
+    --cert-sign-key-hex <HEX>  32-byte Ed25519 signing seed for --cert
+    --cert-context <CTX>   Deployment context string covered by the cert signature
+    --cert-issued-at-ms <MS>  Issue time stamped into the signed cert envelope
+    --emit-wasm <FILE>     Write the inner-module WASM to FILE
     --wat                  Print the module as WebAssembly text
+    --project-root <DIR>   Resolve imports against this root (also accepted by `translate`)
     --from <LANG>          Translate a foreign frontend first (see `translate`)
     --build-deadline <MS>  Reject parametric caps whose deadline has passed
 
   run <FILE...>          Compile, verify, then execute
+    --serve                Stay resident after the boot drain: feed stdin lines to the
+                           entry actor until EOF (fuel is refilled per dispatch). `run` only
+    --on <HANDLER>         Which handler `--serve` feeds; needed only when the entry actor
+                           has more than one single-`i64`/`bool` non-`Start` handler
+    --persistent-cap <N>   Per-actor persistent-heap byte cap (clamped to the arena size)
   check-inline <SRC>     As `check`, with source given on the command line
   run-inline <SRC>       As `run`, with source given on the command line
 
@@ -91,22 +98,25 @@ COMMANDS:
     --fuel <N>             Fuel budget for the run
     --fs <DIR>             Grant filesystem access rooted at DIR (repeatable)
     --net <HOST>           Grant network access to HOST (repeatable)
-	    --template <ID>        Forge from a registry template (with --patch FIND=REPLACE)
-	    --cert <FILE>          Refuse to run unless the cert matches
-	    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
-	    --cert-context <CTX>   Required signed deployment context
-	    --revoke-cert-signer <ID>  Reject this signer even if the signature verifies
-	    --frozen-time <MS>     Pin the clock for a reproducible run
+    --kv <NS=DIR>          Grant read-only durable key-value storage (repeatable)
+    --kv-write <NS=DIR>    Grant read-write durable key-value storage (repeatable)
+    --template <ID>        Forge from a registry template (with --patch FIND=REPLACE)
+    --cert <FILE>          Refuse to run unless the cert matches
+    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
+    --cert-context <CTX>   Required signed deployment context
+    --revoke-cert-signer <ID>  Reject this signer even if the signature verifies
+    --frozen-time <MS>     Pin the clock for a reproducible run
     --random-seed <N>      Pin the RNG (nonzero)
 
   verify-cert            Check a certificate against source, WASM, and policy
     --cert <FILE>          The certificate to verify (required)
     --source <FILE>        Re-derive from source
     --package <ROOT>       Re-resolve/recompile a package and verify its graph cert
-	    --wasm <FILE>          Compare against a built artifact
-	    --forbid-effect <NAME> / --allow-effect <NAME>   Effect policy gates
-	    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
-	    --cert-context <CTX> / --revoke-cert-signer <ID>  Provenance policy gates
+    --wasm <FILE>          Bind a shipped module to the fresh compilation of --source
+                           (must be valid wasm; fails closed on compiler-version skew)
+    --forbid-effect <NAME> / --allow-effect <NAME>   Effect policy gates
+    --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
+    --cert-context <CTX> / --revoke-cert-signer <ID>  Provenance policy gates
 
   package-lock          Create a root-only offline lock (--root <DIR>); never overwrite
   package-evidence      Emit solver-backed compiler artifacts, not an admission verdict
@@ -281,6 +291,126 @@ mod version_help_tests {
                 "help text is missing the `{command}` command"
             );
         }
+    }
+
+    /// `args.rs` read as text, so the flag pin below derives its subject from the
+    /// parser's own source rather than from a hand list that drifts silently.
+    const ARGS_SOURCE: &str = include_str!("args.rs");
+
+    /// Every long flag `args.rs` dispatches on: a quoted `--flag` in match-arm
+    /// position (`"--x" =>`, or `"--x" |` in an or-pattern). Match-arm position is
+    /// the discriminator — a flag named in an error message or a test fixture is
+    /// not a flag the parser accepts.
+    fn flags_parse_args_accepts(source: &str) -> Vec<&str> {
+        let mut flags: Vec<&str> = Vec::new();
+        let mut rest = source;
+        while let Some(offset) = rest.find("\"--") {
+            let open = offset + 1;
+            let Some(len) = rest[open..].find('"') else {
+                break;
+            };
+            let flag = &rest[open..open + len];
+            rest = &rest[open + len + 1..];
+            let is_flag_shaped = flag.len() > 2
+                && flag[2..]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            let tail = rest.trim_start();
+            if is_flag_shaped
+                && (tail.starts_with("=>") || tail.starts_with('|'))
+                && !flags.contains(&flag)
+            {
+                flags.push(flag);
+            }
+        }
+        flags
+    }
+
+    /// Does the help text name `flag` as a WHOLE token? Bare `contains` is a
+    /// self-satisfying idiom here: `HELP_TEXT.contains("--cert")` is true only
+    /// because `--cert-signer` is documented, so a genuinely undocumented `--cert`
+    /// would sail through. A hit counts only when the next character cannot
+    /// continue a flag name.
+    fn help_names_flag(flag: &str) -> bool {
+        let mut from = 0;
+        while let Some(offset) = HELP_TEXT[from..].find(flag) {
+            let end = from + offset + flag.len();
+            let continues = HELP_TEXT[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !continues {
+                return true;
+            }
+            from = end;
+        }
+        false
+    }
+
+    /// Every long flag the parser accepts is named somewhere in the help text.
+    ///
+    /// FAILS CLOSED: a flag the help never names fails this test rather than being
+    /// tolerated. `help_text_names_every_command` covered commands only, which is
+    /// how `--serve` / `--on` / `--persistent-cap` (the resident-actor driver) and
+    /// `--kv` / `--kv-write` (durable storage) shipped fully implemented, spec'd
+    /// and tested while `sigil --help` never mentioned them — a feature nobody can
+    /// find is a feature nobody has.
+    ///
+    /// Scope, stated so it is not over-read: this pins that each flag is NAMED, not
+    /// WHERE. Several flags are documented inside a sibling's description on
+    /// purpose (`--input-hex`, `--patch`, `--task`), so placement cannot be pinned
+    /// without making the help less readable. The floor guards the extractor
+    /// against matching nothing and passing vacuously; 41 is the measured count.
+    #[test]
+    fn help_text_names_every_flag_parse_args_accepts() {
+        let flags = flags_parse_args_accepts(ARGS_SOURCE);
+        assert!(
+            flags.len() >= 41,
+            "extractor found only {} flags in args.rs; it has stopped seeing the \
+             match arms, so this pin would pass vacuously",
+            flags.len()
+        );
+
+        let unnamed: Vec<&str> = flags
+            .into_iter()
+            .filter(|flag| !help_names_flag(flag))
+            .collect();
+        assert!(
+            unnamed.is_empty(),
+            "these flags parse but `sigil --help` never names them: {unnamed:?}"
+        );
+    }
+
+    /// Anti-stub for the absence claim above (SIGIL creed 3): a "there are no
+    /// unnamed flags" pin is worth nothing without its detector shown catching a
+    /// planted one. Three-sided — the planted flag is reported, a genuinely
+    /// documented flag beside it is cleared, and a bare prefix of a documented flag
+    /// is NOT mistaken for documentation (the hole `contains` would leave open).
+    #[test]
+    fn the_unnamed_flag_detector_catches_a_planted_flag() {
+        let planted = "match arg {\n    \"--cert\" => {}\n    \"--never-in-the-help\" => {}\n}";
+        assert_eq!(
+            flags_parse_args_accepts(planted),
+            vec!["--cert", "--never-in-the-help"],
+            "the extractor must read both match arms out of the planted source"
+        );
+
+        let unnamed: Vec<&str> = flags_parse_args_accepts(planted)
+            .into_iter()
+            .filter(|flag| !help_names_flag(flag))
+            .collect();
+        assert_eq!(
+            unnamed,
+            vec!["--never-in-the-help"],
+            "the detector must flag the planted flag and clear `--cert`, which the \
+             help really does name"
+        );
+
+        assert!(
+            HELP_TEXT.contains("--host") && !help_names_flag("--host"),
+            "`--host` occurs in the help only inside `--host-profile`, so whole-token \
+             matching must reject it — this is the prefix hole that `contains` leaves open"
+        );
     }
 
     /// `sigil-cli` and `sigil-compiler` are separate packages with

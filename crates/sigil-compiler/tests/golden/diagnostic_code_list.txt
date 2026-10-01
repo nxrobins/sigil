@@ -6,6 +6,8 @@ C005	SMT query outside the decidable fragment (internal)
 C010	Capability from actor state consumed in a handler
 C011	`mut` actor-state field must be plain reassignable data
 C012	`mut` actor-state field's element shape is not yet preserved across dispatches
+C013	Capability without a recognised full-authority origin put into an aliasable slot
+C014	Cap-typed actor-state field assigned a capability without a recognised full-authority origin
 E001	Undeclared effect required by callee
 E002	`handle Unsafe` requires a `#[trusted]` module
 E003	Inner-ring function declares a privilege effect
@@ -93,6 +95,7 @@ R003	Inner-ring code cannot call `extern` functions
 R004	Direct cross-ring call requires a grant
 R005	Compatibility alias for T109 ring-error sanitization
 R006	`#[trusted]` requires `#[ring(outer)]`
+R007	Monomorphized generic instance is filed in the other ring
 R010	Non-capability spawn argument
 R011	Non-capability fuel argument
 R012	Non-cap source or destination at restrict/split
@@ -117,6 +120,7 @@ R817	Certificate not solver-verified (Z3 proofs did not run)
 R818	Persistent heap exhausted
 R819	Formal security report or CSIR fingerprint mismatch
 R820	Certificate provenance did not validate
+R821	Shipped WASM module could not be bound to the certificate's source
 S001	Source exceeds maximum byte size
 S002	Tool module missing `tool_main`
 S003	Source must not be empty
@@ -139,6 +143,7 @@ T030	`@Internal`/`@Secret` → `@SecretCT` upcast forbidden (CT016)
 T031	`declassify` rejects `@SecretCT` input (CT017)
 T032	`declassify_ct` input must be `@SecretCT`
 T033	Secret-dependent string content comparison
+T034	Secret-dependent shift amount (CT008)
 T040	Constant value type mismatch
 T041	Let binding type mismatch
 T042	Cannot assign to immutable variable

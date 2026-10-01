@@ -1,0 +1,24 @@
+// Heap floor S8 (BUG-2): the interprocedural LOAD direction, RESULT side.
+// A named helper raw-loads through a pointer its caller handed it AFTER the caller's FFI
+// call put the SHA-256 digest at the bump pointer. The helper is checked at its own clean
+// floor, but its RESULT comes back to a caller whose raw-load floor is @Internal, and a
+// callee that raw-reads returns the CALLER's floor — so returning it from a function
+// declared @Public is T001 (round 3 accepted this; `sigil forge` emitted the digest byte).
+// The @Public return is the fixture's ONLY sink (precision lane: exactly one error). The
+// `str_from_raw` form of the same channel is pinned in taint_heap_floor.rs, not here: the
+// repo-wide quarantine allows that token in no `.sigil` file outside the stdlib.
+// Shape pinned by `helper_returning_a_raw_read_after_callers_ffi_is_t001`.
+// expect-error: T001
+#[ring(outer)] #[trusted] module tool;
+extern "C" fn crypto_sha256(input: i32, input_len: i32) -> i64 ! { FFI, Unsafe };
+fn peek(p: i64) -> i64 @Public {
+    return load8(p + 1);
+}
+fn probe(input_ptr: i32, input_len: i32) -> i64 @Public ! { Alloc, FFI, Unsafe } {
+    let p: i64 = alloc(1);
+    let unused: i64 @Internal = crypto_sha256(input_ptr, input_len);
+    return peek(p);
+}
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc, FFI, Unsafe } {
+    return probe(input_ptr, input_len);
+}

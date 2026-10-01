@@ -13,11 +13,17 @@
 //!   {if, else, br_if, br_table, select, i32.div_*, i32.rem_*,
 //!    i64.div_*, i64.rem_*}
 //!
-//! Note: `i64.shr_s`/`shl`/`shr_u` are NOT forbidden because Sigil's
-//! surface language has no variable-shift BinaryOp today (CT008/CT009
-//! are spec-reserved). The only shifts present in CT scope are
-//! constant-amount shifts (e.g. ct_lt's `>> 63`), which are
-//! data-independent on every supported CPU.
+//! Note: `i64.shr_s`/`shl`/`shr_u` are NOT forbidden, and that is a
+//! decision, not an omission. A shift's latency depends on its COUNT
+//! alone, never on the bits being moved, so a shift by a @Public count
+//! is constant-time and is how CT code masks and rotates a secret (the
+//! intrinsics' own constant-amount shifts, e.g. ct_lt's `>> 63`, are the
+//! degenerate case). The variable-time shape — a `<<`/`>>` whose AMOUNT
+//! carries @SecretCT (CT008) — is rejected upstream by the taint pass as
+//! T034 before anything is emitted, so it can never reach this scan.
+//! Surface `<<`/`>>` DO parse and type-check (this test's sibling fixture
+//! `fixtures/T034.sigil` uses one); an earlier revision of this note said
+//! they did not, which was false even before T034 landed.
 
 use sigil_compiler::compile_named_module;
 use wasmparser::{Operator, Parser, Payload};

@@ -83,13 +83,28 @@ more reliably than line-number links.
 | Legitimate sources | `legitimate` |
 | Forged record values | `not legitimate` |
 | Restrict/split propagation | `dst_legitimate == src_legitimate` |
-| Restrict attenuation | `dst_perms <= src_perms` |
-| Fuel conservation | `dst_fuel == split_amount`, `src_fuel >= split_amount`, non-negativity |
+| Fuel, per split/draw site | `dst_fuel == split_amount`, `src_fuel >= split_amount`, `split_amount >= 0`, `src_fuel >= 0`, and `split_amount == n` when the amount is a single-definition `IntLit` `n` |
 | Authority restriction | `dst_auth == src_auth & mask`, `dst_auth <=u src_auth` |
 | Authority propagation | `dst_auth == src_auth` |
 | Slot meet | `dst_auth == auth_1 & ... & auth_n` |
 | Default authority | `auth == full_mask` |
 | Sink counterexample | `not ((actual & required) == required)` |
+
+The fuel family is what it says and no more. Its constants are named by AIR
+`VarId` (`fuel_<v>`, `split_amount_<v>`) and only the literal binding grounds
+them: a chain `a = p.draw(10); b = a.draw(20)` is `fuel_a == 10 ∧ fuel_a >= 20`,
+UNSAT at site #3, reported as `C002`. A cap parameter's or state field's budget,
+a computed or copied amount, and a `let mut` amount are free constants — the
+runtime capability table and the wasm guard (`InsufficientFuel`) enforce those.
+The family is per site, not cumulative: two draws of 6 from a child bound to 10
+are satisfiable and only the runtime rejects the second. It is also
+path-insensitive: every site in the function is asserted into one solver
+context regardless of the block it sits in, so a literal overdraw on a dead or
+conditional path makes the whole function UNSAT — the fail-closed direction (a
+`C002` the runtime might never have had to enforce), never the reverse. No site
+encodes region lifetimes. Restrict attenuation has exactly one encoding, the bitvector
+`Authority restriction` row; the former free `perms_<dst> <= perms_<src>` Int
+pair was satisfiable for every program and was removed.
 
 ## 4. Decidability proof
 

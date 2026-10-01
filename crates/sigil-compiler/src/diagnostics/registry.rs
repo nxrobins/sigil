@@ -528,6 +528,12 @@ define_catalog! {
         default_hint: "CT018: `==` / `!=` on `str` compares CONTENT with an early-exit byte loop, so BOTH its running time and the fuel it consumes reveal the length of the common prefix — two timing oracles over secret data. There is no constant-time `str` comparison to fall back on: `ct_eq` / `ct_select` / `ct_lt` are integer-only, so a CT compare has to be written by hand as a fixed-trip-count fold of `ct_eq` over `byte_at` with no early exit. The alternatives are: fold `ct_eq` yourself over a public trip count; use `bytes_eq` if a length-and-prefix leak is acceptable for this data; or step the value down with `declassify_ct` first if the secrecy is no longer required. Integer `==` on `@SecretCT` stays legal — it is a single instruction with nothing to time.",
         category: Category::Effect,
     },
+    CodeEntry {
+        code: T034,
+        title: "Secret-dependent shift amount (CT008)",
+        default_hint: "CT008: `<<` / `>>` by a `@SecretCT` AMOUNT is rejected — a shift by a data-dependent count is variable-time on cores without a barrel shifter and on microcoded shift paths, so the count leaks through timing. Only the right operand (the amount) is checked: shifting a machine-width (`i32`/`u32`/`i64`/`u64`) `@SecretCT` VALUE by a `@Public` amount stays legal, because that latency depends on the public count alone — it is how constant-time code masks and rotates a secret. The exemption is a machine-width statement only: a `u256` `@SecretCT` value shifted by a `@Public` amount passes this rule but is then refused by the formal gate (`I013`) on the `u256_shl`/`u256_shr` lowering, so no `u256` shift touching `@SecretCT` compiles. The check is on the label, so a `let`-copied or arithmetic-derived `@SecretCT` amount is rejected the same way. Make the shift count public data: a literal, a loop index over a `@Public` bound, or a `@Public` parameter, and express the secret-dependent selection with `ct_select` over the constant-count shifts; or step the amount down with `declassify_ct` first if its secrecy is no longer required.",
+        category: Category::Effect,
+    },
     // ── Effect ──
     CodeEntry {
         code: E001,
@@ -652,6 +658,12 @@ define_catalog! {
         category: Category::Ring,
     },
     CodeEntry {
+        code: R007,
+        title: "Monomorphized generic instance is filed in the other ring",
+        default_hint: "A monomorphized generic instance is filed in the FIRST module of the compilation unit and takes that module's ring, so every caller of the generic must be in that ring. If the generic is defined in the caller's own module, declare that module first; if it is defined in the other ring, the call crosses the ring boundary in source as well, so move the generic into the caller's ring. Otherwise keep the generic and its callers in a single-ring program.",
+        category: Category::Ring,
+    },
+    CodeEntry {
         code: R010,
         title: "Non-capability spawn argument",
         default_hint: "`spawn::<Actor>(...)` requires capability-typed arguments. Pass a value declared with `cap type T` rather than a primitive or record.",
@@ -718,6 +730,18 @@ define_catalog! {
         default_hint: "A `mut` state field persists when every stored element can be promoted at its storing write: inline scalars, `str`, flat scalar records (a record of scalars), and `Vec`/`Map` collections whose elements (Vec elements, Map keys/values) are any of those. What is not yet preserved is an element the promotion's field copy cannot deep-copy — a record with a pointer-bearing interior (str/Vec/record fields), a nested collection, or a 256-bit value. Flatten the element (inline the nested fields as scalars), store parallel collections of promotable elements, or await the transitive-promotion slice of the persistent-pointer-state epic.",
         category: Category::Capability,
     },
+    CodeEntry {
+        code: C013,
+        title: "Capability without a recognised full-authority origin put into an aliasable slot",
+        default_hint: "Only a capability whose origin is a non-closure parameter, `mint`, an actor-state read or a direct call result (directly or through `let`, `draw` or `split`) may be put into a slot other code can reach: a `Slot<Cap>` parameter, an actor-state slot, a copied, passed, stored or captured slot. Anything else may only be put into a `slot_new` local of the same function that nothing but `slot_put`/`slot_take` touches. That includes a `.restrict` result, a closure-call or FFI result, and EVERY `slot_take` result, so this fires with no `.restrict` in the program: taking a capability out of a shared slot and putting the very same capability straight back is rejected, as is relaying a full capability out of one slot into another. Both authority checkers key a slot's contents on the taking function's own variable, so a put through an alias would be invisible to the take's authority meet. To narrow authority, put the full-authority capability and call `.restrict(...)` on the value returned by `slot_take` at the point of use; to cycle a capability through a slot, keep that slot a confined `slot_new` local.",
+        category: Category::Capability,
+    },
+    CodeEntry {
+        code: C014,
+        title: "Cap-typed actor-state field assigned a capability without a recognised full-authority origin",
+        default_hint: "Every read of a cap-typed actor-state field counts as FULL authority — in the slot escape gate (C013), in the Z3 prover and in the Lean verifier — so the field may only be assigned a capability whose origin is one those checkers can trust: a non-closure parameter, `mint`, an actor-state read or a direct call result, directly or through `let`, `draw` or `split`. A `.restrict` result, a `slot_take` result, a closure-call or FFI result, or a field load may not be stored in state, in `init` or anywhere else. Assign the bare `init` parameter (`fuel = f;`) and call `.restrict(...)` on the value read from the field at the point of use; keep a narrowed capability in a local, never in state.",
+        category: Category::Capability,
+    },
     // ── FFI ── (F001 reserved — removed pending a firing path; see codes.rs)
     // ── Runtime feedback (R800-R899) ──
     CodeEntry {
@@ -774,7 +798,7 @@ define_catalog! {
         default_hint: "The supplied certificate does not match the source. Inspect the structured `differences` list in the envelope data — typical causes are a tampered cert, a mismatched source file, or a cert generated by a different compiler version that produces different proof obligations.",
         category: Category::Internal,
     },
-    // ── Certificate gating (R810-R816, iteration 36 of Spec A + E) ──
+    // ── Certificate gating (R810-R821; R810-R816 from iteration 36 of Spec A + E) ──
     CodeEntry {
         code: R810,
         title: "Certificate file unreadable, not a regular file, or over 1 MB",
@@ -839,6 +863,12 @@ define_catalog! {
         code: R820,
         title: "Certificate provenance did not validate",
         default_hint: "The active deployment profile requires authenticated certificate provenance, or the supplied signed envelope is malformed. Check the signer id, Ed25519 public key, deployment context, revocation list, and signature algorithm, then re-emit the certificate from a trusted signing key.",
+        category: Category::Internal,
+    },
+    CodeEntry {
+        code: R821,
+        title: "Shipped WASM module could not be bound to the certificate's source",
+        default_hint: "`sigil verify-cert --wasm <path>` binds the shipped module to a fresh compilation of `--source`: the bytes must validate as a WebAssembly module, hash to the cert's `wasm_inner_fingerprint`, and that fingerprint must be re-derived from the source by this compiler. The message names the broken link — bytes that are not a valid module, or a skipped re-derivation because the cert's `compiler_version` differs from this binary. A hash match against the cert's own field is never reported as OK on its own: re-verify with the compiler version that emitted the cert, or re-emit it with `sigil check <source> --cert <path> --emit-wasm <path>`.",
         category: Category::Internal,
     },
     // ── Type checking — declarations & assignments ──

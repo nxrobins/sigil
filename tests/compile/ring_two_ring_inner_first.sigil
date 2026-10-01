@@ -1,0 +1,21 @@
+// Test: inner module FIRST, then an outer module whose functions call each other, with two
+// same-signature functions and two same-signature closures (P2B-TWORING). The outer ring's
+// global FuncIds are not its per-module positions, so a call or closure slot emitted from the
+// global id lands on a same-signature neighbour; this fixture pins the emitted bytes.
+module first;
+fn dummy() -> i64 {
+    return 0;
+}
+#[ring(outer)]
+module tool;
+fn plus_one(x: i64) -> i64 {
+    return x + 1;
+}
+fn times_hundred(x: i64) -> i64 {
+    return x * 100;
+}
+pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 {
+    let a = fn(x: i64) -> i64 { return x + 1; };
+    let b = fn(x: i64) -> i64 { return x * 100; };
+    return plus_one(1) + a(1);
+}

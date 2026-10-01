@@ -23,7 +23,7 @@
 //! Governing spec: docs/specs/type-checker-in-sigil.md names this file's
 //! `TypedProgram` as the self-hosting differential target.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{BinaryOp, Literal, Ring, TaintLabel};
 use crate::name_resolution::DefId;
@@ -54,6 +54,116 @@ pub struct TypedProgram {
     /// from `perform` sites — a function with `E` in its row but no direct `perform`
     /// still needs `E`'s operation signatures to receive evidence parameters.
     pub effect_ops: BTreeMap<String, Vec<EffectOpSig>>,
+    /// BUG-5b: every monomorphized instance — and every closure lambda-lifted while
+    /// an instance body was being re-checked — mapped to the modules that GOVERN
+    /// its security walks ([`InstanceHome`]). Instances are FILED under
+    /// `modules[0]` (the SH-MONO emission-order pin, `monomorph_differential.rs`;
+    /// moving them moves the certified selfhost bytes, because the ambient stdlib
+    /// modules are separate modules of that compile), so neither the filing module
+    /// nor the name prefix (the CALLING module for a free-fn instance and for every
+    /// closure lifted out of one) may decide the ring or the trust an instance body
+    /// is checked under. `check_effects` and `check_rings` resolve both through
+    /// [`TypedProgram::governing_context`], the MEET over the recorded modules. A
+    /// function with no entry is governed by the module it is filed in (its own
+    /// source module). BTreeMap for deterministic Debug (snapshot tests walk the
+    /// program).
+    pub instance_homes: BTreeMap<String, InstanceHome>,
+}
+
+/// BUG-5b round 3: the modules a monomorphized instance body answers to.
+///
+/// A generic body is re-checked once per instantiation, and during that re-check
+/// its callee names do NOT resolve in the definer's scope alone: a free-fn
+/// instance is re-checked in the CALLING module's context (its function sigs,
+/// its `use` scope, its ring for cross-ring resolution — `calls.rs`), and an
+/// impl-method instance, although it takes its function sigs from the definer
+/// (`methods.rs`, CF-D9), still falls back to the checked module's `use` scope
+/// for a name its definer lacks. So the body that is walked is the DEFINER's
+/// text bound to names from `scopes`, and granting it the definer's authority
+/// alone let a trusted generic's `handle Unsafe` discharge a caller's untrusted
+/// code, and an inner-ring generic's exemption hide an outer caller's effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceHome {
+    /// The module whose source text the generic body is.
+    pub definer: String,
+    /// Every module whose scope resolved names in the re-checked body: the
+    /// module whose function sigs the re-check context used, and the module
+    /// whose `use` scope and ring the call resolver consulted. May equal
+    /// `{definer}` (a same-module instantiation).
+    pub scopes: BTreeSet<String>,
+}
+
+/// The ring and trust a function's security walks run under, as resolved by
+/// [`TypedProgram::governing_context`]: the MEET of every governing module's
+/// privileges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoverningContext {
+    /// Skip the effect walk — only when EVERY governing module is inner-ring.
+    pub effect_exempt: bool,
+    /// Holds `handle Unsafe` / FFI authority (E002) — only when EVERY governing
+    /// module is `#[trusted]`.
+    pub trusted: bool,
+    /// Apply the outer-ring rules (R001/R002) — when ANY governing module is
+    /// outer-ring.
+    pub outer_rules: bool,
+    /// Apply the inner-ring rules (R003) — when ANY governing module is
+    /// inner-ring.
+    pub inner_rules: bool,
+}
+
+impl TypedProgram {
+    /// The ring and trust `function`'s security walks run under, filed under
+    /// `filing`.
+    ///
+    /// Fails CLOSED by construction: an instance (or a closure lifted inside one)
+    /// is governed by the MEET of its definer and every module whose scope its
+    /// names resolved in — exempt from the effect walk only if ALL are
+    /// inner-ring, trusted only if ALL are `#[trusted]`, and subject to each
+    /// ring's restrictions if ANY module is in that ring. Granting the definer's
+    /// privileges alone was unsound (BUG-5b round 3): the body's callee names
+    /// resolve in the caller's scope. A function with no recorded home is
+    /// governed by `filing` alone — its own source module. A recorded module
+    /// that names no module of this program is an ICE: the names were read off
+    /// the program's own modules, so a miss is a broken invariant, and dropping
+    /// it from the meet would silently widen the privileges this closes.
+    pub fn governing_context(
+        &self,
+        filing: &TypedModule,
+        function: &TypedFunction,
+    ) -> GoverningContext {
+        let Some(home) = self.instance_homes.get(&function.name) else {
+            return GoverningContext {
+                effect_exempt: filing.ring == Ring::Inner,
+                trusted: filing.trusted,
+                outer_rules: filing.ring == Ring::Outer,
+                inner_rules: filing.ring == Ring::Inner,
+            };
+        };
+        let mut context = GoverningContext {
+            effect_exempt: true,
+            trusted: true,
+            outer_rules: false,
+            inner_rules: false,
+        };
+        for name in std::iter::once(&home.definer).chain(home.scopes.iter()) {
+            let module = self
+                .modules
+                .iter()
+                .find(|module| module.name == *name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ICE: monomorphized instance `{}` records governing module `{name}`, \
+                         which is not a module of this program",
+                        function.name
+                    )
+                });
+            context.effect_exempt &= module.ring == Ring::Inner;
+            context.trusted &= module.trusted;
+            context.outer_rules |= module.ring == Ring::Outer;
+            context.inner_rules |= module.ring == Ring::Inner;
+        }
+        context
+    }
 }
 
 /// An effect operation's resolved signature (name + parameter types + return

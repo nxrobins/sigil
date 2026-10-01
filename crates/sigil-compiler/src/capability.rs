@@ -4,7 +4,13 @@
 //! destination, i.e. a forged capability), R010/R011 (non-cap, non-slot
 //! spawn argument / non-cap fuel argument), R012 (attenuation via
 //! `CapRestrict`/`CapSplit`/`CapDraw` that is not cap-to-cap), R013
-//! (`CapMint` whose destination is not a cap of the minted type).
+//! (`CapMint` whose destination is not a cap of the minted type), C013
+//! (`slot_escape`: a possibly-restricted capability put into a slot that is
+//! not a confined `slot_new` local — the rule that keeps the Z3/Lean
+//! variable-keyed slot meets sound under slot aliasing), and C014 (the same
+//! module: a capability without a recognised full origin stored into a
+//! cap-typed actor-state field — the rule that makes "a state-read cap is
+//! full", which C013, the prover and the Lean verifier all assume, true).
 //!
 //! Only after structural success does the sole Z3-backed flow prover run
 //! (`air_capability_v2::verify_air_capabilities`, `solver` feature); any
@@ -20,6 +26,7 @@
 use crate::{
     air::{AirFunction, AirProgram, AirStmt, AirValue, AirValueKind},
     diagnostics::{Diagnostic, codes},
+    slot_escape,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +83,12 @@ pub fn verify(
 
     for function in &program.functions {
         checked_sites += verify_function(function, &mut diagnostics);
+        // C013: the slot escape gate (Z3-free, feature-independent). It
+        // reports no site count on purpose: `checked_sites` is the PROVER's
+        // count, compared byte-for-byte against a fresh recompile by the
+        // certificate gate (`cert_gate.rs`), so folding a second gate's sites
+        // into it would break that comparison.
+        slot_escape::check_function(function, &mut diagnostics);
     }
 
     // Fast early-out: if structural checks fail, return immediately

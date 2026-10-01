@@ -1,0 +1,4 @@
+# The harness writes the two modules it timed (a0.wasm, a1.wasm) beside its
+# report so their digests can be re-checked against summary.md; the digests
+# ship, the binaries never do. Also covers every dated run subdirectory.
+*.wasm

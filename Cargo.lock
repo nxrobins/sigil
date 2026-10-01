@@ -1818,6 +1818,7 @@ dependencies = [
  "sigil-frontends",
  "sigil-registry",
  "sigil-runtime",
+ "wasmparser 0.246.2",
  "wasmprinter 0.245.1",
 ]
 
@@ -1916,6 +1917,7 @@ dependencies = [
  "tracing",
  "ureq",
  "url",
+ "wasm-encoder 0.246.2",
  "wasmparser 0.246.2",
  "wasmtime",
  "wat",
