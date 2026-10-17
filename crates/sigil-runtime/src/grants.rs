@@ -179,6 +179,10 @@ pub enum Z3Grant {
 /// non-deterministic surface is auditable per task.
 #[derive(Debug, Clone, Default)]
 pub struct IoGrants {
+    /// Host-authorized HTTP call budget in milliseconds; never guest-set.
+    /// `None` uses the legacy timing policy. See `docs/MCP-SERVER.md`
+    /// (HTTP deadlines) for the timing, validation, and authority contract.
+    pub http_timeout_ms: Option<u64>,
     pub net: Vec<NetGrant>,
     pub fs: Vec<FsGrant>,
     pub fs_write: Vec<FsWriteGrant>,
@@ -198,8 +202,8 @@ pub struct IoGrants {
 }
 
 /// Validation error from `IoGrants::validate()`. Carries the offending
-/// category name and observed length so the MCP envelope can produce a
-/// clean R808 diagnostic.
+/// category name and observed length or invalid value so the MCP envelope
+/// can produce a clean R808 diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantValidationError {
     pub category: &'static str,
@@ -230,10 +234,21 @@ impl IoGrants {
     /// bound per-call linear-scan cost; without it, an adversarial task
     /// spec could degrade FFI latency to O(N) on a giant grant list).
     ///
+    /// Also validates [`Self::http_timeout_ms`] before any FFI shim runs.
+    ///
     /// Slot-registry addendum (2026-05-19): also rejects
     /// `RandomGrant::Seeded(0)` — xorshift on state 0 produces 0
     /// forever, so a zero seed is a quiet way to break determinism.
     pub fn validate(&self) -> Result<(), GrantValidationError> {
+        if let Some(ms) = self.http_timeout_ms
+            && !(1..=60_000).contains(&ms)
+        {
+            return Err(GrantValidationError {
+                category: "http_timeout_ms (must be 1..=60000)",
+                len: usize::try_from(ms).unwrap_or(usize::MAX),
+                max: 60_000,
+            });
+        }
         for (category, len) in [
             ("net", self.net.len()),
             ("fs", self.fs.len()),

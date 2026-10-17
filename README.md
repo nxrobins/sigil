@@ -189,6 +189,9 @@ Capability-based runtime permissions; grants gate real I/O at call time (403 rat
 - `FsWriteGrant` — write scope separate from read; `TimeGrant` — `Wall` or `Frozen(ms)`; `RandomGrant` — `Secure` or `Seeded(u64)`; `Z3Grant` — solver gate
 - `IoGrants::none()` — fully sandboxed, every FFI call returns 403
 
+For provider-call timing through MCP or Rust embedding, see the
+[HTTP deadline contract](docs/MCP-SERVER.md#http-deadlines).
+
 ### FFI host functions
 
 - `ffi::http_get(url_ptr, url_len) -> i64` — real `ureq` HTTP GET, 5 MB body cap
@@ -246,14 +249,27 @@ cargo test -p sigil-runtime parser_differential      # 9 tests
 cargo test -p sigil-runtime typecheck_differential   # 107 tests
 ```
 
-### Z3 environment (Windows)
+### Z3 environment (solver builds)
+
+Use native Z3 4.13.3 (the CI pin), with headers and libraries from the same release.
+Set `Z3_SYS_Z3_VERSION` explicitly: it controls the Rust wrapper's API gates.
+Header and library paths alone do not override version detection from pkg-config
+or `z3` on `PATH`; detecting a newer host installation can enable APIs absent
+from the pinned headers.
+`Z3_SYS_Z3_HEADER` is required on every platform so bindgen generates enums
+matching the native library. Adjust these paths to the extracted release:
 
 ```bash
+export Z3_SYS_Z3_VERSION="4.13.3"
+export Z3_LIBRARY_PATH_OVERRIDE="/path/to/z3/bin"
 export Z3_SYS_Z3_HEADER="/path/to/z3/include/z3.h"
-export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
 export BINDGEN_EXTRA_CLANG_ARGS="-I/path/to/z3/include"
 export RUSTFLAGS="-L native=/path/to/z3/bin"
 ```
+
+On Windows, also set `LIBCLANG_PATH="C:/Program Files/LLVM/bin"`. Make the
+same native library available to the loader (`PATH` on Windows,
+`LD_LIBRARY_PATH` on Linux, or `DYLD_LIBRARY_PATH` on macOS).
 
 ## Project status & maturity
 

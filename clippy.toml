@@ -18,13 +18,13 @@
 # and the dependency update must amend the entries below.
 
 disallowed-methods = [
-    # Z3 quantifier-introducing APIs in z3 v0.12. Calling any of
+    # Z3 quantifier-introducing APIs in z3 v0.21.0. Calling any of
     # these would break the QF (quantifier-free) fragment claim
     # documented in docs/z3-theory-inventory.md §4. If a future
     # change genuinely needs quantifiers, both this list and the
     # decidability proof must be re-done.
     #
-    # In z3 v0.12, the quantifier constructors live as free functions
+    # In z3 v0.21.0, the quantifier constructors live as free functions
     # at z3::ast — there are no Bool::forall_const, BV::forall_const,
     # etc. method forms. If the crate adds those (or any new
     # quantifier-introducing API) in a future version, the bumper
@@ -65,9 +65,14 @@ disallowed-methods = [
     # Module-/file-scoped `#![allow(clippy::disallowed_methods)]` is
     # FORBIDDEN workspace-wide (same fence test).
     #
-    # NOTE: z3 0.12.1 has no `z3::ast::lambda_const` (verified against the
-    # vendored crate); re-audit quantifier/lambda constructors on any z3
-    # version bump per the protocol above.
+    # z3 0.21 adds lambda construction and model-enumeration helpers; these
+    # must obey the same quantifier and solver-entry fences as the older APIs.
+    { path = "z3::ast::lambda_const", reason = "Lambda construction leaves the supported quantifier-free fragment." },
+    { path = "z3::Solver::solutions", reason = "Model enumeration bypasses the fragment guard and verdict cache." },
+    { path = "z3::Solver::into_solutions", reason = "Model enumeration bypasses the fragment guard and verdict cache." },
+    { path = "z3::Solver::check_and_get_model", reason = "Combined check/model access bypasses the fragment guard and verdict cache." },
+    { path = "z3::Optimize::into_solutions", reason = "Model enumeration has no fragment-guard/cache integration." },
+    { path = "z3::Optimize::check_and_get_model", reason = "Combined optimization/model access has no fragment-guard/cache integration." },
     { path = "z3::Solver::check",             reason = "Direct check() bypasses the runtime fragment guard; use z3_cache::check_cached*/fresh_check or air_capability_v2::check_direct. See docs/specs/z3-fragment-guard.md." },
     { path = "z3::Solver::check_assumptions", reason = "Assumption-checking bypasses the fragment guard + verdict cache; no production query uses assumptions." },
     { path = "z3::Optimize::check",           reason = "Optimize is a second solver entry point with no fragment-guard/cache integration; the verifier has no optimization queries." },

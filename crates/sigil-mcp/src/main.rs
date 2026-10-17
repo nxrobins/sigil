@@ -350,6 +350,10 @@ fn handle_tools_list() -> Value {
                             "type": "object",
                             "description": "Optional I/O grants. `fs` is a list of canonical filesystem roots the tool may read from; `net` is a list of host patterns (e.g. `\"api.github.com\"` or `\"*.example.com\"`) the tool may HTTP GET/POST.",
                             "properties": {
+                                "http_timeout_ms": {
+                                    "type": "integer", "minimum": 1, "maximum": 60000,
+                                    "description": "Host-authorized total HTTP deadline including redirects and body. Omit for legacy two-second phase windows. Does not grant network access."
+                                },
                                 "fs": {
                                     "type": "array",
                                     "items": { "type": "string" }
@@ -533,8 +537,18 @@ struct ForgeArgs {
     grants: Option<GrantArgs>,
 }
 
+fn deserialize_http_timeout_ms<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct GrantArgs {
+    /// Host-selected total provider deadline; validated before compilation.
+    #[serde(default, deserialize_with = "deserialize_http_timeout_ms")]
+    http_timeout_ms: Option<u64>,
     #[serde(default)]
     fs: Vec<String>,
     #[serde(default)]
@@ -630,6 +644,16 @@ fn require_solver_verified_from_env() -> bool {
 fn tool_sigil_forge(args: &Value, context: &CompilerContext) -> Result<String, RpcError> {
     let args: ForgeArgs = serde_json::from_value(args.clone())
         .map_err(|e| RpcError::invalid_params(format!("sigil_forge args: {e}")))?;
+    if args
+        .grants
+        .as_ref()
+        .and_then(|g| g.http_timeout_ms)
+        .is_some_and(|ms| !(1..=60_000).contains(&ms))
+    {
+        return Err(RpcError::invalid_params(
+            "http_timeout_ms must be 1..=60000",
+        ));
+    }
     let bound_context;
     let context = match args.host_profile.as_deref() {
         Some(name) => {
@@ -716,6 +740,7 @@ fn tool_sigil_forge(args: &Value, context: &CompilerContext) -> Result<String, R
     // Build I/O grants from the agent-supplied descriptors.
     let grant_args = args.grants.unwrap_or_default();
     let grants = IoGrants {
+        http_timeout_ms: grant_args.http_timeout_ms,
         fs: grant_args
             .fs
             .iter()
@@ -1076,6 +1101,49 @@ fn serialize_envelope(envelope: Value) -> Result<String, RpcError> {
 mod compiler_context_tests {
     use super::*;
     use sigil_compiler::compiler_context::HostContractProfile;
+
+    #[test]
+    fn forge_refuses_invalid_http_deadlines_before_compilation_and_accepts_bounds() {
+        let context = CompilerContext::default();
+        for allowance in [
+            json!(null),
+            json!(0),
+            json!(60_001),
+            json!(u64::MAX),
+            json!(-1),
+            json!(true),
+            json!(1.0),
+            json!(1.5),
+            json!("100"),
+            json!([]),
+            json!({}),
+        ] {
+            let args =
+                json!({"source": "not valid source", "grants": {"http_timeout_ms": allowance}});
+            let error = tool_sigil_forge(&args, &context)
+                .expect_err("invalid deadlines fail before source compilation");
+            assert_eq!(error.code, -32602);
+        }
+        for allowance in [1, 60_000] {
+            let args = json!({"source": "module tool; pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+                "grants": {"http_timeout_ms": allowance}});
+            let envelope = tool_sigil_forge(&args, &context)
+                .expect("valid deadline boundaries reach the compiler envelope");
+            let _: Value = serde_json::from_str(&envelope).expect("forge produces JSON");
+        }
+        for args in [
+            json!({"source": "not valid source"}),
+            json!({"source": "not valid source", "grants": {}}),
+        ] {
+            let parsed: ForgeArgs =
+                serde_json::from_value(args.clone()).expect("omitted deadlines are accepted");
+            assert_eq!(parsed.grants.unwrap_or_default().http_timeout_ms, None);
+            let envelope = tool_sigil_forge(&args, &context)
+                .expect("omitted deadlines reach source compilation");
+            let envelope: Value = serde_json::from_str(&envelope).expect("forge produces JSON");
+            assert_eq!(envelope["command"], "forge");
+        }
+    }
 
     #[test]
     fn check_and_forge_keep_the_bootstrap_context_outside_rpc_arguments() {

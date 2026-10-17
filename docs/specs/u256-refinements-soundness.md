@@ -69,7 +69,8 @@ compiler error, and `Unknown` is never converted to acceptance.
 ## Soundness invariants
 
 1. **No narrowing.** A `Wide` value or bound never uses a low limb, `as i64`, or
-   `Int::from_i64`. The source fence in `z3_guard_fences.rs` and the `2^64 <= 100` behavioral
+   `Int::from_i64`. The production-encoder boundary test
+   `u256_wide_refinement_value_is_never_narrowed_to_i64` and the `2^64 <= 100` behavioral
    witness make truncation observable.
 2. **One decimal encoder.** `lexer::u256_to_decimal` is the sole limbs-to-decimal conversion and
    is checked against external known answers.
@@ -87,11 +88,10 @@ compiler error, and `Unknown` is never converted to acceptance.
 
 - `crates/sigil-compiler/tests/u256_refinements.rs` covers admission, Holds/Violated verdicts,
   narrow/wide combinations, wide field reads, and the truncation witness.
-- `crates/sigil-compiler/tests/z3_guard_fences.rs` pins the non-narrowing source shape and the
-  single `solver_verified` assignment.
+- `crates/sigil-compiler/tests/z3_guard_fences.rs` pins the single `solver_verified` assignment.
 - `crates/sigil-compiler/src/lexer.rs` contains decimal known-answer and round-trip tests.
-- `crates/sigil-compiler/src/z3_capability.rs` contains the wide-numeral fragment and magnitude
-  canary.
+- `crates/sigil-compiler/src/z3_capability.rs` contains the production-encoder boundary test
+  and the wide-numeral fragment and magnitude canary.
 - `crates/sigil-compiler/tests/z3_corpus/78_u256_refinement_fail.sigil`,
   `79_u256_wide_refinement_fail.sigil`, and `80_u256_wide_refinement_pass.sigil` keep the paths in
   the solver corpus and workload snapshots.

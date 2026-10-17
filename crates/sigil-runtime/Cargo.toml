@@ -14,7 +14,7 @@ trace = ["dep:tracing"]
 # compiled SIGIL program drive the SMT solver across the WASM boundary. Pulls
 # in the native z3 crate; OFF by default so the deployed runtime's TCB carries
 # no solver unless explicitly built with it. Mirrors sigil-compiler's `solver`.
-solver = ["dep:z3"]
+solver = ["dep:z3", "dep:z3-sys"]
 # The DDC comparison (docs/CLAIMS.md claim 40): executing the whole certified source under the
 # independent Python interpreter takes ~8 min under CPython (~2 min under PyPy, which the lane
 # uses), which pushed the `test` lane past its 30-minute timeout when it ran inside it.
@@ -38,10 +38,9 @@ sigil-abi = { workspace = true }
 # in `http_fetch` so every hop is re-validated against the grants (finding P1).
 ureq = { version = "3", features = ["platform-verifier"] }
 url = "2.5"
-# 43.0.1 fixes a cluster of RUSTSEC-2026 wasmtime advisories, including the
-# critical Cranelift/Winch sandbox-escape ones (RUSTSEC-2026-0095/0096) that are
-# directly load-bearing for this project's wasm sandbox. Do not float below it.
-wasmtime = "47.0.4"
+# 48.0.6 is the minimum patched 48.x release for the October 2026
+# Wasmtime advisories. Do not resolve below this sandbox security floor.
+wasmtime = "48.0.6"
 sha2 = "0.10"
 wasmparser = "0.246"
 # Match Module::new's binary-or-text input support before inspecting security
@@ -51,7 +50,9 @@ getrandom = "0.2"
 tracing = { version = "0.1", optional = true }
 # Optional: only compiled under `--features solver` (see [features]). Version
 # pinned to match sigil-compiler for cross-build verdict reproducibility.
-z3 = { version = "0.12", optional = true }
+z3 = { version = "0.21.0", optional = true }
+# Generate enums from the pinned native headers; Z3 changes enum values across releases.
+z3-sys = { version = "0.13.0", features = ["bindgen"], optional = true }
 
 # Unix-only: `O_NOFOLLOW` / `ELOOP` constants for the no-follow FsWrite open
 # (fs grant-escape hardening). Only constants are referenced — no unsafe

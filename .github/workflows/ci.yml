@@ -909,17 +909,19 @@ jobs:
     env:
       # Pinned Z3 release (ET-Z10): version + SHA256 of the exact asset,
       # computed from the artifact itself. apt is NOT used — ubuntu's
-      # libz3 (4.8.x) predates z3-sys 0.8.1's API surface. Bumping the
+      # libz3 may predate z3-sys 0.13's supported API surface. Bumping the
       # pin means re-running the docs/z3-theory-inventory.md §7 update
       # protocol (re-measure rlimit headroom; re-audit the fence list).
-      Z3_VERSION: "4.12.2"
-      Z3_ASSET: "z3-4.12.2-x64-glibc-2.35"
-      Z3_SHA256: "29604c87d74855690f5f43fa2ecb8e214af89bdddffac378ce403e29c6ea30ec"
+      Z3_VERSION: "4.13.3"
+      Z3_ASSET: "z3-4.13.3-x64-glibc-2.35"
+      Z3_SHA256: "32c7377026733c9d7b33c21cd77a68f50ba682367207b031a6bfd80140a8722f"
       # EVERY Z3 resolution path is pinned to the unzipped asset —
       # bindgen (header), linker (-L), and loader (LD_LIBRARY_PATH).
       # Copying into /usr/{lib,include} is insufficient because the runner also
       # carries Z3 under /usr/local. Pin the header, linker, and loader to the
       # same asset so enum values cannot drift across versions.
+      Z3_SYS_Z3_VERSION: "4.13.3"
+      Z3_LIBRARY_PATH_OVERRIDE: ${{ github.workspace }}/z3-pinned/bin
       Z3_SYS_Z3_HEADER: ${{ github.workspace }}/z3-pinned/include/z3.h
       LD_LIBRARY_PATH: ${{ github.workspace }}/z3-pinned/bin
       RUSTFLAGS: -L ${{ github.workspace }}/z3-pinned/bin

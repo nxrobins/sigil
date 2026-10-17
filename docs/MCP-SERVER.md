@@ -240,6 +240,32 @@ returns a single `R8xx`-coded diagnostic:
 }
 ```
 
+#### HTTP deadlines
+
+For a slower provider call, the host may authorize `grants.http_timeout_ms`
+(for example, `4000`). Supply a JSON integer within the bounds advertised by
+the live `tools/list` input schema; the schema is defined in
+[`handle_tools_list`](../crates/sigil-mcp/src/main.rs). Invalid values,
+including `null`, strings, booleans, floating-point numbers, and out-of-range
+integers, return JSON-RPC invalid params (`-32602`) before compilation. Values
+are rejected, never clamped.
+
+The allowance bounds the caller's wait for each outbound HTTP call, including
+all redirects and body reading. Progress does not restart the deadline.
+Omit the field to retain the legacy timing policy: a two-second library
+request timeout for each hop, backed by a separate 2.5-second watchdog window
+per hop and body read. The two-second connection timeout remains in force
+with either policy. Expiry returns HTTP-style error code `502` to the guest.
+An expired caller deadline does not cancel the detached HTTP worker; the
+process-wide worker cap bounds outstanding workers.
+
+This field grants time only. Network and secret grants remain independently
+required, redirect targets are still checked against network grants, and
+requests carrying outbound headers still refuse redirects. Rust embedders
+select the same policy through `IoGrants::http_timeout_ms`; invalid allowances
+are rejected before guest execution. The ordinary CLI forge path continues
+to use the omitted-field policy.
+
 ### `sigil_lookup_error`
 
 Look up a stable diagnostic code in the central registry.

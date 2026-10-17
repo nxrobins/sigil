@@ -47,9 +47,9 @@ const MAX_MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 /// executed operation, so this bounds total executed instructions. Sized far
 /// above any legitimate tool's instruction count.
 const MAX_WASM_FUEL: u64 = 10_000_000_000;
-/// Per-socket connect/read/write timeout for blocking HTTP shims.
+/// Connection timeout for blocking HTTP shims, including explicit budgets.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(2);
-/// Whole-request timeout for blocking HTTP shims.
+/// Legacy library request timeout when no host HTTP budget is supplied.
 const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Maximum number of 3xx redirects followed for a single HTTP shim call.
 /// Redirects are NOT followed by the agent (it is built with `.max_redirects(0)`);
@@ -309,8 +309,9 @@ fn read_http_body(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>,
     Ok(body)
 }
 
-/// Hard wall-clock bound for ONE PHASE of an HTTP shim call — a single hop
-/// (connect + request + response headers) or the body read — enforced host-side.
+/// Legacy wall-clock bound for ONE PHASE of an HTTP shim call — a single hop
+/// (connect + request + response headers) or the body read — enforced host-side
+/// when no explicit HTTP budget is supplied.
 /// ureq's own `timeout_global` is the first line of defense but is RACY against
 /// a slow-dribbling peer whose chunk cadence collides with the deadline
 /// (observed on ureq 3.3.0: the same 2s-deadline request against a 100ms-dribble
@@ -319,7 +320,7 @@ fn read_http_body(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>,
 /// the guest-facing anti-hang bound must not depend on it. 500ms of grace past
 /// `HTTP_TOTAL_TIMEOUT` lets the library timeout fire first when it does work.
 ///
-/// The bound is PER PHASE, not per call: ureq constructs a fresh global timer
+/// This legacy bound is PER PHASE: ureq constructs a fresh global timer
 /// for every `agent` call, and `http_fetch`'s manual redirect loop issues up to
 /// `1 + MAX_HTTP_REDIRECTS` of them, so the design's own legitimate budget for
 /// a redirect chain is that many timers plus the body read. A whole-call bound
@@ -340,28 +341,26 @@ const MAX_OUTSTANDING_HTTP_WORKERS: usize = 64;
 static OUTSTANDING_HTTP_WORKERS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Watchdog heartbeat protocol between the shim worker and the guest-facing
-/// receiver: `Hop` opens a fresh `HTTP_WATCHDOG_TIMEOUT` window (sent after
-/// each completed redirect hop and once before the body read); `Done` carries
-/// the final result.
+/// Watchdog heartbeat protocol for [`http_fetch_body_bounded`]: `Hop` reports
+/// completed redirect hops and response headers; `Done` carries the final result.
 enum HttpProgress {
     Hop,
     Done(Result<Vec<u8>, u32>),
 }
 
 /// Issue `http_fetch` and read the response body on a detached worker thread,
-/// bounding EACH PHASE (every redirect hop, then the body read) by
-/// `HTTP_WATCHDOG_TIMEOUT` wall-clock via the `HttpProgress` heartbeat, and the
-/// number of windows by the same hop budget `http_fetch` itself enforces. A
-/// watchdog expiry maps to 502 exactly like a library-level transport failure.
+/// bounding the caller's wait. An explicit `IoGrants::http_timeout_ms` selects
+/// one deadline before worker creation; redirect and body progress cannot
+/// extend it. Otherwise, each phase uses `HTTP_WATCHDOG_TIMEOUT`, with the
+/// number of windows bounded by the hop budget `http_fetch` itself enforces.
+/// Expiry maps to 502 exactly like a library-level transport failure.
 ///
 /// The worker is detached: its late result lands in a dropped channel. Against
 /// an adversarial forever-dribbling peer the thread lives as long as the peer
 /// dribbles (ureq's expired-deadline grace read never gives up) — that is
 /// strictly better than stalling the guest, and the leak is bounded by
 /// `MAX_OUTSTANDING_HTTP_WORKERS` across the process, which matters for the
-/// long-lived sigil-mcp server. Worst-case guest-visible latency is one window
-/// per budgeted phase (`2 + MAX_HTTP_REDIRECTS` windows).
+/// long-lived sigil-mcp server.
 fn http_fetch_body_bounded(
     method: HttpMethod,
     url: String,
@@ -374,6 +373,9 @@ fn http_fetch_body_bounded(
 ) -> Result<Vec<u8>, u32> {
     use std::sync::atomic::Ordering;
 
+    let deadline = grants
+        .http_timeout_ms
+        .map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
     let grants = grants.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -399,8 +401,6 @@ fn http_fetch_body_bounded(
             let _slot = SlotGuard;
             let result = http_fetch(method, url, body.as_deref(), &grants, &headers, &worker_tx)
                 .and_then(|response| {
-                    // Fresh window for the body read: headers arrived, the
-                    // hop's window no longer applies.
                     let _ = worker_tx.send(HttpProgress::Hop);
                     read_http_body(response)
                 });
@@ -414,12 +414,18 @@ fn http_fetch_body_bounded(
     }
     drop(tx);
 
-    // One window for the initial hop, one per followable redirect, one for the
+    // One receive for the initial hop, one per followable redirect, one for the
     // body read. `http_fetch` bounds its own loop to the same hop budget, so a
-    // conforming worker can never exhaust these windows without producing
-    // `Done`; if it somehow does, fail closed.
+    // conforming worker cannot exhaust these receives without producing `Done`;
+    // if it somehow does, fail closed.
     for _ in 0..(2 + MAX_HTTP_REDIRECTS as usize) {
-        match rx.recv_timeout(HTTP_WATCHDOG_TIMEOUT) {
+        let timeout = deadline.map_or(HTTP_WATCHDOG_TIMEOUT, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        });
+        if timeout.is_zero() {
+            return Err(502u32);
+        }
+        match rx.recv_timeout(timeout) {
             Ok(HttpProgress::Done(result)) => return result,
             Ok(HttpProgress::Hop) => continue,
             // Timeout, or the worker died without sending (its channel end
@@ -430,12 +436,16 @@ fn http_fetch_body_bounded(
     Err(502u32)
 }
 
-fn http_agent() -> ureq::Agent {
+fn http_agent(grants: &IoGrants) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     ureq::Agent::config_builder()
         // Whole-request + connect timeouts so a slow/hung peer cannot stall the
         // sandboxed tool indefinitely.
-        .timeout_global(Some(HTTP_TOTAL_TIMEOUT))
+        .timeout_global(Some(
+            grants
+                .http_timeout_ms
+                .map_or(HTTP_TOTAL_TIMEOUT, Duration::from_millis),
+        ))
         .timeout_connect(Some(HTTP_IO_TIMEOUT))
         // Do NOT let ureq auto-follow redirects: it would fetch the redirect
         // target WITHOUT re-checking it against the grants, so an allowed host
@@ -512,8 +522,7 @@ fn redirect_method(status: u16, current: HttpMethod) -> HttpMethod {
 /// validated by `parse_http_url`.
 ///
 /// `watchdog` is the shim watchdog heartbeat (see `http_fetch_body_bounded`):
-/// each followed redirect sends `HttpProgress::Hop` to open a fresh window,
-/// mirroring the fresh ureq global timer the next `agent` call gets. Send
+/// each followed redirect sends `HttpProgress::Hop` to report progress. Send
 /// failures are ignored — the receiver drops its end after a watchdog expiry,
 /// and the worker's remaining work is then invisible by design.
 fn http_fetch(
@@ -524,7 +533,7 @@ fn http_fetch(
     headers: &[(String, String)],
     watchdog: &std::sync::mpsc::Sender<HttpProgress>,
 ) -> Result<ureq::http::Response<ureq::Body>, u32> {
-    let agent = http_agent();
+    let agent = http_agent(grants);
     let mut url = initial_url;
     let mut method = method;
     // Own the body so it can be dropped on a POST→GET downgrade.
@@ -580,8 +589,6 @@ fn http_fetch(
                 body = Vec::new();
             }
             method = next_method;
-            // Following a redirect: the next hop gets a fresh ureq global
-            // timer, so open a fresh watchdog window to match.
             let _ = watchdog.send(HttpProgress::Hop);
             continue;
         }
@@ -597,8 +604,9 @@ fn http_fetch(
 
 #[cfg(test)]
 mod http_redirect_tests {
-    use super::{redirect_method, validate_redirect_target};
+    use super::{http_fetch_body_bounded, redirect_method, validate_redirect_target};
     use crate::grants::{HttpMethod, IoGrants, NetGrant};
+    use std::time::Duration;
 
     #[test]
     fn post_downgrades_to_get_on_301_302_303() {
@@ -622,6 +630,167 @@ mod http_redirect_tests {
         for status in [301u16, 302, 303, 307, 308] {
             assert_eq!(redirect_method(status, HttpMethod::Get), HttpMethod::Get);
         }
+    }
+
+    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+
+    fn delayed_http(delay_ms: u64, response: String) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("local HTTP test fixture is available");
+        listener
+            .set_nonblocking(true)
+            .expect("local HTTP fixture accepts can be bounded");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("local HTTP test fixture is available")
+        );
+        let worker = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted fixture streams support blocking I/O");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .expect("local HTTP fixture reads can be bounded");
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(1)))
+                            .expect("local HTTP fixture writes can be bounded");
+                        let mut buf = [0; 4096];
+                        if matches!(stream.read(&mut buf), Ok(n) if n > 0) {
+                            std::thread::sleep(Duration::from_millis(delay_ms));
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local HTTP fixture accept failed: {error}"),
+                }
+            }
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn provider_http_fixture_finishes_without_a_request() {
+        for connect in [false, true] {
+            let (url, worker) = delayed_http(0, OK_RESPONSE.into());
+            let start = std::time::Instant::now();
+            let _client = if connect {
+                let address = url::Url::parse(&url)
+                    .expect("fixture URL is valid")
+                    .socket_addrs(|| None)
+                    .expect("fixture URL has a socket address")[0];
+                Some(
+                    std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1))
+                        .expect("fixture listener is bound"),
+                )
+            } else {
+                None
+            };
+            worker.join().expect("idle fixture must exit cleanly");
+            assert!(start.elapsed() < Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn provider_budget_allows_slow_response_but_default_remains_short() {
+        for (budget, expected) in [(None, Err(502)), (Some(4_000), Ok(b"ok".to_vec()))] {
+            let (url, worker) = delayed_http(2_800, OK_RESPONSE.into());
+            let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+            grants.http_timeout_ms = budget;
+            assert_eq!(
+                http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+                expected
+            );
+            worker.join().expect("local HTTP test fixture is available");
+        }
+    }
+
+    #[test]
+    fn provider_budget_is_not_reset_by_redirect_progress() {
+        let (target, target_worker) = delayed_http(100, OK_RESPONSE.into());
+        let (url, redirect_worker) = delayed_http(
+            100,
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        grants.http_timeout_ms = Some(150);
+        // Both hops fit individually. Their sum must still exhaust ONE allowance.
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        redirect_worker
+            .join()
+            .expect("local HTTP test fixture is available");
+        target_worker
+            .join()
+            .expect("local HTTP test fixture is available");
+    }
+
+    #[test]
+    fn provider_budget_expires_and_rejects_invalid_allowances() {
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        let compiled = sigil_compiler::compile_tool(
+            "module tool; pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        )
+        .expect("the grant-validation fixture compiles");
+        for invalid in [0, 60_001, u64::MAX] {
+            grants.http_timeout_ms = Some(invalid);
+            let validation_error = grants
+                .validate()
+                .expect_err("invalid allowance is rejected");
+            for result in [
+                super::execute_ephemeral(&compiled.wasm, b"", 1_000_000, &grants),
+                super::execute_ephemeral_with_memory_budget(
+                    &compiled.wasm,
+                    b"",
+                    1_000_000,
+                    super::MAX_GUEST_MEMORY_BYTES,
+                    &grants,
+                ),
+            ] {
+                assert!(matches!(
+                    result,
+                    Err(super::ToolError::Trapped { message }) if message == validation_error.to_string()
+                ));
+            }
+        }
+        for allowance in [None, Some(1), Some(60_000)] {
+            grants.http_timeout_ms = allowance;
+            grants
+                .validate()
+                .expect("omission and boundaries are valid");
+            super::execute_ephemeral(&compiled.wasm, b"", 1_000_000, &grants)
+                .expect("valid grants reach guest execution");
+            super::execute_ephemeral_with_memory_budget(
+                &compiled.wasm,
+                b"",
+                1_000_000,
+                super::MAX_GUEST_MEMORY_BYTES,
+                &grants,
+            )
+            .expect("valid grants reach guest execution with a memory budget");
+        }
+        grants.http_timeout_ms = Some(100);
+        let (url, worker) = delayed_http(500, OK_RESPONSE.into());
+        let start = std::time::Instant::now();
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        assert!(start.elapsed() < Duration::from_millis(450));
+        worker.join().expect("local HTTP test fixture is available");
     }
 
     fn grants_for(host: &str, method: HttpMethod) -> IoGrants {
@@ -1036,7 +1205,7 @@ fn execute_ephemeral_inner(
     link_sigil_imports(&mut linker)?;
     link_ffi_imports(&mut linker, grants)?;
 
-    // Validate grants up front (cap counts + Seeded(0) rejection).
+    // Reject invalid grants before instantiation can run a guest start function.
     grants.validate().map_err(|e| ToolError::Trapped {
         message: e.to_string(),
     })?;
@@ -2350,40 +2519,40 @@ fn z3_solve_smtlib2(query: &str) -> i64 {
 /// never 0/1.
 #[cfg(feature = "solver")]
 fn z3_solve_smtlib2_with_rlimit(query: &str, rlimit: u32) -> i64 {
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
-    let solver = z3::Solver::new(&ctx);
-    let mut params = z3::Params::new(&ctx);
-    params.set_u32("rlimit", rlimit);
-    solver.set_params(&params);
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = z3::Solver::new();
+        let mut params = z3::Params::new();
+        params.set_u32("rlimit", rlimit);
+        solver.set_params(&params);
 
-    // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
-    // Context installs a null error handler), so it cannot be trusted to
-    // signal failure on its own.
-    solver.from_string(query);
+        // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
+        // Context installs a null error handler), so it cannot be trusted to
+        // signal failure on its own.
+        solver.from_string(query);
 
-    // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
-    // query was malformed or empty. Refuse to let `check()` on an empty
-    // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
-    if solver.get_assertions().is_empty() {
-        return pack_error(400);
-    }
+        // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
+        // query was malformed or empty. Refuse to let `check()` on an empty
+        // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
+        if solver.get_assertions().is_empty() {
+            return pack_error(400);
+        }
 
-    // Sanctioned carve-out (census-pinned by the compiler's
-    // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
-    // solves queries handed to it by running SIGIL programs under an
-    // explicit Z3 grant, a different trust domain from the compiler's
-    // verifier. The compile-time fragment guard's allowlist does not
-    // govern it; its soundness contract is NC1 (non-verdict outcomes
-    // are never read as sat/unsat — see docs/z3-runtime-capability.md).
-    #[allow(clippy::disallowed_methods)]
-    let result = solver.check();
-    match result {
-        z3::SatResult::Sat => 1,
-        z3::SatResult::Unsat => 0,
-        // NC1 — "don't know" is never "proven": a distinct negative code.
-        z3::SatResult::Unknown => pack_error(408),
-    }
+        // Sanctioned carve-out (census-pinned by the compiler's
+        // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
+        // solves queries handed to it by running SIGIL programs under an
+        // explicit Z3 grant, a different trust domain from the compiler's
+        // verifier. The compile-time fragment guard's allowlist does not
+        // govern it; its soundness contract is NC1 (non-verdict outcomes
+        // are never read as sat/unsat — see docs/z3-runtime-capability.md).
+        #[allow(clippy::disallowed_methods)]
+        let result = solver.check();
+        match result {
+            z3::SatResult::Sat => 1,
+            z3::SatResult::Unsat => 0,
+            // NC1 — "don't know" is never "proven": a distinct negative code.
+            z3::SatResult::Unknown => pack_error(408),
+        }
+    })
 }
 
 #[cfg(all(test, feature = "solver"))]

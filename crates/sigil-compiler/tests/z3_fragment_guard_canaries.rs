@@ -16,12 +16,8 @@ use std::collections::BTreeSet;
 use sigil_compiler::z3_fragment_guard::{
     FragmentViolation, NODE_CEILING, allowed_decl_kind_names, check_fragment,
 };
-use z3::ast::{Array, Ast, BV, Bool, Int, Real};
-use z3::{Config, Context, FuncDecl, Solver, Sort};
-
-fn ctx() -> Context {
-    Context::new(&Config::new())
-}
+use z3::ast::{Array, BV, Bool, Int, Real};
+use z3::{FuncDecl, Solver, Sort};
 
 // -------------------------------------------------------------------
 // Negative canaries — one exact variant per rejection class.
@@ -32,21 +28,22 @@ fn ctx() -> Context {
 /// which is caught first — this canary covers both.)
 #[test]
 fn canary_forall_quantifier_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let x = Int::new_const(&c, "x");
-    // Sanctioned carve-out: the canary must CONSTRUCT a quantifier to
-    // prove the guard rejects one. See clippy.toml's census note.
-    #[allow(clippy::disallowed_methods)]
-    let q = z3::ast::forall_const(&c, &[&x], &[], &x.ge(&Int::from_i64(&c, 0)));
-    solver.assert(&q);
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let x = Int::new_const("x");
+        // Sanctioned carve-out: the canary must CONSTRUCT a quantifier to
+        // prove the guard rejects one. See clippy.toml's census note.
+        #[allow(clippy::disallowed_methods)]
+        let q = z3::ast::forall_const(&[&x], &[], &x.ge(Int::from_i64(0)));
+        solver.assert(&q);
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::DisallowedAstKind { kind, .. }) => {
-            assert_eq!(kind, "Quantifier");
+        match check_fragment(&solver) {
+            Err(FragmentViolation::DisallowedAstKind { kind, .. }) => {
+                assert_eq!(kind, "Quantifier");
+            }
+            other => panic!("expected DisallowedAstKind(Quantifier), got {other:?}"),
         }
-        other => panic!("expected DisallowedAstKind(Quantifier), got {other:?}"),
-    }
+    });
 }
 
 /// A Real-sorted term is rejected. The GT op itself is allowlisted (it
@@ -55,17 +52,18 @@ fn canary_forall_quantifier_rejected() {
 /// actually produces, which is `DisallowedSort("Real")`.
 #[test]
 fn canary_real_sort_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let r = Real::new_const(&c, "r");
-    solver.assert(&r.gt(&Real::from_real(&c, 1, 2)));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let r = Real::new_const("r");
+        solver.assert(r.gt(Real::from_rational(1, 2)));
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::DisallowedSort { sort, .. }) => {
-            assert_eq!(sort, "Real");
+        match check_fragment(&solver) {
+            Err(FragmentViolation::DisallowedSort { sort, .. }) => {
+                assert_eq!(sort, "Real");
+            }
+            other => panic!("expected DisallowedSort(Real), got {other:?}"),
         }
-        other => panic!("expected DisallowedSort(Real), got {other:?}"),
-    }
+    });
 }
 
 /// An array `select` is rejected as `DisallowedOp("SELECT")` — the decl
@@ -73,20 +71,21 @@ fn canary_real_sort_rejected() {
 /// visited (parent-before-children walk).
 #[test]
 fn canary_array_select_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let a = Array::new_const(&c, "a", &Sort::int(&c), &Sort::int(&c));
-    let i = Int::new_const(&c, "i");
-    let j = Int::new_const(&c, "j");
-    let selected = a.select(&i).as_int().expect("int-ranged array select");
-    solver.assert(&selected._eq(&j));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let a = Array::new_const("a", &Sort::int(), &Sort::int());
+        let i = Int::new_const("i");
+        let j = Int::new_const("j");
+        let selected = a.select(&i).as_int().expect("int-ranged array select");
+        solver.assert(selected.eq(&j));
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::DisallowedOp { decl_kind, .. }) => {
-            assert_eq!(decl_kind, "SELECT");
+        match check_fragment(&solver) {
+            Err(FragmentViolation::DisallowedOp { decl_kind, .. }) => {
+                assert_eq!(decl_kind, "SELECT");
+            }
+            other => panic!("expected DisallowedOp(SELECT), got {other:?}"),
         }
-        other => panic!("expected DisallowedOp(SELECT), got {other:?}"),
-    }
+    });
 }
 
 /// An uninterpreted FUNCTION application (arity > 0) is rejected —
@@ -94,38 +93,40 @@ fn canary_array_select_rejected() {
 /// arity is exactly what separates EUF territory from the fragment.
 #[test]
 fn canary_uninterpreted_fn_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let f = FuncDecl::new(&c, "f", &[&Sort::int(&c)], &Sort::int(&c));
-    let x = Int::new_const(&c, "x");
-    let y = Int::new_const(&c, "y");
-    let fx = f.apply(&[&x]).as_int().expect("int-ranged application");
-    solver.assert(&fx._eq(&y));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let f = FuncDecl::new("f", &[&Sort::int()], &Sort::int());
+        let x = Int::new_const("x");
+        let y = Int::new_const("y");
+        let fx = f.apply(&[&x]).as_int().expect("int-ranged application");
+        solver.assert(fx.eq(&y));
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::UninterpretedFunction { name, arity, .. }) => {
-            assert_eq!(name, "f");
-            assert_eq!(arity, 1);
+        match check_fragment(&solver) {
+            Err(FragmentViolation::UninterpretedFunction { name, arity, .. }) => {
+                assert_eq!(name, "f");
+                assert_eq!(arity, 1);
+            }
+            other => panic!("expected UninterpretedFunction(f, 1), got {other:?}"),
         }
-        other => panic!("expected UninterpretedFunction(f, 1), got {other:?}"),
-    }
+    });
 }
 
 /// A bitvector of width 16 is rejected — the inventory's claim is
 /// QF_BV<32> exactly, not QF_BV.
 #[test]
 fn canary_bv16_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let n = BV::new_const(&c, "n", 16);
-    solver.assert(&n._eq(&BV::from_u64(&c, 3, 16)));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let n = BV::new_const("n", 16);
+        solver.assert(n.eq(BV::from_u64(3, 16)));
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::NonWidth32Bv { width, .. }) => {
-            assert_eq!(width, 16);
+        match check_fragment(&solver) {
+            Err(FragmentViolation::NonWidth32Bv { width, .. }) => {
+                assert_eq!(width, 16);
+            }
+            other => panic!("expected NonWidth32Bv(16), got {other:?}"),
         }
-        other => panic!("expected NonWidth32Bv(16), got {other:?}"),
-    }
+    });
 }
 
 /// Mixing Int and BV atoms in one assertion requires a connective — and
@@ -136,20 +137,21 @@ fn canary_bv16_rejected() {
 /// (unit-tested directly in the module, since real walks can't reach it).
 #[test]
 fn canary_mixed_int_bv_assertion_rejected_at_the_connective() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let x = Int::new_const(&c, "x");
-    let b = BV::new_const(&c, "b", 32);
-    let int_atom = x.gt(&Int::from_i64(&c, 0));
-    let bv_atom = b.bvule(&BV::from_u64(&c, 7, 32));
-    solver.assert(&Bool::and(&c, &[&int_atom, &bv_atom]));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let x = Int::new_const("x");
+        let b = BV::new_const("b", 32);
+        let int_atom = x.gt(Int::from_i64(0));
+        let bv_atom = b.bvule(BV::from_u64(7, 32));
+        solver.assert(Bool::and(&[&int_atom, &bv_atom]));
 
-    match check_fragment(&solver) {
-        Err(FragmentViolation::DisallowedOp { decl_kind, .. }) => {
-            assert_eq!(decl_kind, "AND");
+        match check_fragment(&solver) {
+            Err(FragmentViolation::DisallowedOp { decl_kind, .. }) => {
+                assert_eq!(decl_kind, "AND");
+            }
+            other => panic!("expected DisallowedOp(AND), got {other:?}"),
         }
-        other => panic!("expected DisallowedOp(AND), got {other:?}"),
-    }
+    });
 }
 
 /// A formula deeper than the node ceiling is rejected as `TooLarge` —
@@ -158,20 +160,21 @@ fn canary_mixed_int_bv_assertion_rejected_at_the_connective() {
 /// a violation rather than overflowing a recursion stack).
 #[test]
 fn canary_too_large_rejected() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let mut b = Bool::new_const(&c, "b");
-    for _ in 0..=NODE_CEILING {
-        b = b.not();
-    }
-    solver.assert(&b);
-
-    match check_fragment(&solver) {
-        Err(FragmentViolation::TooLarge { nodes }) => {
-            assert!(nodes > NODE_CEILING);
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let mut b = Bool::new_const("b");
+        for _ in 0..=NODE_CEILING {
+            b = b.not();
         }
-        other => panic!("expected TooLarge, got {other:?}"),
-    }
+        solver.assert(&b);
+
+        match check_fragment(&solver) {
+            Err(FragmentViolation::TooLarge { nodes }) => {
+                assert!(nodes > NODE_CEILING);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    });
 }
 
 // -------------------------------------------------------------------
@@ -189,23 +192,24 @@ fn names(set: &[&str]) -> BTreeSet<String> {
 /// `¬(actual & required = required)` — pure QF_BV<32>.
 #[test]
 fn positive_authority_bv_query_passes() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let auth = BV::new_const(&c, "auth_1", 32);
-    let src = BV::new_const(&c, "auth_0", 32);
-    let mask = BV::from_u64(&c, 0b1010, 32);
-    solver.assert(&auth._eq(&src.bvand(&mask)));
-    solver.assert(&auth.bvule(&src));
-    let required = BV::from_u64(&c, 0b0010, 32);
-    solver.assert(&auth.bvand(&required)._eq(&required).not());
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let auth = BV::new_const("auth_1", 32);
+        let src = BV::new_const("auth_0", 32);
+        let mask = BV::from_u64(0b1010, 32);
+        solver.assert(auth.eq(src.bvand(&mask)));
+        solver.assert(auth.bvule(&src));
+        let required = BV::from_u64(0b0010, 32);
+        solver.assert(auth.bvand(&required).eq(&required).not());
 
-    let report = check_fragment(&solver).expect("authority queries are in-fragment");
-    assert_eq!(report.assertions_checked, 3);
-    assert_eq!(
-        report.observed_decl_kinds,
-        names(&["BAND", "BNUM", "EQ", "NOT", "ULEQ", "UNINTERPRETED"])
-    );
-    assert_eq!(report.observed_sort_kinds, names(&["BV", "Bool"]));
+        let report = check_fragment(&solver).expect("authority queries are in-fragment");
+        assert_eq!(report.assertions_checked, 3);
+        assert_eq!(
+            report.observed_decl_kinds,
+            names(&["BAND", "BNUM", "EQ", "NOT", "ULEQ", "UNINTERPRETED"])
+        );
+        assert_eq!(report.observed_sort_kinds, names(&["BV", "Bool"]));
+    });
 }
 
 /// The refinement family (z3_capability.rs `check_refinement`): bind
@@ -213,39 +217,41 @@ fn positive_authority_bv_query_passes() {
 /// QF_LIA over one free variable.
 #[test]
 fn positive_refinement_lia_query_passes() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let value = Int::new_const(&c, "refine__value");
-    solver.assert(&value._eq(&Int::from_i64(&c, 42)));
-    solver.assert(&value.gt(&Int::from_i64(&c, 100)).not());
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let value = Int::new_const("refine__value");
+        solver.assert(value.eq(Int::from_i64(42)));
+        solver.assert(value.gt(Int::from_i64(100)).not());
 
-    let report = check_fragment(&solver).expect("refinement queries are in-fragment");
-    assert_eq!(report.assertions_checked, 2);
-    assert_eq!(
-        report.observed_decl_kinds,
-        names(&["ANUM", "EQ", "GT", "NOT", "UNINTERPRETED"])
-    );
-    assert_eq!(report.observed_sort_kinds, names(&["Bool", "Int"]));
+        let report = check_fragment(&solver).expect("refinement queries are in-fragment");
+        assert_eq!(report.assertions_checked, 2);
+        assert_eq!(
+            report.observed_decl_kinds,
+            names(&["ANUM", "EQ", "GT", "NOT", "UNINTERPRETED"])
+        );
+        assert_eq!(report.observed_sort_kinds, names(&["Bool", "Int"]));
+    });
 }
 
 /// The legitimacy family (z3_capability.rs Phase 1): propositional Bool
 /// equalities + negations over `legit_*` variables.
 #[test]
 fn positive_legitimacy_bool_query_passes() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    let a = Bool::new_const(&c, "legit_a");
-    let b = Bool::new_const(&c, "legit_b");
-    solver.assert(&a._eq(&b));
-    solver.assert(&a.not());
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        let a = Bool::new_const("legit_a");
+        let b = Bool::new_const("legit_b");
+        solver.assert(a.eq(&b));
+        solver.assert(a.not());
 
-    let report = check_fragment(&solver).expect("legitimacy queries are in-fragment");
-    assert_eq!(report.assertions_checked, 2);
-    assert_eq!(
-        report.observed_decl_kinds,
-        names(&["EQ", "NOT", "UNINTERPRETED"])
-    );
-    assert_eq!(report.observed_sort_kinds, names(&["Bool"]));
+        let report = check_fragment(&solver).expect("legitimacy queries are in-fragment");
+        assert_eq!(report.assertions_checked, 2);
+        assert_eq!(
+            report.observed_decl_kinds,
+            names(&["EQ", "NOT", "UNINTERPRETED"])
+        );
+        assert_eq!(report.observed_sort_kinds, names(&["Bool"]));
+    });
 }
 
 /// Site 3's shape (the Phase 1+2 consistency probe): ONE solver holding
@@ -255,28 +261,29 @@ fn positive_legitimacy_bool_query_passes() {
 /// makes a per-solver mix check unshippable on day one (ET-Z5).
 #[test]
 fn positive_site3_mixed_solver_separate_assertions_passes() {
-    let c = ctx();
-    let solver = Solver::new(&c);
-    // Phase 1: legitimacy (Bool) + fuel balance (Int).
-    let legit_a = Bool::new_const(&c, "legit_a");
-    let legit_b = Bool::new_const(&c, "legit_b");
-    solver.assert(&legit_a._eq(&legit_b));
-    let fuel_parent = Int::new_const(&c, "fuel_parent");
-    let fuel_child = Int::new_const(&c, "fuel_child");
-    solver.assert(&fuel_child.le(&fuel_parent));
-    solver.assert(&fuel_child.ge(&Int::from_i64(&c, 0)));
-    // Phase 2: authority (BV<32>).
-    let auth = BV::new_const(&c, "auth_1", 32);
-    let src = BV::new_const(&c, "auth_0", 32);
-    solver.assert(&auth._eq(&src.bvand(&BV::from_u64(&c, 0xFF, 32))));
-    solver.assert(&auth.bvule(&src));
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = Solver::new();
+        // Phase 1: legitimacy (Bool) + fuel balance (Int).
+        let legit_a = Bool::new_const("legit_a");
+        let legit_b = Bool::new_const("legit_b");
+        solver.assert(legit_a.eq(&legit_b));
+        let fuel_parent = Int::new_const("fuel_parent");
+        let fuel_child = Int::new_const("fuel_child");
+        solver.assert(fuel_child.le(&fuel_parent));
+        solver.assert(fuel_child.ge(Int::from_i64(0)));
+        // Phase 2: authority (BV<32>).
+        let auth = BV::new_const("auth_1", 32);
+        let src = BV::new_const("auth_0", 32);
+        solver.assert(auth.eq(src.bvand(BV::from_u64(0xFF, 32))));
+        solver.assert(auth.bvule(&src));
 
-    let report = check_fragment(&solver).expect(
-        "BV and Int constraints as SEPARATE assertions in one solver are \
+        let report = check_fragment(&solver).expect(
+            "BV and Int constraints as SEPARATE assertions in one solver are \
          in-fragment — the mix invariant is per-assertion",
-    );
-    assert_eq!(report.assertions_checked, 5);
-    assert_eq!(report.observed_sort_kinds, names(&["BV", "Bool", "Int"]));
+        );
+        assert_eq!(report.assertions_checked, 5);
+        assert_eq!(report.observed_sort_kinds, names(&["BV", "Bool", "Int"]));
+    });
 }
 
 // -------------------------------------------------------------------
@@ -296,36 +303,36 @@ fn positive_site3_mixed_solver_separate_assertions_passes() {
 /// the canonical assertions — so stats are the honest witness.)
 #[test]
 fn guard_err_blocks_the_verdict_with_no_cache_interaction() {
-    use sigil_compiler::z3_cache::{Verdict, check_cached, fresh_check, stats_snapshot};
+    z3::with_z3_config(&z3::Config::new(), || {
+        use sigil_compiler::z3_cache::{Verdict, check_cached, fresh_check, stats_snapshot};
 
-    let c = ctx();
+        // Warm path control: a clean query misses then hits.
+        let clean = Solver::new();
+        let x = Int::new_const("ordering_witness_var");
+        clean.assert(x.gt(Int::from_i64(41)));
+        let v1 = check_cached(&clean, fresh_check).expect("fragment-clean query");
+        assert_eq!(v1, Verdict::Sat);
+        let v2 = check_cached(&clean, |_| panic!("second call must be a cache hit"))
+            .expect("fragment-clean query");
+        assert_eq!(v2, Verdict::Sat);
 
-    // Warm path control: a clean query misses then hits.
-    let clean = Solver::new(&c);
-    let x = Int::new_const(&c, "ordering_witness_var");
-    clean.assert(&x.gt(&Int::from_i64(&c, 41)));
-    let v1 = check_cached(&clean, fresh_check).expect("fragment-clean query");
-    assert_eq!(v1, Verdict::Sat);
-    let v2 = check_cached(&clean, |_| panic!("second call must be a cache hit"))
-        .expect("fragment-clean query");
-    assert_eq!(v2, Verdict::Sat);
-
-    // The rejection: stats must not move at all.
-    let (h_before, m_before) = stats_snapshot();
-    let dirty = Solver::new(&c);
-    let r = Real::new_const(&c, "ordering_witness_real");
-    dirty.assert(&r.gt(&Real::from_real(&c, 1, 2)));
-    match check_cached(&dirty, fresh_check) {
-        Err(FragmentViolation::DisallowedSort { sort, .. }) => assert_eq!(sort, "Real"),
-        other => panic!("expected Err(DisallowedSort(Real)) at the chokepoint, got {other:?}"),
-    }
-    let (h_after, m_after) = stats_snapshot();
-    assert_eq!(
-        (h_before, m_before),
-        (h_after, m_after),
-        "a guard rejection must touch NO cache state — the walk runs \
+        // The rejection: stats must not move at all.
+        let (h_before, m_before) = stats_snapshot();
+        let dirty = Solver::new();
+        let r = Real::new_const("ordering_witness_real");
+        dirty.assert(r.gt(Real::from_rational(1, 2)));
+        match check_cached(&dirty, fresh_check) {
+            Err(FragmentViolation::DisallowedSort { sort, .. }) => assert_eq!(sort, "Real"),
+            other => panic!("expected Err(DisallowedSort(Real)) at the chokepoint, got {other:?}"),
+        }
+        let (h_after, m_after) = stats_snapshot();
+        assert_eq!(
+            (h_before, m_before),
+            (h_after, m_after),
+            "a guard rejection must touch NO cache state — the walk runs \
          before any lookup or store"
-    );
+        );
+    });
 }
 
 /// The allowlist-as-data is exactly the 13 documented names — the

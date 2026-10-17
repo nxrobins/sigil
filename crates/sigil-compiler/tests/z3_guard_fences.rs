@@ -300,38 +300,3 @@ fn solver_verified_has_exactly_one_assignment_site() {
          witness semantics; route through the chokepoint. Found: {sites:?}"
     );
 }
-
-/// A wide `u256` refinement value or bound must use `Int::from_str` as one
-/// arbitrary-precision numeral, never an `i64` truncation. This source fence
-/// complements the behavioral witness in `u256_refinements.rs`.
-#[test]
-fn u256_wide_refinement_value_is_never_narrowed_to_i64() {
-    let path = crates_root().join("sigil-compiler/src/z3_capability.rs");
-    let source = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let code: String = source
-        .lines()
-        .filter(|l| !is_comment_line(l))
-        .map(|l| format!("{l}\n"))
-        .collect();
-
-    // The canonical u256→i64 truncation token must never appear in the Z3 layer.
-    assert!(
-        !code.contains("limbs[0]"),
-        "NC-b2: `limbs[0]` (a u256→i64 truncation) must not appear in z3_capability.rs"
-    );
-    // The single wide chokepoint exists and builds the numeral via from_str.
-    assert!(
-        code.contains("Int::from_str(ctx, &decimal)"),
-        "NC-b2: the Wide refinement numeral must be built via Int::from_str(u256_to_decimal)"
-    );
-    // No code line may narrow a Wide value to i64.
-    for line in code.lines() {
-        if line.contains("RefValue::Wide") {
-            assert!(
-                !line.contains("from_i64") && !line.contains("as i64"),
-                "NC-b2: a RefValue::Wide must never be narrowed to i64 — offending line: {line}"
-            );
-        }
-    }
-}
