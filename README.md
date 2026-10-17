@@ -252,6 +252,10 @@ cargo test -p sigil-runtime typecheck_differential   # 107 tests
 ### Z3 environment (solver builds)
 
 Use native Z3 4.13.3 (the CI pin), with headers and libraries from the same release.
+Set `Z3_SYS_Z3_VERSION` explicitly: it controls the Rust wrapper's API gates.
+Header and library paths alone do not override version detection from pkg-config
+or `z3` on `PATH`; detecting a newer host installation can enable APIs absent
+from the pinned headers.
 `Z3_SYS_Z3_HEADER` is required on every platform so bindgen generates enums
 matching the native library. Adjust these paths to the extracted release:
 
