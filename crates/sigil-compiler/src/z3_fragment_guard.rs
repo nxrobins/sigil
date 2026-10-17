@@ -153,7 +153,7 @@ struct AssertionScan {
 /// theory-mix check runs after each assertion's walk completes. Which
 /// layer rejects a multi-violation formula is deliberately NOT a
 /// contract (AG-Z1) — only that rejection is deterministic.
-pub fn check_fragment(solver: &Solver<'_>) -> Result<FragmentReport, FragmentViolation> {
+pub fn check_fragment(solver: &Solver) -> Result<FragmentReport, FragmentViolation> {
     let mut report = FragmentReport::default();
     let mut visited_total: usize = 0;
 
@@ -207,13 +207,13 @@ pub fn allowed_decl_kind_names() -> BTreeSet<String> {
 /// assertion register every subterm even when assertions share DAG
 /// nodes; within one assertion, shared nodes are visited once.
 fn walk_assertion(
-    root: &Dynamic<'_>,
+    root: &Dynamic,
     visited_total: &mut usize,
     report: &mut FragmentReport,
 ) -> Result<AssertionScan, FragmentViolation> {
     let mut scan = AssertionScan::default();
-    let mut seen: HashSet<Dynamic<'_>> = HashSet::new();
-    let mut worklist: Vec<Dynamic<'_>> = vec![root.clone()];
+    let mut seen: HashSet<Dynamic> = HashSet::new();
+    let mut worklist: Vec<Dynamic> = vec![root.clone()];
 
     while let Some(node) = worklist.pop() {
         if !seen.insert(node.clone()) {
@@ -252,19 +252,19 @@ fn walk_assertion(
         };
         let decl_kind = decl.kind();
         match decl_kind {
-            DeclKind::EQ
-            | DeclKind::NOT
-            | DeclKind::LE
-            | DeclKind::GE
-            | DeclKind::LT
-            | DeclKind::GT
-            | DeclKind::ANUM
-            | DeclKind::BAND
-            | DeclKind::ULEQ
-            | DeclKind::BNUM
-            | DeclKind::TRUE
-            | DeclKind::FALSE => {}
-            DeclKind::UNINTERPRETED => {
+            DeclKind::Eq
+            | DeclKind::Not
+            | DeclKind::Le
+            | DeclKind::Ge
+            | DeclKind::Lt
+            | DeclKind::Gt
+            | DeclKind::Anum
+            | DeclKind::Band
+            | DeclKind::Uleq
+            | DeclKind::Bnum
+            | DeclKind::True
+            | DeclKind::False => {}
+            DeclKind::Uninterpreted => {
                 let arity = decl.arity();
                 if arity > 0 {
                     return Err(FragmentViolation::UninterpretedFunction {
@@ -279,20 +279,23 @@ fn walk_assertion(
             // and every op a future z3 version adds.
             other => {
                 return Err(FragmentViolation::DisallowedOp {
-                    decl_kind: format!("{other:?}"),
+                    decl_kind: format!("{other:?}").to_ascii_uppercase(),
                     decl_name: decl.name(),
                     node: snippet(&node),
                 });
             }
         }
-        report.observed_decl_kinds.insert(format!("{decl_kind:?}"));
+        // Inventory names are stable across binding enum-style changes.
+        report
+            .observed_decl_kinds
+            .insert(format!("{decl_kind:?}").to_ascii_uppercase());
 
         // (3) Sort allowlist: Bool, Int, BV of width exactly 32.
         let sort_kind = node.sort_kind();
         match sort_kind {
             SortKind::Bool => {}
             SortKind::Int => scan.saw_int = true,
-            SortKind::BV => {
+            SortKind::Bv => {
                 let width = node.as_bv().map(|b| b.get_size()).unwrap_or(0);
                 if width != 32 {
                     return Err(FragmentViolation::NonWidth32Bv {
@@ -309,7 +312,10 @@ fn walk_assertion(
                 });
             }
         }
-        report.observed_sort_kinds.insert(format!("{sort_kind:?}"));
+        report.observed_sort_kinds.insert(match sort_kind {
+            SortKind::Bv => "BV".to_string(),
+            other => format!("{other:?}"),
+        });
 
         worklist.extend(node.children());
     }
@@ -322,7 +328,7 @@ fn walk_assertion(
 /// skeleton may be shared). The op allowlist already makes a mix
 /// unreachable — no connective or conversion op is admitted — so this
 /// is defense-in-depth in case the allowlist ever grows one.
-fn mix_violation(scan: AssertionScan, root: &Dynamic<'_>) -> Option<FragmentViolation> {
+fn mix_violation(scan: AssertionScan, root: &Dynamic) -> Option<FragmentViolation> {
     if scan.saw_int && scan.saw_bv {
         Some(FragmentViolation::MixedTheories {
             node: snippet(root),
@@ -334,7 +340,7 @@ fn mix_violation(scan: AssertionScan, root: &Dynamic<'_>) -> Option<FragmentViol
 
 /// Truncated rendering of the offending node. Materializes the full
 /// string once on the error path only.
-fn snippet(node: &Dynamic<'_>) -> String {
+fn snippet(node: &Dynamic) -> String {
     let full = node.to_string();
     if full.chars().count() <= SNIPPET_MAX_CHARS {
         full
@@ -391,49 +397,46 @@ pub fn reset_observations_for_test() {
 mod tests {
     use super::*;
     use z3::ast::{BV, Bool, Int};
-    use z3::{Config, Context};
-
-    fn ctx() -> Context {
-        Context::new(&Config::new())
-    }
 
     /// The mix detector itself, on synthetic flags — it is unreachable
     /// through real walks (every combining op is rejected first), which
     /// is exactly why it gets a direct unit test (ET-Z5).
     #[test]
     fn mix_detector_fires_on_both_theories() {
-        let c = ctx();
-        let root = Dynamic::from_ast(&Bool::new_const(&c, "b"));
-        let both = AssertionScan {
-            saw_int: true,
-            saw_bv: true,
-        };
-        assert!(matches!(
-            mix_violation(both, &root),
-            Some(FragmentViolation::MixedTheories { .. })
-        ));
-        for (saw_int, saw_bv) in [(true, false), (false, true), (false, false)] {
-            assert!(mix_violation(AssertionScan { saw_int, saw_bv }, &root).is_none());
-        }
+        z3::with_z3_config(&z3::Config::new(), || {
+            let root = Dynamic::from_ast(&Bool::new_const("b"));
+            let both = AssertionScan {
+                saw_int: true,
+                saw_bv: true,
+            };
+            assert!(matches!(
+                mix_violation(both, &root),
+                Some(FragmentViolation::MixedTheories { .. })
+            ));
+            for (saw_int, saw_bv) in [(true, false), (false, true), (false, false)] {
+                assert!(mix_violation(AssertionScan { saw_int, saw_bv }, &root).is_none());
+            }
+        });
     }
 
     /// The walk's sort flags register per assertion: an Int query sets
     /// saw_int only; a BV<32> query sets saw_bv only.
     #[test]
     fn walk_collects_per_assertion_sort_flags() {
-        let c = ctx();
-        let mut report = FragmentReport::default();
-        let mut visited = 0usize;
+        z3::with_z3_config(&z3::Config::new(), || {
+            let mut report = FragmentReport::default();
+            let mut visited = 0usize;
 
-        let x = Int::new_const(&c, "x");
-        let int_root = Dynamic::from_ast(&x.gt(&Int::from_i64(&c, 5)));
-        let scan = walk_assertion(&int_root, &mut visited, &mut report).expect("in-fragment");
-        assert!(scan.saw_int && !scan.saw_bv);
+            let x = Int::new_const("x");
+            let int_root = Dynamic::from_ast(&x.gt(Int::from_i64(5)));
+            let scan = walk_assertion(&int_root, &mut visited, &mut report).expect("in-fragment");
+            assert!(scan.saw_int && !scan.saw_bv);
 
-        let b = BV::new_const(&c, "b", 32);
-        let bv_root = Dynamic::from_ast(&b._eq(&BV::from_u64(&c, 3, 32)));
-        let scan = walk_assertion(&bv_root, &mut visited, &mut report).expect("in-fragment");
-        assert!(scan.saw_bv && !scan.saw_int);
+            let b = BV::new_const("b", 32);
+            let bv_root = Dynamic::from_ast(&b.eq(BV::from_u64(3, 32)));
+            let scan = walk_assertion(&bv_root, &mut visited, &mut report).expect("in-fragment");
+            assert!(scan.saw_bv && !scan.saw_int);
+        });
     }
 
     /// Verdict purity: two walks of the same solver yield identical
@@ -448,15 +451,16 @@ mod tests {
     /// recording population is fully known.)
     #[test]
     fn check_fragment_is_pure_and_deterministic() {
-        let c = ctx();
-        let solver = Solver::new(&c);
-        let x = Int::new_const(&c, "x");
-        solver.assert(&x.le(&Int::from_i64(&c, 7)));
+        z3::with_z3_config(&z3::Config::new(), || {
+            let solver = Solver::new();
+            let x = Int::new_const("x");
+            solver.assert(x.le(Int::from_i64(7)));
 
-        let a = check_fragment(&solver).expect("in-fragment");
-        let b = check_fragment(&solver).expect("in-fragment");
-        assert_eq!(a.observed_decl_kinds, b.observed_decl_kinds);
-        assert_eq!(a.observed_sort_kinds, b.observed_sort_kinds);
-        assert_eq!(a.assertions_checked, b.assertions_checked);
+            let a = check_fragment(&solver).expect("in-fragment");
+            let b = check_fragment(&solver).expect("in-fragment");
+            assert_eq!(a.observed_decl_kinds, b.observed_decl_kinds);
+            assert_eq!(a.observed_sort_kinds, b.observed_sort_kinds);
+            assert_eq!(a.assertions_checked, b.assertions_checked);
+        });
     }
 }

@@ -14,6 +14,10 @@ lane keep the implementation within the fragment documented here.
 
 ## 1. Solver configuration
 
+The solver build uses z3 0.21.0 / z3-sys 0.13.0 with native Z3 4.13.3.
+Bindings are generated from the same release headers as the linked library;
+CI verifies the native archive SHA256 before installation.
+
 Both query families use fresh Z3 contexts and deterministic `rlimit` budgets,
 never wall-clock timeouts. SIGIL does not call `set_logic`; the builders and
 fragment guard constrain the effective logic.

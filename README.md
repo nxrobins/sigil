@@ -249,14 +249,23 @@ cargo test -p sigil-runtime parser_differential      # 9 tests
 cargo test -p sigil-runtime typecheck_differential   # 107 tests
 ```
 
-### Z3 environment (Windows)
+### Z3 environment (solver builds)
+
+Use native Z3 4.13.3 (the CI pin), with headers and libraries from the same release.
+`Z3_SYS_Z3_HEADER` is required on every platform so bindgen generates enums
+matching the native library. Adjust these paths to the extracted release:
 
 ```bash
+export Z3_SYS_Z3_VERSION="4.13.3"
+export Z3_LIBRARY_PATH_OVERRIDE="/path/to/z3/bin"
 export Z3_SYS_Z3_HEADER="/path/to/z3/include/z3.h"
-export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
 export BINDGEN_EXTRA_CLANG_ARGS="-I/path/to/z3/include"
 export RUSTFLAGS="-L native=/path/to/z3/bin"
 ```
+
+On Windows, also set `LIBCLANG_PATH="C:/Program Files/LLVM/bin"`. Make the
+same native library available to the loader (`PATH` on Windows,
+`LD_LIBRARY_PATH` on Linux, or `DYLD_LIBRARY_PATH` on macOS).
 
 ## Project status & maturity
 

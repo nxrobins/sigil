@@ -73,7 +73,7 @@ use std::sync::{Mutex, OnceLock};
 
 use lru::LruCache;
 use sha2::{Digest, Sha256};
-use z3::{SatResult, Solver};
+use z3::{SatResult, Solver, Translate};
 
 use crate::z3_fragment_guard::FragmentViolation;
 
@@ -122,7 +122,7 @@ const L2_FILE_BYTES: usize = 4 + 4 + 1 + 1 + 8; // magic + version + verdict + h
 /// algorithm without bumping the binding's version, this proxy doesn't
 /// catch it. Defense-in-depth: belt-and-braces verification on first
 /// hit per (key, process) re-runs Z3 and catches verdict drift.
-const Z3_BINDING_VERSION: &str = "z3-binding-0.12";
+const Z3_BINDING_VERSION: &str = "z3-binding-0.21.0";
 
 /// Cached verdict from `solver.check()`.
 ///
@@ -309,7 +309,7 @@ pub fn reset_for_test_with_env_reread() {
 /// Callers pass this (or wrap it, for model extraction) instead of
 /// writing `solver.check()` themselves — `z3::Solver::check` is on the
 /// clippy `disallowed-methods` fence.
-pub fn fresh_check(solver: &Solver<'_>) -> Result<Verdict, FragmentViolation> {
+pub fn fresh_check(solver: &Solver) -> Result<Verdict, FragmentViolation> {
     crate::z3_fragment_guard::check_fragment(solver)?;
     #[allow(clippy::disallowed_methods)] // sanctioned: cache-miss evaluation (walk above)
     let verdict: Verdict = solver.check().into();
@@ -327,8 +327,8 @@ pub fn fresh_check(solver: &Solver<'_>) -> Result<Verdict, FragmentViolation> {
 /// counterexample-aware callers (refinement subsumption queries),
 /// use `check_cached_with_model` below.
 pub fn check_cached(
-    solver: &Solver<'_>,
-    run_fresh: impl FnOnce(&Solver<'_>) -> Result<Verdict, FragmentViolation>,
+    solver: &Solver,
+    run_fresh: impl FnOnce(&Solver) -> Result<Verdict, FragmentViolation>,
 ) -> Result<Verdict, FragmentViolation> {
     Ok(check_cached_with_model(solver, |s| Ok((run_fresh(s)?, None)))?.0)
 }
@@ -358,8 +358,8 @@ pub fn check_cached(
 /// clean entry's verdict; verdict integrity is `SIGIL_Z3_CACHE_VERIFY`'s
 /// job.)
 pub fn check_cached_with_model(
-    solver: &Solver<'_>,
-    run_fresh: impl FnOnce(&Solver<'_>) -> Result<CachedValue, FragmentViolation>,
+    solver: &Solver,
+    run_fresh: impl FnOnce(&Solver) -> Result<CachedValue, FragmentViolation>,
 ) -> Result<CachedValue, FragmentViolation> {
     let report = crate::z3_fragment_guard::check_fragment(solver)?;
     crate::z3_fragment_guard::record_observations(&report);
@@ -425,7 +425,7 @@ pub fn check_cached_with_model(
 /// verified-first-hit set) and again after (to record the verification);
 /// the actual fresh solver work runs without the lock held.
 fn maybe_verify_hit(
-    solver: &Solver<'_>,
+    solver: &Solver,
     canonical: &str,
     key: &[u8; 32],
     cached: Verdict,
@@ -448,8 +448,8 @@ fn maybe_verify_hit(
 /// from the original solver, and re-checks. Mismatch = soundness bug
 /// (canonicalization collision or cache corruption). Aborts loudly so
 /// CI can't silently absorb it.
-fn verify_first_hit(original: &Solver<'_>, canonical: &str, key: &[u8; 32], cached: Verdict) {
-    let fresh = Solver::new(original.get_context());
+fn verify_first_hit(original: &Solver, canonical: &str, key: &[u8; 32], cached: Verdict) {
+    let fresh = Solver::new().translate(original.get_context());
     for a in original.get_assertions() {
         fresh.assert(&a);
     }
@@ -508,7 +508,7 @@ fn canonical_prefix_for_log(s: &str) -> String {
 /// `get_assertions()` returns the original `Vec<Bool>` of asserted
 /// expressions. Each Bool's `Display` serializes the AST without
 /// solver-internal state. Sorted to make assertion order irrelevant.
-pub(crate) fn canonical_smt(solver: &Solver<'_>) -> String {
+pub(crate) fn canonical_smt(solver: &Solver) -> String {
     let assertions = solver.get_assertions();
     let mut serialized: Vec<String> = assertions.iter().map(|a| a.to_string()).collect();
     serialized.sort();
@@ -735,135 +735,141 @@ fn write_l2(root: &Path, key: &[u8; 32], verdict: Verdict, cex: Option<i64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use z3::ast::{Ast, Bool, Int};
-
-    fn ctx() -> z3::Context {
-        z3::Context::new(&z3::Config::new())
-    }
+    use z3::ast::{Bool, Int};
 
     // ── canonical_smt + canonical_key invariants ──────────────────────
 
     #[test]
     fn canonical_smt_stable_after_check() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        let x = Int::new_const(&c, "stable_after_check_var");
-        s.assert(&x.gt(&Int::from_i64(&c, 0)));
-        let before = canonical_smt(&s);
-        let _ = fresh_check(&s).expect("fragment-clean test query");
-        let after = canonical_smt(&s);
-        assert_eq!(
-            before, after,
-            "canonical_smt must be stable across solver.check() calls"
-        );
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            let x = Int::new_const("stable_after_check_var");
+            s.assert(x.gt(Int::from_i64(0)));
+            let before = canonical_smt(&s);
+            let _ = fresh_check(&s).expect("fragment-clean test query");
+            let after = canonical_smt(&s);
+            assert_eq!(
+                before, after,
+                "canonical_smt must be stable across solver.check() calls"
+            );
+        });
     }
 
     #[test]
     fn canonical_smt_order_independent() {
-        let c1 = ctx();
-        let s1 = Solver::new(&c1);
-        let a1 = Int::new_const(&c1, "a");
-        let b1 = Int::new_const(&c1, "b");
-        s1.assert(&a1.gt(&Int::from_i64(&c1, 0)));
-        s1.assert(&b1.lt(&Int::from_i64(&c1, 10)));
-
-        let c2 = ctx();
-        let s2 = Solver::new(&c2);
-        let a2 = Int::new_const(&c2, "a");
-        let b2 = Int::new_const(&c2, "b");
-        s2.assert(&b2.lt(&Int::from_i64(&c2, 10)));
-        s2.assert(&a2.gt(&Int::from_i64(&c2, 0)));
-
-        assert_eq!(canonical_smt(&s1), canonical_smt(&s2));
+        let first = z3::with_z3_config(&z3::Config::new(), || {
+            let s1 = Solver::new();
+            let a1 = Int::new_const("a");
+            let b1 = Int::new_const("b");
+            s1.assert(a1.gt(Int::from_i64(0)));
+            s1.assert(b1.lt(Int::from_i64(10)));
+            canonical_smt(&s1)
+        });
+        let second = z3::with_z3_config(&z3::Config::new(), || {
+            let s2 = Solver::new();
+            let a2 = Int::new_const("a");
+            let b2 = Int::new_const("b");
+            s2.assert(b2.lt(Int::from_i64(10)));
+            s2.assert(a2.gt(Int::from_i64(0)));
+            canonical_smt(&s2)
+        });
+        assert_eq!(first, second);
     }
 
     #[test]
     fn canonical_smt_is_pure() {
-        let c1 = ctx();
-        let s1 = Solver::new(&c1);
-        let x1 = Int::new_const(&c1, "x");
-        s1.assert(&x1.gt(&Int::from_i64(&c1, 0)));
-
-        let c2 = ctx();
-        let s2 = Solver::new(&c2);
-        let x2 = Int::new_const(&c2, "x");
-        s2.assert(&x2.gt(&Int::from_i64(&c2, 0)));
-
-        assert_eq!(canonical_smt(&s1), canonical_smt(&s2));
+        let first = z3::with_z3_config(&z3::Config::new(), || {
+            let s1 = Solver::new();
+            let x1 = Int::new_const("x");
+            s1.assert(x1.gt(Int::from_i64(0)));
+            canonical_smt(&s1)
+        });
+        let second = z3::with_z3_config(&z3::Config::new(), || {
+            let s2 = Solver::new();
+            let x2 = Int::new_const("x");
+            s2.assert(x2.gt(Int::from_i64(0)));
+            canonical_smt(&s2)
+        });
+        assert_eq!(first, second);
     }
 
     #[test]
     fn canonical_smt_strips_metadata() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        s.assert(&Bool::from_bool(&c, true));
-        let canonical = canonical_smt(&s);
-        for line in canonical.lines() {
-            assert!(!line.trim_start().starts_with(';'));
-            assert!(!line.trim_start().starts_with("(set-info"));
-            assert!(!line.trim_start().starts_with("(set-option"));
-        }
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            s.assert(Bool::from_bool(true));
+            let canonical = canonical_smt(&s);
+            for line in canonical.lines() {
+                assert!(!line.trim_start().starts_with(';'));
+                assert!(!line.trim_start().starts_with("(set-info"));
+                assert!(!line.trim_start().starts_with("(set-option"));
+            }
+        });
     }
 
     #[test]
     fn canonical_key_is_deterministic() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        s.assert(&Bool::from_bool(&c, true));
-        let canonical = canonical_smt(&s);
-        let k1 = canonical_key(&canonical);
-        let k2 = canonical_key(&canonical);
-        assert_eq!(k1, k2);
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            s.assert(Bool::from_bool(true));
+            let canonical = canonical_smt(&s);
+            let k1 = canonical_key(&canonical);
+            let k2 = canonical_key(&canonical);
+            assert_eq!(k1, k2);
+        });
     }
 
     // ── check_cached round-trip (cache-on path) ──────────────────────
 
     #[test]
     fn cache_hit_returns_same_verdict_as_fresh() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        let x = Int::new_const(&c, "cache_hit_test_var");
-        s.assert(&x.gt(&Int::from_i64(&c, 0)));
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            let x = Int::new_const("cache_hit_test_var");
+            s.assert(x.gt(Int::from_i64(0)));
 
-        let v1 = check_cached(&s, fresh_check).expect("fragment-clean test query");
-        assert_eq!(v1, Verdict::Sat);
+            let v1 = check_cached(&s, fresh_check).expect("fragment-clean test query");
+            assert_eq!(v1, Verdict::Sat);
 
-        let v2 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
-            .expect("fragment-clean test query");
-        assert_eq!(v2, Verdict::Sat);
+            let v2 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
+                .expect("fragment-clean test query");
+            assert_eq!(v2, Verdict::Sat);
 
-        let v3 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
-            .expect("fragment-clean test query");
-        assert_eq!(v3, Verdict::Sat);
+            let v3 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
+                .expect("fragment-clean test query");
+            assert_eq!(v3, Verdict::Sat);
+        });
     }
 
     #[test]
     fn cache_unsat_round_trip() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        let x = Int::new_const(&c, "unsat_round_trip_var");
-        s.assert(&x.gt(&Int::from_i64(&c, 0)));
-        s.assert(&x.lt(&Int::from_i64(&c, 0)));
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            let x = Int::new_const("unsat_round_trip_var");
+            s.assert(x.gt(Int::from_i64(0)));
+            s.assert(x.lt(Int::from_i64(0)));
 
-        let v1 = check_cached(&s, fresh_check).expect("fragment-clean test query");
-        assert_eq!(v1, Verdict::Unsat);
+            let v1 = check_cached(&s, fresh_check).expect("fragment-clean test query");
+            assert_eq!(v1, Verdict::Unsat);
 
-        let v2 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
-            .expect("fragment-clean test query");
-        assert_eq!(v2, Verdict::Unsat);
+            let v2 = check_cached(&s, |_| panic!("must not run fresh on cache hit"))
+                .expect("fragment-clean test query");
+            assert_eq!(v2, Verdict::Unsat);
+        });
     }
 
     #[test]
     fn cache_stats_monotonic_on_call() {
-        let c = ctx();
-        let s = Solver::new(&c);
-        let x = Int::new_const(&c, "cache_stats_monotonic_var");
-        s.assert(&x.gt(&Int::from_i64(&c, 0)));
+        z3::with_z3_config(&z3::Config::new(), || {
+            let s = Solver::new();
+            let x = Int::new_const("cache_stats_monotonic_var");
+            s.assert(x.gt(Int::from_i64(0)));
 
-        let (h0, m0) = stats_snapshot();
-        let _ = check_cached(&s, fresh_check).expect("fragment-clean test query");
-        let (h1, m1) = stats_snapshot();
-        assert!(h1 + m1 > h0 + m0);
+            let (h0, m0) = stats_snapshot();
+            let _ = check_cached(&s, fresh_check).expect("fragment-clean test query");
+            let (h1, m1) = stats_snapshot();
+            assert!(h1 + m1 > h0 + m0);
+        });
     }
 
     // ── env_is_truthy_off vocabulary ─────────────────────────────────
@@ -1159,25 +1165,25 @@ mod tests {
     /// build before the silent cache-collision can corrupt verdicts.
     #[test]
     fn refinement_and_cap_queries_have_disjoint_cache_keys() {
-        let c = ctx();
+        z3::with_z3_config(&z3::Config::new(), || {
+            // Refinement-shaped solver: variable named `refine__value`.
+            let refine_solver = Solver::new();
+            let refine_v = Int::new_const("refine__value");
+            refine_solver.assert(refine_v.eq(Int::from_i64(42)));
+            refine_solver.assert(refine_v.gt(Int::from_i64(100)).not());
 
-        // Refinement-shaped solver: variable named `refine__value`.
-        let refine_solver = Solver::new(&c);
-        let refine_v = Int::new_const(&c, "refine__value");
-        refine_solver.assert(&refine_v._eq(&Int::from_i64(&c, 42)));
-        refine_solver.assert(&refine_v.gt(&Int::from_i64(&c, 100)).not());
+            // Cap-flow-shaped solver: same shape, different variable name.
+            let cap_solver = Solver::new();
+            let cap_v = Int::new_const("auth_value");
+            cap_solver.assert(cap_v.eq(Int::from_i64(42)));
+            cap_solver.assert(cap_v.gt(Int::from_i64(100)).not());
 
-        // Cap-flow-shaped solver: same shape, different variable name.
-        let cap_solver = Solver::new(&c);
-        let cap_v = Int::new_const(&c, "auth_value");
-        cap_solver.assert(&cap_v._eq(&Int::from_i64(&c, 42)));
-        cap_solver.assert(&cap_v.gt(&Int::from_i64(&c, 100)).not());
-
-        let refine_key = canonical_key(&canonical_smt(&refine_solver));
-        let cap_key = canonical_key(&canonical_smt(&cap_solver));
-        assert_ne!(
-            refine_key, cap_key,
-            "Wall 4 Step 1 V3 contract violation: refinement and cap-flow queries with structurally identical assertions produced colliding cache keys. Refinement variables must use the `refine__` prefix to keep canonical SMT byte-disjoint from cap-flow queries."
-        );
+            let refine_key = canonical_key(&canonical_smt(&refine_solver));
+            let cap_key = canonical_key(&canonical_smt(&cap_solver));
+            assert_ne!(
+                refine_key, cap_key,
+                "Wall 4 Step 1 V3 contract violation: refinement and cap-flow queries with structurally identical assertions produced colliding cache keys. Refinement variables must use the `refine__` prefix to keep canonical SMT byte-disjoint from cap-flow queries."
+            );
+        });
     }
 }

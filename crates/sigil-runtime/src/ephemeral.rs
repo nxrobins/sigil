@@ -2519,40 +2519,40 @@ fn z3_solve_smtlib2(query: &str) -> i64 {
 /// never 0/1.
 #[cfg(feature = "solver")]
 fn z3_solve_smtlib2_with_rlimit(query: &str, rlimit: u32) -> i64 {
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
-    let solver = z3::Solver::new(&ctx);
-    let mut params = z3::Params::new(&ctx);
-    params.set_u32("rlimit", rlimit);
-    solver.set_params(&params);
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = z3::Solver::new();
+        let mut params = z3::Params::new();
+        params.set_u32("rlimit", rlimit);
+        solver.set_params(&params);
 
-    // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
-    // Context installs a null error handler), so it cannot be trusted to
-    // signal failure on its own.
-    solver.from_string(query);
+        // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
+        // Context installs a null error handler), so it cannot be trusted to
+        // signal failure on its own.
+        solver.from_string(query);
 
-    // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
-    // query was malformed or empty. Refuse to let `check()` on an empty
-    // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
-    if solver.get_assertions().is_empty() {
-        return pack_error(400);
-    }
+        // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
+        // query was malformed or empty. Refuse to let `check()` on an empty
+        // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
+        if solver.get_assertions().is_empty() {
+            return pack_error(400);
+        }
 
-    // Sanctioned carve-out (census-pinned by the compiler's
-    // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
-    // solves queries handed to it by running SIGIL programs under an
-    // explicit Z3 grant, a different trust domain from the compiler's
-    // verifier. The compile-time fragment guard's allowlist does not
-    // govern it; its soundness contract is NC1 (non-verdict outcomes
-    // are never read as sat/unsat — see docs/z3-runtime-capability.md).
-    #[allow(clippy::disallowed_methods)]
-    let result = solver.check();
-    match result {
-        z3::SatResult::Sat => 1,
-        z3::SatResult::Unsat => 0,
-        // NC1 — "don't know" is never "proven": a distinct negative code.
-        z3::SatResult::Unknown => pack_error(408),
-    }
+        // Sanctioned carve-out (census-pinned by the compiler's
+        // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
+        // solves queries handed to it by running SIGIL programs under an
+        // explicit Z3 grant, a different trust domain from the compiler's
+        // verifier. The compile-time fragment guard's allowlist does not
+        // govern it; its soundness contract is NC1 (non-verdict outcomes
+        // are never read as sat/unsat — see docs/z3-runtime-capability.md).
+        #[allow(clippy::disallowed_methods)]
+        let result = solver.check();
+        match result {
+            z3::SatResult::Sat => 1,
+            z3::SatResult::Unsat => 0,
+            // NC1 — "don't know" is never "proven": a distinct negative code.
+            z3::SatResult::Unknown => pack_error(408),
+        }
+    })
 }
 
 #[cfg(all(test, feature = "solver"))]

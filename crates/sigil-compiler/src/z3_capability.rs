@@ -18,10 +18,9 @@
 //! reproducible builds: same source + same toolchain → same diagnostics across
 //! hardware.
 
-use z3::{
-    Config, Context, Params, SatResult, Solver,
-    ast::{Ast, Int},
-};
+use std::str::FromStr;
+
+use z3::{Params, SatResult, Solver, ast::Int};
 
 /// Z3 resource budget per refinement query.
 ///
@@ -33,9 +32,9 @@ pub(crate) const Z3_RLIMIT: u32 = 1_000_000;
 /// Construct a `Solver` with a deterministic resource limit applied. The
 /// rlimit must be set BEFORE any `solver.check()` call to take effect on
 /// that check.
-fn make_solver<'ctx>(ctx: &'ctx Context, rlimit: u32) -> Solver<'ctx> {
-    let solver = Solver::new(ctx);
-    let mut params = Params::new(ctx);
+fn make_solver(rlimit: u32) -> Solver {
+    let solver = Solver::new();
+    let mut params = Params::new();
     params.set_u32("rlimit", rlimit);
     solver.set_params(&params);
     solver
@@ -51,7 +50,7 @@ fn make_solver<'ctx>(ctx: &'ctx Context, rlimit: u32) -> Solver<'ctx> {
 /// Returns a fragment violation when the compiler-built query leaves the
 /// supported grammar. Callers treat that as an internal compiler error.
 fn check_cached_solver(
-    solver: &Solver<'_>,
+    solver: &Solver,
 ) -> Result<SatResult, crate::z3_fragment_guard::FragmentViolation> {
     use crate::z3_cache::Verdict;
     Ok(
@@ -82,12 +81,12 @@ pub(crate) enum RefinementVerdict {
 /// wide values through arithmetic or narrowing them would leave the proven
 /// representation contract. Invalid decimal output is a compiler bug.
 #[cfg(feature = "solver")]
-fn encode_ref_value<'ctx>(ctx: &'ctx Context, v: crate::ast::RefValue) -> Int<'ctx> {
+fn encode_ref_value(v: crate::ast::RefValue) -> Int {
     match v {
-        crate::ast::RefValue::Narrow(n) => Int::from_i64(ctx, n),
+        crate::ast::RefValue::Narrow(n) => Int::from_i64(n),
         crate::ast::RefValue::Wide(limbs) => {
             let decimal = crate::lexer::u256_to_decimal(limbs);
-            Int::from_str(ctx, &decimal).unwrap_or_else(|| {
+            Int::from_str(&decimal).unwrap_or_else(|_| {
                 panic!(
                     "ICE [C005]: u256_to_decimal produced a non-numeral string {decimal:?}; \
                      the digit-only contract is violated (compiler bug, not user error)"
@@ -104,64 +103,64 @@ pub(crate) fn check_refinement(
     clause: &crate::ast::RefinementClause,
     supplied_value: crate::ast::RefValue,
 ) -> RefinementVerdict {
-    use crate::ast::RefinementOp;
+    z3::with_z3_config(&z3::Config::new(), || {
+        use crate::ast::RefinementOp;
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = make_solver(&ctx, Z3_RLIMIT);
+        let solver = make_solver(Z3_RLIMIT);
 
-    // The name is disjoint from the other refinement query shapes and from
-    // AIR capability variables, keeping canonical cache keys separate.
-    let value = Int::new_const(&ctx, "refine__value");
-    // Wide values must pass through the canonical non-narrowing encoder.
-    let supplied = encode_ref_value(&ctx, supplied_value);
-    // Field RHS clauses route to `check_refinement_xfield`; LengthOf clauses
-    // are resolved before discharge. This path accepts literal bounds only.
-    let rhs = match &clause.rhs {
-        crate::ast::RefinementRhs::Literal(v) => Int::from_i64(&ctx, *v),
-        crate::ast::RefinementRhs::LiteralWide(limbs) => {
-            encode_ref_value(&ctx, crate::ast::RefValue::Wide(*limbs))
-        }
-        crate::ast::RefinementRhs::Field(_) | crate::ast::RefinementRhs::LengthOf(_) => {
-            unreachable!(
-                "check_refinement must only be called with a Literal/LiteralWide-RHS \
+        // The name is disjoint from the other refinement query shapes and from
+        // AIR capability variables, keeping canonical cache keys separate.
+        let value = Int::new_const("refine__value");
+        // Wide values must pass through the canonical non-narrowing encoder.
+        let supplied = encode_ref_value(supplied_value);
+        // Field RHS clauses route to `check_refinement_xfield`; LengthOf clauses
+        // are resolved before discharge. This path accepts literal bounds only.
+        let rhs = match &clause.rhs {
+            crate::ast::RefinementRhs::Literal(v) => Int::from_i64(*v),
+            crate::ast::RefinementRhs::LiteralWide(limbs) => {
+                encode_ref_value(crate::ast::RefValue::Wide(*limbs))
+            }
+            crate::ast::RefinementRhs::Field(_) | crate::ast::RefinementRhs::LengthOf(_) => {
+                unreachable!(
+                    "check_refinement must only be called with a Literal/LiteralWide-RHS \
                  clause; Field and LengthOf clauses require their dedicated routes"
-            );
-        }
-    };
+                );
+            }
+        };
 
-    // Bind the symbolic value to the literal so cache keys differ between
-    // supplied-value variants. The canonical SMT then encodes both the
-    // predicate and the value under check.
-    solver.assert(&value._eq(&supplied));
+        // Bind the symbolic value to the literal so cache keys differ between
+        // supplied-value variants. The canonical SMT then encodes both the
+        // predicate and the value under check.
+        solver.assert(value.eq(&supplied));
 
-    // Predicate term: refine__value <op> literal.
-    let predicate = match clause.op {
-        RefinementOp::Le => value.le(&rhs),
-        RefinementOp::Lt => value.lt(&rhs),
-        RefinementOp::Ge => value.ge(&rhs),
-        RefinementOp::Gt => value.gt(&rhs),
-        RefinementOp::Eq => value._eq(&rhs),
-        RefinementOp::Ne => value._eq(&rhs).not(),
-    };
+        // Predicate term: refine__value <op> literal.
+        let predicate = match clause.op {
+            RefinementOp::Le => value.le(&rhs),
+            RefinementOp::Lt => value.lt(&rhs),
+            RefinementOp::Ge => value.ge(&rhs),
+            RefinementOp::Gt => value.gt(&rhs),
+            RefinementOp::Eq => value.eq(&rhs),
+            RefinementOp::Ne => value.eq(&rhs).not(),
+        };
 
-    // Assert NOT(predicate) and ask Z3: is this satisfiable?
-    // Unsat → predicate holds for all bindings consistent with the
-    // value-equality assertion (i.e., for this exact literal).
-    solver.assert(&predicate.not());
+        // Assert NOT(predicate) and ask Z3: is this satisfiable?
+        // Unsat → predicate holds for all bindings consistent with the
+        // value-equality assertion (i.e., for this exact literal).
+        solver.assert(predicate.not());
 
-    // The query builder is closed over six comparison operators and literal
-    // values, so a fragment violation is a compiler bug.
-    match check_cached_solver(&solver).unwrap_or_else(|v| {
-        panic!(
-            "ICE [C005]: refinement SMT query left the decidable fragment — {v}; \
+        // The query builder is closed over six comparison operators and literal
+        // values, so a fragment violation is a compiler bug.
+        match check_cached_solver(&solver).unwrap_or_else(|v| {
+            panic!(
+                "ICE [C005]: refinement SMT query left the decidable fragment — {v}; \
              see docs/specs/z3-fragment-guard.md (AG-Z3)"
-        )
-    }) {
-        SatResult::Unsat => RefinementVerdict::Holds,
-        SatResult::Sat => RefinementVerdict::Violated,
-        SatResult::Unknown => RefinementVerdict::Timeout,
-    }
+            )
+        }) {
+            SatResult::Unsat => RefinementVerdict::Holds,
+            SatResult::Sat => RefinementVerdict::Violated,
+            SatResult::Unknown => RefinementVerdict::Timeout,
+        }
+    })
 }
 
 /// Check a two-value cross-field predicate. `refine__lhs` and
@@ -174,51 +173,51 @@ pub(crate) fn check_refinement_xfield(
     lhs_value: i64,
     rhs_value: i64,
 ) -> RefinementVerdict {
-    use crate::ast::RefinementOp;
+    z3::with_z3_config(&z3::Config::new(), || {
+        use crate::ast::RefinementOp;
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = make_solver(&ctx, Z3_RLIMIT);
+        let solver = make_solver(Z3_RLIMIT);
 
-    let lhs = Int::new_const(&ctx, "refine__lhs");
-    let rhs = Int::new_const(&ctx, "refine__rhs");
-    let lhs_lit = Int::from_i64(&ctx, lhs_value);
-    let rhs_lit = Int::from_i64(&ctx, rhs_value);
+        let lhs = Int::new_const("refine__lhs");
+        let rhs = Int::new_const("refine__rhs");
+        let lhs_lit = Int::from_i64(lhs_value);
+        let rhs_lit = Int::from_i64(rhs_value);
 
-    // Bind both symbolic variables to their supplied values.
-    solver.assert(&lhs._eq(&lhs_lit));
-    solver.assert(&rhs._eq(&rhs_lit));
+        // Bind both symbolic variables to their supplied values.
+        solver.assert(lhs.eq(&lhs_lit));
+        solver.assert(rhs.eq(&rhs_lit));
 
-    // Preserve the clause's operand order exactly.
-    let predicate = match clause.op {
-        RefinementOp::Le => lhs.le(&rhs),
-        RefinementOp::Lt => lhs.lt(&rhs),
-        RefinementOp::Ge => lhs.ge(&rhs),
-        RefinementOp::Gt => lhs.gt(&rhs),
-        RefinementOp::Eq => lhs._eq(&rhs),
-        RefinementOp::Ne => lhs._eq(&rhs).not(),
-    };
+        // Preserve the clause's operand order exactly.
+        let predicate = match clause.op {
+            RefinementOp::Le => lhs.le(&rhs),
+            RefinementOp::Lt => lhs.lt(&rhs),
+            RefinementOp::Ge => lhs.ge(&rhs),
+            RefinementOp::Gt => lhs.gt(&rhs),
+            RefinementOp::Eq => lhs.eq(&rhs),
+            RefinementOp::Ne => lhs.eq(&rhs).not(),
+        };
 
-    // Assert NOT(predicate). Unsat → predicate holds at these values.
-    solver.assert(&predicate.not());
+        // Assert NOT(predicate). Unsat → predicate holds at these values.
+        solver.assert(predicate.not());
 
-    // theory: QF_LIA (two integer variables; bindings via equality on
-    // concrete literals; literal-coefficient comparison). Decidable.
-    // Single check_cached_solver site for the cross-field literal-RHS
-    // path; cache key isolated from other refinement queries by the
-    // distinct variable names.
-    //
-    // A fragment violation in this closed query builder is a compiler bug.
-    match check_cached_solver(&solver).unwrap_or_else(|v| {
-        panic!(
-            "ICE [C005]: cross-field refinement SMT query left the decidable fragment — {v}; \
+        // theory: QF_LIA (two integer variables; bindings via equality on
+        // concrete literals; literal-coefficient comparison). Decidable.
+        // Single check_cached_solver site for the cross-field literal-RHS
+        // path; cache key isolated from other refinement queries by the
+        // distinct variable names.
+        //
+        // A fragment violation in this closed query builder is a compiler bug.
+        match check_cached_solver(&solver).unwrap_or_else(|v| {
+            panic!(
+                "ICE [C005]: cross-field refinement SMT query left the decidable fragment — {v}; \
              see docs/specs/z3-fragment-guard.md (AG-Z3)"
-        )
-    }) {
-        SatResult::Unsat => RefinementVerdict::Holds,
-        SatResult::Sat => RefinementVerdict::Violated,
-        SatResult::Unknown => RefinementVerdict::Timeout,
-    }
+            )
+        }) {
+            SatResult::Unsat => RefinementVerdict::Holds,
+            SatResult::Sat => RefinementVerdict::Violated,
+            SatResult::Unknown => RefinementVerdict::Timeout,
+        }
+    })
 }
 
 /// Result of a refinement-subsumption query. A refutation carries a
@@ -253,106 +252,105 @@ pub(crate) fn check_refinement_subsumption(
     supplied: &crate::ast::RefinementClause,
     required: &crate::ast::RefinementClause,
 ) -> SubsumptionResult {
-    use crate::ast::RefinementOp;
+    z3::with_z3_config(&z3::Config::new(), || {
+        use crate::ast::RefinementOp;
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = make_solver(&ctx, Z3_RLIMIT);
+        let solver = make_solver(Z3_RLIMIT);
 
-    // This subsumption path is i64-only. Wide bounds fail closed rather than
-    // being narrowed or accepted without proof.
-    if matches!(supplied.rhs, crate::ast::RefinementRhs::LiteralWide(_))
-        || matches!(required.rhs, crate::ast::RefinementRhs::LiteralWide(_))
-    {
-        return SubsumptionResult::Violated {
-            counterexample: None,
-        };
-    }
+        // This subsumption path is i64-only. Wide bounds fail closed rather than
+        // being narrowed or accepted without proof.
+        if matches!(supplied.rhs, crate::ast::RefinementRhs::LiteralWide(_))
+            || matches!(required.rhs, crate::ast::RefinementRhs::LiteralWide(_))
+        {
+            return SubsumptionResult::Violated {
+                counterexample: None,
+            };
+        }
 
-    // Single free variable; the implication is over all i64 bindings of x.
-    let x = Int::new_const(&ctx, "refine__x");
-    // Obligation collection routes only literal-RHS clauses here.
-    let extract_literal = |c: &crate::ast::RefinementClause| -> i64 {
-        match &c.rhs {
-            crate::ast::RefinementRhs::Literal(v) => *v,
-            crate::ast::RefinementRhs::LiteralWide(_) => {
-                unreachable!("LiteralWide is rejected before i64 subsumption")
-            }
-            crate::ast::RefinementRhs::Field(_) | crate::ast::RefinementRhs::LengthOf(_) => {
-                unreachable!(
-                    "check_refinement_subsumption must only be called with \
+        // Single free variable; the implication is over all i64 bindings of x.
+        let x = Int::new_const("refine__x");
+        // Obligation collection routes only literal-RHS clauses here.
+        let extract_literal = |c: &crate::ast::RefinementClause| -> i64 {
+            match &c.rhs {
+                crate::ast::RefinementRhs::Literal(v) => *v,
+                crate::ast::RefinementRhs::LiteralWide(_) => {
+                    unreachable!("LiteralWide is rejected before i64 subsumption")
+                }
+                crate::ast::RefinementRhs::Field(_) | crate::ast::RefinementRhs::LengthOf(_) => {
+                    unreachable!(
+                        "check_refinement_subsumption must only be called with \
                      Literal-RHS clauses; Field and LengthOf clauses require \
                      their dedicated routes"
-                );
+                    );
+                }
             }
-        }
-    };
-    let supplied_lit = Int::from_i64(&ctx, extract_literal(supplied));
-    let required_lit = Int::from_i64(&ctx, extract_literal(required));
-
-    let supplied_term = match supplied.op {
-        RefinementOp::Le => x.le(&supplied_lit),
-        RefinementOp::Lt => x.lt(&supplied_lit),
-        RefinementOp::Ge => x.ge(&supplied_lit),
-        RefinementOp::Gt => x.gt(&supplied_lit),
-        RefinementOp::Eq => x._eq(&supplied_lit),
-        RefinementOp::Ne => x._eq(&supplied_lit).not(),
-    };
-    let required_term = match required.op {
-        RefinementOp::Le => x.le(&required_lit),
-        RefinementOp::Lt => x.lt(&required_lit),
-        RefinementOp::Ge => x.ge(&required_lit),
-        RefinementOp::Gt => x.gt(&required_lit),
-        RefinementOp::Eq => x._eq(&required_lit),
-        RefinementOp::Ne => x._eq(&required_lit).not(),
-    };
-
-    // ∃x. supplied(x) ∧ ¬required(x). Unsat → ∀x. supplied(x) → required(x).
-    solver.assert(&supplied_term);
-    solver.assert(&required_term.not());
-
-    // Extract the model inside fresh evaluation, while it is valid. The cache
-    // stores the optional counterexample beside the verdict.
-    let (verdict, cex) = crate::z3_cache::check_cached_with_model(&solver, |s| {
-        // The fresh check routes through z3_cache::fresh_check (the
-        // sanctioned walk-then-check); the model is extracted right
-        // after, still inside the cache-miss closure.
-        let verdict = crate::z3_cache::fresh_check(s)?;
-        let cex = if verdict == crate::z3_cache::Verdict::Sat {
-            #[allow(clippy::disallowed_methods)]
-            let model = s.get_model();
-            model
-                .and_then(|m| m.eval(&x, true))
-                .and_then(|n| n.as_i64())
-        } else {
-            None
         };
-        Ok((verdict, cex))
-    })
-    // A fragment violation in this closed query builder is a compiler bug.
-    .unwrap_or_else(|v| {
-        panic!(
-            "ICE [C005]: refinement-subsumption SMT query left the decidable fragment — {v}; \
-             see docs/specs/z3-fragment-guard.md (AG-Z3)"
-        )
-    });
+        let supplied_lit = Int::from_i64(extract_literal(supplied));
+        let required_lit = Int::from_i64(extract_literal(required));
 
-    match verdict {
-        crate::z3_cache::Verdict::Unsat => SubsumptionResult::Holds,
-        crate::z3_cache::Verdict::Sat => SubsumptionResult::Violated {
-            counterexample: cex,
-        },
-        crate::z3_cache::Verdict::Unknown => SubsumptionResult::Timeout,
-    }
+        let supplied_term = match supplied.op {
+            RefinementOp::Le => x.le(&supplied_lit),
+            RefinementOp::Lt => x.lt(&supplied_lit),
+            RefinementOp::Ge => x.ge(&supplied_lit),
+            RefinementOp::Gt => x.gt(&supplied_lit),
+            RefinementOp::Eq => x.eq(&supplied_lit),
+            RefinementOp::Ne => x.eq(&supplied_lit).not(),
+        };
+        let required_term = match required.op {
+            RefinementOp::Le => x.le(&required_lit),
+            RefinementOp::Lt => x.lt(&required_lit),
+            RefinementOp::Ge => x.ge(&required_lit),
+            RefinementOp::Gt => x.gt(&required_lit),
+            RefinementOp::Eq => x.eq(&required_lit),
+            RefinementOp::Ne => x.eq(&required_lit).not(),
+        };
+
+        // ∃x. supplied(x) ∧ ¬required(x). Unsat → ∀x. supplied(x) → required(x).
+        solver.assert(&supplied_term);
+        solver.assert(required_term.not());
+
+        // Extract the model inside fresh evaluation, while it is valid. The cache
+        // stores the optional counterexample beside the verdict.
+        let (verdict, cex) = crate::z3_cache::check_cached_with_model(&solver, |s| {
+            // The fresh check routes through z3_cache::fresh_check (the
+            // sanctioned walk-then-check); the model is extracted right
+            // after, still inside the cache-miss closure.
+            let verdict = crate::z3_cache::fresh_check(s)?;
+            let cex = if verdict == crate::z3_cache::Verdict::Sat {
+                #[allow(clippy::disallowed_methods)]
+                let model = s.get_model();
+                model
+                    .and_then(|m| m.eval(&x, true))
+                    .and_then(|n| n.as_i64())
+            } else {
+                None
+            };
+            Ok((verdict, cex))
+        })
+        // A fragment violation in this closed query builder is a compiler bug.
+        .unwrap_or_else(|v| {
+            panic!(
+                "ICE [C005]: refinement-subsumption SMT query left the decidable fragment — {v}; \
+             see docs/specs/z3-fragment-guard.md (AG-Z3)"
+            )
+        });
+
+        match verdict {
+            crate::z3_cache::Verdict::Unsat => SubsumptionResult::Holds,
+            crate::z3_cache::Verdict::Sat => SubsumptionResult::Violated {
+                counterexample: cex,
+            },
+            crate::z3_cache::Verdict::Unknown => SubsumptionResult::Timeout,
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Z3_RLIMIT, check_cached_solver, make_solver};
-    use z3::{
-        Config, Context, SatResult,
-        ast::{Ast, BV},
-    };
+    use std::str::FromStr;
+
+    use super::{Z3_RLIMIT, check_cached_solver, encode_ref_value, make_solver};
+    use z3::{SatResult, ast::BV};
 
     /// B2: rlimit machinery actually constrains the solver. A multiplication
     /// equation over 32-bit bitvectors at rlimit=1 must return Unknown with
@@ -360,34 +358,64 @@ mod tests {
     /// wrong object or the wrong value type.
     #[test]
     fn make_solver_applies_rlimit() {
-        let cfg = Config::new();
-        let ctx = Context::new(&cfg);
-        let solver = make_solver(&ctx, 1);
+        z3::with_z3_config(&z3::Config::new(), || {
+            let solver = make_solver(1);
 
-        // Force a non-trivial query: factor 0xDEADBEEF over 32-bit BV with
-        // both factors > 1. Z3 cannot solve this with one conflict budget.
-        let x = BV::new_const(&ctx, "x", 32);
-        let y = BV::new_const(&ctx, "y", 32);
-        solver.assert(&x.bvmul(&y)._eq(&BV::from_u64(&ctx, 0xDEAD_BEEF, 32)));
-        solver.assert(&x.bvugt(&BV::from_u64(&ctx, 1, 32)));
-        solver.assert(&y.bvugt(&BV::from_u64(&ctx, 1, 32)));
+            // Force a non-trivial query: factor 0xDEADBEEF over 32-bit BV with
+            // both factors > 1. Z3 cannot solve this with one conflict budget.
+            let x = BV::new_const("x", 32);
+            let y = BV::new_const("y", 32);
+            solver.assert(x.bvmul(&y).eq(BV::from_u64(0xDEAD_BEEF, 32)));
+            solver.assert(x.bvugt(BV::from_u64(1, 32)));
+            solver.assert(y.bvugt(BV::from_u64(1, 32)));
 
-        // Sanctioned carve-out: this test exercises RAW solver rlimit
-        // behavior (deliberately out-of-allowlist ops — BMUL/UGT — and a
-        // direct check), so it must not route through the fragment guard.
-        // See clippy.toml's census note.
-        #[allow(clippy::disallowed_methods)]
-        let result = solver.check();
-        assert_eq!(
-            result,
-            SatResult::Unknown,
-            "rlimit=1 must produce Unknown on a non-trivial query"
-        );
-        let reason = solver.get_reason_unknown();
-        assert!(
-            reason.is_some(),
-            "Unknown verdict must carry a `reason_unknown` string"
-        );
+            // Sanctioned carve-out: this test exercises RAW solver rlimit
+            // behavior (deliberately out-of-allowlist ops — BMUL/UGT — and a
+            // direct check), so it must not route through the fragment guard.
+            // See clippy.toml's census note.
+            #[allow(clippy::disallowed_methods)]
+            let result = solver.check();
+            assert_eq!(
+                result,
+                SatResult::Unknown,
+                "rlimit=1 must produce Unknown on a non-trivial query"
+            );
+            let reason = solver.get_reason_unknown();
+            assert!(
+                reason.is_some(),
+                "Unknown verdict must carry a `reason_unknown` string"
+            );
+        });
+    }
+
+    /// The production encoder must preserve every limb, including values whose
+    /// low limb alone would satisfy a different refinement.
+    #[test]
+    fn u256_wide_refinement_value_is_never_narrowed_to_i64() {
+        z3::with_z3_config(&z3::Config::new(), || {
+            for (limbs, decimal) in [
+                ([0, 1, 0, 0], "18446744073709551616"),
+                ([0, 0, 1, 0], "340282366920938463463374607431768211456"),
+                (
+                    [0, 0, 0, 1 << 63],
+                    "57896044618658097711785492504343953926634992332820282019728792003956564819968",
+                ),
+                (
+                    [u64::MAX; 4],
+                    "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                ),
+            ] {
+                let encoded = encode_ref_value(crate::ast::RefValue::Wide(limbs));
+                assert_eq!(encoded.to_string(), decimal);
+                assert_eq!(encoded.as_i64(), None);
+            }
+            for value in [i64::MIN, 0, i64::MAX] {
+                assert_eq!(
+                    encode_ref_value(crate::ast::RefValue::Narrow(value)).as_i64(),
+                    Some(value)
+                );
+            }
+        });
     }
 
     /// A wide value built via `Int::from_str` must
@@ -398,58 +426,58 @@ mod tests {
     /// trip it before shipping.
     #[test]
     fn wide_numeral_is_fragment_clean_and_correct() {
-        use z3::ast::Int;
-        let cfg = Config::new();
-        let ctx = Context::new(&cfg);
+        z3::with_z3_config(&z3::Config::new(), || {
+            use z3::ast::Int;
 
-        // 2^256-1 (max u256), 2^255 (i256 sign bit), 2^128, 2^64 (just past i64).
-        const EXTREMES: &[(&str, &str)] = &[
-            (
-                "115792089237316195423570985008687907853269984665640564039457584007913129639935",
-                "2^256-1",
-            ),
-            (
-                "57896044618658097711785492504343953926634992332820282019728792003956564819968",
-                "2^255",
-            ),
-            ("340282366920938463463374607431768211456", "2^128"),
-            ("18446744073709551616", "2^64"),
-        ];
+            // 2^256-1 (max u256), 2^255 (i256 sign bit), 2^128, 2^64 (just past i64).
+            const EXTREMES: &[(&str, &str)] = &[
+                (
+                    "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                    "2^256-1",
+                ),
+                (
+                    "57896044618658097711785492504343953926634992332820282019728792003956564819968",
+                    "2^255",
+                ),
+                ("340282366920938463463374607431768211456", "2^128"),
+                ("18446744073709551616", "2^64"),
+            ];
 
-        // (a) fragment-clean + Holds: value == wide  ⊢  value >= wide.
-        for (decimal, label) in EXTREMES {
-            let value = Int::new_const(&ctx, "refine__value");
-            let wide = Int::from_str(&ctx, decimal)
-                .unwrap_or_else(|| panic!("from_str must parse {label}"));
-            let solver = make_solver(&ctx, Z3_RLIMIT);
-            solver.assert(&value._eq(&wide));
-            solver.assert(&value.ge(&wide).not());
-            // The sanctioned production path: check_cached_solver runs the fragment
-            // guard (Err → left the fragment) AND returns the verdict — so a clean
-            // Ok IS the fragment-cleanliness assertion, no raw-solver carve-out.
-            let r = check_cached_solver(&solver)
-                .unwrap_or_else(|v| panic!("wide numeral {label} left the fragment: {v}"));
+            // (a) fragment-clean + Holds: value == wide  ⊢  value >= wide.
+            for (decimal, label) in EXTREMES {
+                let value = Int::new_const("refine__value");
+                let wide = Int::from_str(decimal)
+                    .unwrap_or_else(|_| panic!("from_str must parse {label}"));
+                let solver = make_solver(Z3_RLIMIT);
+                solver.assert(value.eq(&wide));
+                solver.assert(value.ge(&wide).not());
+                // The sanctioned production path: check_cached_solver runs the fragment
+                // guard (Err → left the fragment) AND returns the verdict — so a clean
+                // Ok IS the fragment-cleanliness assertion, no raw-solver carve-out.
+                let r = check_cached_solver(&solver)
+                    .unwrap_or_else(|v| panic!("wide numeral {label} left the fragment: {v}"));
+                assert_eq!(
+                    r,
+                    SatResult::Unsat,
+                    "{label}: value==wide ⊢ value>=wide must Hold"
+                );
+            }
+
+            // (b) correctness/Violated: x == (2^64 - 1) does NOT satisfy x >= 2^64
+            // (catches a magnitude bug that would make every wide compare vacuously).
+            let value = Int::new_const("refine__value");
+            let lo = Int::from_str("18446744073709551615").unwrap(); // 2^64 - 1
+            let bound = Int::from_str("18446744073709551616").unwrap(); // 2^64
+            let solver = make_solver(Z3_RLIMIT);
+            solver.assert(value.eq(&lo));
+            solver.assert(value.ge(&bound).not());
+            let r = check_cached_solver(&solver).expect("wide numeral left the fragment");
             assert_eq!(
                 r,
-                SatResult::Unsat,
-                "{label}: value==wide ⊢ value>=wide must Hold"
+                SatResult::Sat,
+                "(2^64-1) >= 2^64 must be Violated (Sat of the negation)"
             );
-        }
-
-        // (b) correctness/Violated: x == (2^64 - 1) does NOT satisfy x >= 2^64
-        // (catches a magnitude bug that would make every wide compare vacuously).
-        let value = Int::new_const(&ctx, "refine__value");
-        let lo = Int::from_str(&ctx, "18446744073709551615").unwrap(); // 2^64 - 1
-        let bound = Int::from_str(&ctx, "18446744073709551616").unwrap(); // 2^64
-        let solver = make_solver(&ctx, Z3_RLIMIT);
-        solver.assert(&value._eq(&lo));
-        solver.assert(&value.ge(&bound).not());
-        let r = check_cached_solver(&solver).expect("wide numeral left the fragment");
-        assert_eq!(
-            r,
-            SatResult::Sat,
-            "(2^64-1) >= 2^64 must be Violated (Sat of the negation)"
-        );
+        });
     }
 
     /// Self-test: Z3_RLIMIT is the empirically-tightened value documented at

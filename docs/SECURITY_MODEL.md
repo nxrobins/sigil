@@ -166,7 +166,7 @@ to acceptance, or treating `Unknown` as proof is not.
 | `sigil-runtime` | Wasm isolation, import validation, grants, actor/capability tables, memory and fuel traps | Always at execution | Runtime differential census, state-machine property tests |
 | `sigil-cli` and `sigil-mcp` | Certificate loading, re-derivation, policy comparison, fail-closed execution gate | Corresponding command surface | Tamper and unverified-certificate canaries |
 | Wasmtime 43.0.2 | WebAssembly validation, isolation, execution semantics | Runtime execution | Lockfile pin, runtime adversarial tests |
-| Z3 crate 0.12.1 / native Z3 4.12.2 | Capability and refinement query verdicts | Solver-enabled verification | Pinned native artifact, fragment guard, deterministic resource limits, corpus order tests |
+| Z3 crate 0.21.0 / native Z3 4.13.3 | Capability and refinement query verdicts | Solver-enabled verification | Pinned native artifact, fragment guard, deterministic resource limits, corpus order tests |
 | SHA-256 implementation | Source/module fingerprint binding | Certificate paths | Known-answer and same-length mutation tests |
 | Rust and native dependencies | Memory safety and library semantics of the trusted host | Build and execution | Locked dependencies, CI, advisory review |
 | OS and hardware | Process, filesystem, networking, clocks, and machine isolation | Deployment | Outside the in-repo proof boundary |

@@ -41,7 +41,7 @@ Every PR is one of two classes, enforced by `crates/sigil-compiler/tests/parity_
 - **The gating test lane is `cargo test --workspace --no-default-features`.** Default
   features include `solver` (needs native libz3, not present on most machines) — most
   local testing wants `--no-default-features`. The solver lane runs separately in CI with
-  a SHA256-pinned Z3 4.12.2 (see `ci.yml` for the exact install ritual if you need it).
+  a SHA256-pinned Z3 4.13.3 (see `ci.yml` for the exact install ritual if you need it).
 - **Code-shaped tokens in test files move census pins.** `soundness_contract.rs` counts
   every `[A-Z]{1,3}[0-9]{3}` token in `crates/**/tests` files — comments and strings
   included — against `docs/diagnostic-test-gaps.txt` and pinned reference counts. An

@@ -197,50 +197,47 @@ fn discharge_air_capabilities_at_budgets(
     rlimit: u32,
     program_rlimit: u64,
 ) -> (Vec<Diagnostic>, usize, Option<u64>, DischargedAirCapability) {
-    use z3::{Config, Context};
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = make_solver(rlimit);
+        let mut diagnostics = Vec::new();
+        // Certificate evidence counts the seven semantic verification points.
+        let mut checked_sites = 0usize;
 
-    let cfg = Config::new();
-    let ctx = Context::new(&cfg);
-    let solver = make_solver(&ctx, rlimit);
-    let mut diagnostics = Vec::new();
-    // Certificate evidence counts the seven semantic verification points.
-    let mut checked_sites = 0usize;
+        for function in &program.functions {
+            verify_function(
+                function,
+                &solver,
+                registry,
+                &mut diagnostics,
+                &mut checked_sites,
+            );
+        }
 
-    for function in &program.functions {
-        verify_function(
-            function,
-            &ctx,
-            &solver,
-            registry,
-            &mut diagnostics,
-            &mut checked_sites,
-        );
-    }
-
-    // Reject with C004 when cumulative solver consumption exceeds the
-    // per-program policy. Corpus programs remain far below this boundary.
-    let consumed = read_rlimit_count(&solver);
-    if let Some(consumed) = consumed
-        && consumed > program_rlimit
-    {
-        diagnostics.push(Diagnostic::error(
-            codes::C004,
-            format!(
-                "Z3 program-level rlimit budget exceeded: consumed {consumed} \
+        // Reject with C004 when cumulative solver consumption exceeds the
+        // per-program policy. Corpus programs remain far below this boundary.
+        let consumed = read_rlimit_count(&solver);
+        if let Some(consumed) = consumed
+            && consumed > program_rlimit
+        {
+            diagnostics.push(Diagnostic::error(
+                codes::C004,
+                format!(
+                    "Z3 program-level rlimit budget exceeded: consumed {consumed} \
                  across all functions (limit: {program_rlimit}). The policy \
                  may have unusually complex cap flow; consider simplifying or \
                  splitting the module."
-            ),
-            None,
-        ));
-    }
+                ),
+                None,
+            ));
+        }
 
-    (
-        diagnostics,
-        checked_sites,
-        consumed,
-        DischargedAirCapability { _seal: () },
-    )
+        (
+            diagnostics,
+            checked_sites,
+            consumed,
+            DischargedAirCapability { _seal: () },
+        )
+    })
 }
 
 /// Per-invocation Z3 resource budget.
@@ -253,9 +250,9 @@ const AIR_CAP_Z3_PROGRAM_RLIMIT: u64 = 50_000_000;
 
 /// Construct a solver with a deterministic resource limit.
 #[cfg(feature = "solver")]
-fn make_solver<'ctx>(ctx: &'ctx z3::Context, rlimit: u32) -> z3::Solver<'ctx> {
-    let solver = z3::Solver::new(ctx);
-    let mut params = z3::Params::new(ctx);
+fn make_solver(rlimit: u32) -> z3::Solver {
+    let solver = z3::Solver::new();
+    let mut params = z3::Params::new();
     params.set_u32("rlimit", rlimit);
     solver.set_params(&params);
     solver
@@ -269,7 +266,7 @@ fn make_solver<'ctx>(ctx: &'ctx z3::Context, rlimit: u32) -> z3::Solver<'ctx> {
 /// bypass is a stated decision, not a pinned one (V2D-2 there).
 #[cfg(feature = "solver")]
 fn check_direct(
-    solver: &z3::Solver<'_>,
+    solver: &z3::Solver,
 ) -> Result<z3::SatResult, crate::z3_fragment_guard::FragmentViolation> {
     let report = crate::z3_fragment_guard::check_fragment(solver)?;
     crate::z3_fragment_guard::record_observations(&report);
@@ -296,7 +293,7 @@ fn c005_diagnostic(
 /// Read the cumulative `rlimit count` statistic, or `None` when the active Z3
 /// version does not expose it.
 #[cfg(feature = "solver")]
-fn read_rlimit_count(solver: &z3::Solver<'_>) -> Option<u64> {
+fn read_rlimit_count(solver: &z3::Solver) -> Option<u64> {
     use z3::StatisticsValue;
     match solver.get_statistics().value("rlimit count") {
         Some(StatisticsValue::UInt(v)) => Some(v as u64),
@@ -316,15 +313,14 @@ fn read_rlimit_count(solver: &z3::Solver<'_>) -> Option<u64> {
 use crate::air::{AirFunction, AirStmt, AirTerminator, AirValue, BlockId, VarId};
 #[cfg(feature = "solver")]
 use z3::{
-    Context, SatResult, Solver,
-    ast::{Ast, BV, Bool, Int},
+    SatResult, Solver,
+    ast::{BV, Bool, Int},
 };
 
 #[cfg(feature = "solver")]
-fn verify_function<'ctx>(
+fn verify_function(
     function: &AirFunction,
-    ctx: &'ctx Context,
-    solver: &Solver<'ctx>,
+    solver: &Solver,
     registry: &AuthorityRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     checked_sites: &mut usize,
@@ -369,13 +365,13 @@ fn verify_function<'ctx>(
     };
 
     // Phase 1: legitimacy constraints for all cap-typed variables.
-    let mut legitimacy: std::collections::HashMap<(VarId, BlockId, usize), Bool<'ctx>> =
+    let mut legitimacy: std::collections::HashMap<(VarId, BlockId, usize), Bool> =
         std::collections::HashMap::new();
 
     for (var, _) in &function.params {
         if function.var_kind(*var).is_cap() {
             let name = format!("legit_param_{}", var.0);
-            let legit = Bool::new_const(ctx, name.as_str());
+            let legit = Bool::new_const(name.as_str());
             solver.assert(&legit);
             legitimacy.insert((*var, BlockId(u32::MAX), 0), legit);
         }
@@ -390,8 +386,8 @@ fn verify_function<'ctx>(
                 } if function.var_kind(*dst).is_cap() => {
                     *checked_sites += 1;
                     let name = format!("legit_{}_{}_{}", dst.0, block.id.0, stmt_idx);
-                    let legit = Bool::new_const(ctx, name.as_str());
-                    solver.assert(&legit.not());
+                    let legit = Bool::new_const(name.as_str());
+                    solver.assert(legit.not());
                     legitimacy.insert((*dst, block.id, stmt_idx), legit);
                 }
                 AirStmt::SpawnActor {
@@ -402,7 +398,7 @@ fn verify_function<'ctx>(
                 } => {
                     *checked_sites += 1;
                     let name = format!("legit_{}_{}_{}", dst.0, block.id.0, stmt_idx);
-                    let legit = Bool::new_const(ctx, name.as_str());
+                    let legit = Bool::new_const(name.as_str());
                     solver.assert(&legit);
                     legitimacy.insert((*dst, block.id, stmt_idx), legit);
 
@@ -440,16 +436,16 @@ fn verify_function<'ctx>(
                 AirStmt::CapMint { dst, .. } => {
                     *checked_sites += 1;
                     let name = format!("legit_{}_{}_{}", dst.0, block.id.0, stmt_idx);
-                    let legit = Bool::new_const(ctx, name.as_str());
+                    let legit = Bool::new_const(name.as_str());
                     solver.assert(&legit);
                     legitimacy.insert((*dst, block.id, stmt_idx), legit);
                 }
                 AirStmt::CapRestrict { dst, src, .. } => {
                     *checked_sites += 1;
                     let dst_name = format!("legit_{}_{}_{}", dst.0, block.id.0, stmt_idx);
-                    let dst_legit = Bool::new_const(ctx, dst_name.as_str());
+                    let dst_legit = Bool::new_const(dst_name.as_str());
                     if let Some(src_legit) = find_legitimacy(*src, &legitimacy) {
-                        solver.assert(&dst_legit._eq(&src_legit));
+                        solver.assert(dst_legit.eq(&src_legit));
                     } else {
                         solver.assert(&dst_legit);
                     }
@@ -466,18 +462,18 @@ fn verify_function<'ctx>(
                 AirStmt::CapSplit { dst, src, amount } | AirStmt::CapDraw { dst, src, amount } => {
                     *checked_sites += 1;
                     let dst_name = format!("legit_{}_{}_{}", dst.0, block.id.0, stmt_idx);
-                    let dst_legit = Bool::new_const(ctx, dst_name.as_str());
+                    let dst_legit = Bool::new_const(dst_name.as_str());
                     if let Some(src_legit) = find_legitimacy(*src, &legitimacy) {
-                        solver.assert(&dst_legit._eq(&src_legit));
+                        solver.assert(dst_legit.eq(&src_legit));
                     } else {
                         solver.assert(&dst_legit);
                     }
                     legitimacy.insert((*dst, block.id, stmt_idx), dst_legit);
 
-                    let src_fuel = Int::new_const(ctx, format!("fuel_{}", src.0).as_str());
+                    let src_fuel = Int::new_const(format!("fuel_{}", src.0).as_str());
                     let split_amount =
-                        Int::new_const(ctx, format!("split_amount_{}", amount.0).as_str());
-                    let dst_fuel = Int::new_const(ctx, format!("fuel_{}", dst.0).as_str());
+                        Int::new_const(format!("split_amount_{}", amount.0).as_str());
+                    let dst_fuel = Int::new_const(format!("fuel_{}", dst.0).as_str());
 
                     // Fuel family (QF_LIA), asserted PER CALL SITE: the child
                     // holds exactly the amount, the parent held at least it,
@@ -485,10 +481,10 @@ fn verify_function<'ctx>(
                     // draws of 6 from a child holding 10 are SAT here and only
                     // the runtime rejects the second (the same per-call
                     // invariant `air.rs` documents on `CapDraw`).
-                    solver.assert(&dst_fuel._eq(&split_amount));
-                    solver.assert(&src_fuel.ge(&split_amount));
-                    solver.assert(&split_amount.ge(&Int::from_i64(ctx, 0)));
-                    solver.assert(&src_fuel.ge(&Int::from_i64(ctx, 0)));
+                    solver.assert(dst_fuel.eq(&split_amount));
+                    solver.assert(src_fuel.ge(&split_amount));
+                    solver.assert(split_amount.ge(Int::from_i64(0)));
+                    solver.assert(src_fuel.ge(Int::from_i64(0)));
                     // Ground the amount when the AIR proves it (phase 0).
                     // This is what makes the family reject anything: a chain
                     // `a = p.draw(10); b = a.draw(20)` becomes
@@ -498,7 +494,7 @@ fn verify_function<'ctx>(
                     // unbound amount leaves this site exactly as free as
                     // before (see the phase-0 failure direction).
                     if let Some(literal) = literal_amount(*amount) {
-                        solver.assert(&split_amount._eq(&Int::from_i64(ctx, literal)));
+                        solver.assert(split_amount.eq(Int::from_i64(literal)));
                     }
                 }
                 AirStmt::MessageSend { msg, .. } | AirStmt::MessageAsk { msg, .. }
@@ -522,7 +518,7 @@ fn verify_function<'ctx>(
     // Phase 2: authority bitvector constraints.
     let mut auth_sources: std::collections::HashMap<VarId, &AirStmt> =
         std::collections::HashMap::new();
-    let mut slot_authority: std::collections::HashMap<VarId, Vec<BV<'ctx>>> =
+    let mut slot_authority: std::collections::HashMap<VarId, Vec<BV>> =
         std::collections::HashMap::new();
     for block in &function.blocks {
         for stmt in &block.stmts {
@@ -539,7 +535,7 @@ fn verify_function<'ctx>(
                     auth_sources.insert(*dst, stmt);
                 }
                 AirStmt::SlotPut { slot, cap } => {
-                    let cap_auth = BV::new_const(ctx, format!("auth_{}", cap.0), 32);
+                    let cap_auth = BV::new_const(format!("auth_{}", cap.0), 32);
                     slot_authority.entry(*slot).or_default().push(cap_auth);
                 }
                 AirStmt::SlotTake { dst_cap, .. } => {
@@ -550,7 +546,7 @@ fn verify_function<'ctx>(
         }
     }
 
-    let auth_var = |var: VarId| -> BV<'ctx> { BV::new_const(ctx, format!("auth_{}", var.0), 32) };
+    let auth_var = |var: VarId| -> BV { BV::new_const(format!("auth_{}", var.0), 32) };
 
     for (var, _) in function.params.iter().chain(function.locals.iter()) {
         // M4: `cap_type_name` matches both `Cap` and `StateCap` — a state cap must
@@ -568,20 +564,20 @@ fn verify_function<'ctx>(
                         ..
                     } => {
                         let src_auth = auth_var(*src);
-                        let mask = BV::from_u64(ctx, *restriction_mask as u64, 32);
-                        solver.assert(&auth._eq(&src_auth.bvand(&mask)));
-                        solver.assert(&auth.bvule(&src_auth));
+                        let mask = BV::from_u64(*restriction_mask as u64, 32);
+                        solver.assert(auth.eq(src_auth.bvand(&mask)));
+                        solver.assert(auth.bvule(&src_auth));
                     }
                     AirStmt::CapSplit { src, .. } | AirStmt::CapDraw { src, .. } => {
                         let src_auth = auth_var(*src);
-                        solver.assert(&auth._eq(&src_auth));
+                        solver.assert(auth.eq(&src_auth));
                     }
                     AirStmt::Assign {
                         val: AirValue::Var(src),
                         ..
                     } => {
                         let src_auth = auth_var(*src);
-                        solver.assert(&auth._eq(&src_auth));
+                        solver.assert(auth.eq(&src_auth));
                     }
                     AirStmt::SlotTake { slot, .. } => {
                         let slot_auth = match slot_authority.get(slot) {
@@ -590,18 +586,18 @@ fn verify_function<'ctx>(
                                 .cloned()
                                 .reduce(|a, b| a.bvand(&b))
                                 .expect("non-empty by guard"),
-                            _ => BV::from_u64(ctx, 0, 32),
+                            _ => BV::from_u64(0, 32),
                         };
-                        solver.assert(&auth._eq(&slot_auth));
+                        solver.assert(auth.eq(&slot_auth));
                     }
                     _ => {
                         let full = registry.full_mask(cap_type);
-                        solver.assert(&auth._eq(&BV::from_u64(ctx, full as u64, 32)));
+                        solver.assert(auth.eq(BV::from_u64(full as u64, 32)));
                     }
                 }
             } else {
                 let full = registry.full_mask(cap_type);
-                solver.assert(&auth._eq(&BV::from_u64(ctx, full as u64, 32)));
+                solver.assert(auth.eq(BV::from_u64(full as u64, 32)));
             }
         }
     }
@@ -642,13 +638,13 @@ fn verify_function<'ctx>(
                     if full == 0 {
                         continue;
                     }
-                    let required = BV::from_u64(ctx, full as u64, 32);
+                    let required = BV::from_u64(full as u64, 32);
                     let actual = auth_var(arg);
 
                     solver.push();
                     // theory: QF_BV<32> (bvand on 32-bit authority masks).
                     // See docs/z3-theory-inventory.md §2 site #1.
-                    solver.assert(&actual.bvand(&required)._eq(&required).not());
+                    solver.assert(actual.bvand(&required).eq(&required).not());
                     match check_direct(solver) {
                         Err(v) => {
                             diagnostics.push(c005_diagnostic(&v, "call-site authority sink"));
@@ -706,12 +702,12 @@ fn verify_function<'ctx>(
             *checked_sites += 1;
             let full = registry.full_mask(cap_type);
             if full > 0 {
-                let required = BV::from_u64(ctx, full as u64, 32);
+                let required = BV::from_u64(full as u64, 32);
                 let actual = auth_var(*var);
                 solver.push();
                 // theory: QF_BV<32> (return-sink authority check).
                 // See docs/z3-theory-inventory.md §2 site #2.
-                solver.assert(&actual.bvand(&required)._eq(&required).not());
+                solver.assert(actual.bvand(&required).eq(&required).not());
                 match check_direct(solver) {
                     Err(v) => {
                         diagnostics.push(c005_diagnostic(&v, "return-value authority sink"));
@@ -813,11 +809,11 @@ fn verify_function<'ctx>(
 /// Assert a variable is legitimate; emit C002 if Z3 finds it may be
 /// illegitimate, or C004 when Z3 returns Unknown.
 #[cfg(feature = "solver")]
-fn assert_var_legitimate<'ctx>(
+fn assert_var_legitimate(
     function: &AirFunction,
     var: VarId,
-    legitimacy: &std::collections::HashMap<(VarId, BlockId, usize), Bool<'ctx>>,
-    solver: &Solver<'ctx>,
+    legitimacy: &std::collections::HashMap<(VarId, BlockId, usize), Bool>,
+    solver: &Solver,
     diagnostics: &mut Vec<Diagnostic>,
     context: &str,
 ) {
@@ -829,7 +825,7 @@ fn assert_var_legitimate<'ctx>(
         solver.push();
         // theory: propositional Bool (legitimacy probe).
         // See docs/z3-theory-inventory.md §2 site #4.
-        solver.assert(&legit.not());
+        solver.assert(legit.not());
         match check_direct(solver) {
             Err(v) => {
                 diagnostics.push(c005_diagnostic(&v, "legitimacy probe"));
@@ -867,10 +863,10 @@ fn assert_var_legitimate<'ctx>(
 /// Find a variable's legitimacy constraint using AIR's SSA-like
 /// single-assignment property.
 #[cfg(feature = "solver")]
-fn find_legitimacy<'ctx>(
+fn find_legitimacy(
     var: VarId,
-    legitimacy: &std::collections::HashMap<(VarId, BlockId, usize), Bool<'ctx>>,
-) -> Option<Bool<'ctx>> {
+    legitimacy: &std::collections::HashMap<(VarId, BlockId, usize), Bool>,
+) -> Option<Bool> {
     if let Some(legit) = legitimacy.get(&(var, BlockId(u32::MAX), 0)) {
         return Some(legit.clone());
     }
@@ -980,6 +976,13 @@ mod tests {
             consumed > 0,
             "rlimit consumption reported zero for a non-trivial verify pass — \
              suspect Z3 statistics drift; got {consumed}"
+        );
+        let repeated = verify_air_capabilities(&program, &registry)
+            .expect("a prior verification must not consume this program's budget");
+        assert_eq!(
+            repeated.z3_rlimit_consumed,
+            Some(consumed),
+            "resource accounting must start fresh for every program on the same thread"
         );
     }
 

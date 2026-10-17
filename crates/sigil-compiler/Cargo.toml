@@ -8,7 +8,7 @@ edition = "2024"
 default = ["solver", "json"]
 # The Z3 cache (z3_cache.rs) also needs sha2 + lru; pulled in under
 # the solver feature so a no-solver build doesn't compile the cache.
-solver = ["z3", "dep:lru", "dep:tempfile"]
+solver = ["z3", "dep:z3-sys", "dep:lru", "dep:tempfile"]
 json = ["dep:serde", "dep:serde_json"]
 # Phase 5a-1.6 / I21 / AP17: typed trace events for cross-module
 # dispatch decisions, use-scope construction, cycle detection. Default-
@@ -22,7 +22,9 @@ sigil-abi = { workspace = true }
 sigil-formal-bridge = { workspace = true }
 wasm-encoder = "0.246.2"
 semver = "1"
-z3 = { version = "0.12", optional = true }
+z3 = { version = "0.21.0", optional = true }
+# Generate enums from the pinned native headers; Z3 changes enum values across releases.
+z3-sys = { version = "0.13.0", features = ["bindgen"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true }
