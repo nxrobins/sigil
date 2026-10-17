@@ -1003,6 +1003,7 @@ restart the caller's deadline.
 
 Invalid allowances are refused and a slow response exhausts an explicit allowance.
 @test:provider_budget_expires_and_rejects_invalid_allowances
+@test:forge_refuses_invalid_http_deadlines_before_compilation_and_accepts_bounds
 
 ## §C — The honest bounds (anti-claims)
 

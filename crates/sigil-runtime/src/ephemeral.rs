@@ -378,7 +378,7 @@ fn http_fetch_body_bounded(
     // deadline for the entire redirect chain and body; progress cannot reset it.
     let deadline = grants
         .http_timeout_ms
-        .map(|ms| std::time::Instant::now() + Duration::from_millis(ms.clamp(1, 60_000)));
+        .map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
     let grants = grants.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -447,9 +447,9 @@ fn http_agent(grants: &IoGrants) -> ureq::Agent {
         // Whole-request + connect timeouts so a slow/hung peer cannot stall the
         // sandboxed tool indefinitely.
         .timeout_global(Some(
-            grants.http_timeout_ms.map_or(HTTP_TOTAL_TIMEOUT, |ms| {
-                Duration::from_millis(ms.clamp(1, 60_000))
-            }),
+            grants
+                .http_timeout_ms
+                .map_or(HTTP_TOTAL_TIMEOUT, Duration::from_millis),
         ))
         .timeout_connect(Some(HTTP_IO_TIMEOUT))
         // Do NOT let ureq auto-follow redirects: it would fetch the redirect
@@ -640,10 +640,15 @@ mod http_redirect_tests {
         }
     }
 
-    fn delayed_http(delay_ms: u64) -> (String, std::thread::JoinHandle<()>) {
+    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+
+    fn delayed_http(delay_ms: u64, response: String) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
             .expect("local HTTP test fixture is available");
+        listener
+            .set_nonblocking(true)
+            .expect("local HTTP fixture accepts can be bounded");
         let url = format!(
             "http://{}/",
             listener
@@ -651,22 +656,62 @@ mod http_redirect_tests {
                 .expect("local HTTP test fixture is available")
         );
         let worker = std::thread::spawn(move || {
-            let (mut stream, _) = listener
-                .accept()
-                .expect("local HTTP test fixture is available");
-            let mut buf = [0; 4096];
-            let _ = stream.read(&mut buf);
-            std::thread::sleep(Duration::from_millis(delay_ms));
-            let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted fixture streams support blocking I/O");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .expect("local HTTP fixture reads can be bounded");
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(1)))
+                            .expect("local HTTP fixture writes can be bounded");
+                        let mut buf = [0; 4096];
+                        if matches!(stream.read(&mut buf), Ok(n) if n > 0) {
+                            std::thread::sleep(Duration::from_millis(delay_ms));
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("local HTTP fixture accept failed: {error}"),
+                }
+            }
         });
         (url, worker)
     }
 
     #[test]
+    fn provider_http_fixture_finishes_without_a_request() {
+        for connect in [false, true] {
+            let (url, worker) = delayed_http(0, OK_RESPONSE.into());
+            let start = std::time::Instant::now();
+            let _client = if connect {
+                let address = url::Url::parse(&url)
+                    .expect("fixture URL is valid")
+                    .socket_addrs(|| None)
+                    .expect("fixture URL has a socket address")[0];
+                Some(
+                    std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1))
+                        .expect("fixture listener is bound"),
+                )
+            } else {
+                None
+            };
+            worker.join().expect("idle fixture must exit cleanly");
+            assert!(start.elapsed() < Duration::from_secs(5));
+        }
+    }
+
+    #[test]
     fn provider_budget_allows_slow_response_but_default_remains_short() {
         for (budget, expected) in [(None, Err(502)), (Some(4_000), Ok(b"ok".to_vec()))] {
-            let (url, worker) = delayed_http(2_800);
+            let (url, worker) = delayed_http(2_800, OK_RESPONSE.into());
             let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
             grants.http_timeout_ms = budget;
             assert_eq!(
@@ -679,28 +724,13 @@ mod http_redirect_tests {
 
     #[test]
     fn provider_budget_is_not_reset_by_redirect_progress() {
-        use std::io::{Read, Write};
-        let (target, target_worker) = delayed_http(100);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("local HTTP test fixture is available");
-        let url = format!(
-            "http://{}/",
-            listener
-                .local_addr()
-                .expect("local HTTP test fixture is available")
-        );
-        let redirect_worker = std::thread::spawn(move || {
-            let (mut stream, _) = listener
-                .accept()
-                .expect("local HTTP test fixture is available");
-            let mut buf = [0; 4096];
-            let _ = stream.read(&mut buf);
-            std::thread::sleep(Duration::from_millis(100));
-            let _ = write!(
-                stream,
+        let (target, target_worker) = delayed_http(100, OK_RESPONSE.into());
+        let (url, redirect_worker) = delayed_http(
+            100,
+            format!(
                 "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-        });
+            ),
+        );
         let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
         grants.http_timeout_ms = Some(150);
         // Both hops fit individually. Their sum must still exhaust ONE allowance.
@@ -719,12 +749,49 @@ mod http_redirect_tests {
     #[test]
     fn provider_budget_expires_and_rejects_invalid_allowances() {
         let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        let compiled = sigil_compiler::compile_tool(
+            "module tool; pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        )
+        .expect("the grant-validation fixture compiles");
         for invalid in [0, 60_001, u64::MAX] {
             grants.http_timeout_ms = Some(invalid);
-            assert!(grants.validate().is_err());
+            let validation_error = grants
+                .validate()
+                .expect_err("invalid allowance is rejected");
+            for result in [
+                super::execute_ephemeral(&compiled.wasm, b"", 1_000_000, &grants),
+                super::execute_ephemeral_with_memory_budget(
+                    &compiled.wasm,
+                    b"",
+                    1_000_000,
+                    super::MAX_GUEST_MEMORY_BYTES,
+                    &grants,
+                ),
+            ] {
+                assert!(matches!(
+                    result,
+                    Err(super::ToolError::Trapped { message }) if message == validation_error.to_string()
+                ));
+            }
+        }
+        for allowance in [None, Some(1), Some(60_000)] {
+            grants.http_timeout_ms = allowance;
+            grants
+                .validate()
+                .expect("omission and boundaries are valid");
+            super::execute_ephemeral(&compiled.wasm, b"", 1_000_000, &grants)
+                .expect("valid grants reach guest execution");
+            super::execute_ephemeral_with_memory_budget(
+                &compiled.wasm,
+                b"",
+                1_000_000,
+                super::MAX_GUEST_MEMORY_BYTES,
+                &grants,
+            )
+            .expect("valid grants reach guest execution with a memory budget");
         }
         grants.http_timeout_ms = Some(100);
-        let (url, worker) = delayed_http(500);
+        let (url, worker) = delayed_http(500, OK_RESPONSE.into());
         let start = std::time::Instant::now();
         assert_eq!(
             http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),

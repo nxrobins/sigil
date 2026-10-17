@@ -537,10 +537,17 @@ struct ForgeArgs {
     grants: Option<GrantArgs>,
 }
 
+fn deserialize_http_timeout_ms<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct GrantArgs {
     /// Host-selected total provider deadline; validated before compilation.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_http_timeout_ms")]
     http_timeout_ms: Option<u64>,
     #[serde(default)]
     fs: Vec<String>,
@@ -1098,7 +1105,19 @@ mod compiler_context_tests {
     #[test]
     fn forge_refuses_invalid_http_deadlines_before_compilation_and_accepts_bounds() {
         let context = CompilerContext::default();
-        for allowance in [json!(0), json!(60_001), json!(-1), json!(true), json!(1.5)] {
+        for allowance in [
+            json!(null),
+            json!(0),
+            json!(60_001),
+            json!(u64::MAX),
+            json!(-1),
+            json!(true),
+            json!(1.0),
+            json!(1.5),
+            json!("100"),
+            json!([]),
+            json!({}),
+        ] {
             let args =
                 json!({"source": "not valid source", "grants": {"http_timeout_ms": allowance}});
             let error = tool_sigil_forge(&args, &context)
@@ -1111,6 +1130,18 @@ mod compiler_context_tests {
             let envelope = tool_sigil_forge(&args, &context)
                 .expect("valid deadline boundaries reach the compiler envelope");
             let _: Value = serde_json::from_str(&envelope).expect("forge produces JSON");
+        }
+        for args in [
+            json!({"source": "not valid source"}),
+            json!({"source": "not valid source", "grants": {}}),
+        ] {
+            let parsed: ForgeArgs =
+                serde_json::from_value(args.clone()).expect("omitted deadlines are accepted");
+            assert_eq!(parsed.grants.unwrap_or_default().http_timeout_ms, None);
+            let envelope = tool_sigil_forge(&args, &context)
+                .expect("omitted deadlines reach source compilation");
+            let envelope: Value = serde_json::from_str(&envelope).expect("forge produces JSON");
+            assert_eq!(envelope["command"], "forge");
         }
     }
 
