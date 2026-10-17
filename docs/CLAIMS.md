@@ -991,6 +991,19 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
 
 ---
 
+### Host-selected HTTP deadlines
+
+An explicit `http_timeout_ms` grant permits a slower provider response while
+omitting the grant preserves the existing short HTTP windows.
+@test:provider_budget_allows_slow_response_but_default_remains_short
+
+The allowance is shared across redirect progress; following a redirect does not
+restart the caller's deadline.
+@test:provider_budget_is_not_reset_by_redirect_progress
+
+Invalid allowances are refused and a slow response exhausts an explicit allowance.
+@test:provider_budget_expires_and_rejects_invalid_allowances
+
 ## §C — The honest bounds (anti-claims)
 
 **These are load-bearing. Every downstream claim — papers, README, PR prose — must stay inside

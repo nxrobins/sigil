@@ -179,6 +179,9 @@ pub enum Z3Grant {
 /// non-deterministic surface is auditable per task.
 #[derive(Debug, Clone, Default)]
 pub struct IoGrants {
+    /// Host-authorized total HTTP call budget, including redirects and body.
+    /// None preserves the legacy two-second per-phase limit. Never guest-set.
+    pub http_timeout_ms: Option<u64>,
     pub net: Vec<NetGrant>,
     pub fs: Vec<FsGrant>,
     pub fs_write: Vec<FsWriteGrant>,
@@ -234,6 +237,15 @@ impl IoGrants {
     /// `RandomGrant::Seeded(0)` — xorshift on state 0 produces 0
     /// forever, so a zero seed is a quiet way to break determinism.
     pub fn validate(&self) -> Result<(), GrantValidationError> {
+        if let Some(ms) = self.http_timeout_ms {
+            if !(1..=60_000).contains(&ms) {
+                return Err(GrantValidationError {
+                    category: "http_timeout_ms (must be 1..=60000)",
+                    len: usize::try_from(ms).unwrap_or(usize::MAX),
+                    max: 60_000,
+                });
+            }
+        }
         for (category, len) in [
             ("net", self.net.len()),
             ("fs", self.fs.len()),

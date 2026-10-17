@@ -374,6 +374,11 @@ fn http_fetch_body_bounded(
 ) -> Result<Vec<u8>, u32> {
     use std::sync::atomic::Ordering;
 
+    // Unlike the legacy phase windows, an explicit provider budget is ONE
+    // deadline for the entire redirect chain and body; progress cannot reset it.
+    let deadline = grants
+        .http_timeout_ms
+        .map(|ms| std::time::Instant::now() + Duration::from_millis(ms.clamp(1, 60_000)));
     let grants = grants.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -419,7 +424,13 @@ fn http_fetch_body_bounded(
     // conforming worker can never exhaust these windows without producing
     // `Done`; if it somehow does, fail closed.
     for _ in 0..(2 + MAX_HTTP_REDIRECTS as usize) {
-        match rx.recv_timeout(HTTP_WATCHDOG_TIMEOUT) {
+        let timeout = deadline.map_or(HTTP_WATCHDOG_TIMEOUT, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        });
+        if timeout.is_zero() {
+            return Err(502u32);
+        }
+        match rx.recv_timeout(timeout) {
             Ok(HttpProgress::Done(result)) => return result,
             Ok(HttpProgress::Hop) => continue,
             // Timeout, or the worker died without sending (its channel end
@@ -430,12 +441,16 @@ fn http_fetch_body_bounded(
     Err(502u32)
 }
 
-fn http_agent() -> ureq::Agent {
+fn http_agent(grants: &IoGrants) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     ureq::Agent::config_builder()
         // Whole-request + connect timeouts so a slow/hung peer cannot stall the
         // sandboxed tool indefinitely.
-        .timeout_global(Some(HTTP_TOTAL_TIMEOUT))
+        .timeout_global(Some(
+            grants.http_timeout_ms.map_or(HTTP_TOTAL_TIMEOUT, |ms| {
+                Duration::from_millis(ms.clamp(1, 60_000))
+            }),
+        ))
         .timeout_connect(Some(HTTP_IO_TIMEOUT))
         // Do NOT let ureq auto-follow redirects: it would fetch the redirect
         // target WITHOUT re-checking it against the grants, so an allowed host
@@ -524,7 +539,7 @@ fn http_fetch(
     headers: &[(String, String)],
     watchdog: &std::sync::mpsc::Sender<HttpProgress>,
 ) -> Result<ureq::http::Response<ureq::Body>, u32> {
-    let agent = http_agent();
+    let agent = http_agent(grants);
     let mut url = initial_url;
     let mut method = method;
     // Own the body so it can be dropped on a POST→GET downgrade.
@@ -597,8 +612,9 @@ fn http_fetch(
 
 #[cfg(test)]
 mod http_redirect_tests {
-    use super::{redirect_method, validate_redirect_target};
+    use super::{http_fetch_body_bounded, redirect_method, validate_redirect_target};
     use crate::grants::{HttpMethod, IoGrants, NetGrant};
+    use std::time::Duration;
 
     #[test]
     fn post_downgrades_to_get_on_301_302_303() {
@@ -622,6 +638,100 @@ mod http_redirect_tests {
         for status in [301u16, 302, 303, 307, 308] {
             assert_eq!(redirect_method(status, HttpMethod::Get), HttpMethod::Get);
         }
+    }
+
+    fn delayed_http(delay_ms: u64) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("local HTTP test fixture is available");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("local HTTP test fixture is available")
+        );
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("local HTTP test fixture is available");
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn provider_budget_allows_slow_response_but_default_remains_short() {
+        for (budget, expected) in [(None, Err(502)), (Some(4_000), Ok(b"ok".to_vec()))] {
+            let (url, worker) = delayed_http(2_800);
+            let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+            grants.http_timeout_ms = budget;
+            assert_eq!(
+                http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+                expected
+            );
+            worker.join().expect("local HTTP test fixture is available");
+        }
+    }
+
+    #[test]
+    fn provider_budget_is_not_reset_by_redirect_progress() {
+        use std::io::{Read, Write};
+        let (target, target_worker) = delayed_http(100);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("local HTTP test fixture is available");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("local HTTP test fixture is available")
+        );
+        let redirect_worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("local HTTP test fixture is available");
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        });
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        grants.http_timeout_ms = Some(150);
+        // Both hops fit individually. Their sum must still exhaust ONE allowance.
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        redirect_worker
+            .join()
+            .expect("local HTTP test fixture is available");
+        target_worker
+            .join()
+            .expect("local HTTP test fixture is available");
+    }
+
+    #[test]
+    fn provider_budget_expires_and_rejects_invalid_allowances() {
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        for invalid in [0, 60_001, u64::MAX] {
+            grants.http_timeout_ms = Some(invalid);
+            assert!(grants.validate().is_err());
+        }
+        grants.http_timeout_ms = Some(100);
+        let (url, worker) = delayed_http(500);
+        let start = std::time::Instant::now();
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        assert!(start.elapsed() < Duration::from_millis(450));
+        worker.join().expect("local HTTP test fixture is available");
     }
 
     fn grants_for(host: &str, method: HttpMethod) -> IoGrants {
