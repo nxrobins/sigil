@@ -189,6 +189,9 @@ Capability-based runtime permissions; grants gate real I/O at call time (403 rat
 - `FsWriteGrant` — write scope separate from read; `TimeGrant` — `Wall` or `Frozen(ms)`; `RandomGrant` — `Secure` or `Seeded(u64)`; `Z3Grant` — solver gate
 - `IoGrants::none()` — fully sandboxed, every FFI call returns 403
 
+For provider-call timing through MCP or Rust embedding, see the
+[HTTP deadline contract](docs/MCP-SERVER.md#http-deadlines).
+
 ### FFI host functions
 
 - `ffi::http_get(url_ptr, url_len) -> i64` — real `ureq` HTTP GET, 5 MB body cap

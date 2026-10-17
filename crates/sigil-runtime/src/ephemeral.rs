@@ -47,9 +47,9 @@ const MAX_MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 /// executed operation, so this bounds total executed instructions. Sized far
 /// above any legitimate tool's instruction count.
 const MAX_WASM_FUEL: u64 = 10_000_000_000;
-/// Per-socket connect/read/write timeout for blocking HTTP shims.
+/// Connection timeout for blocking HTTP shims, including explicit budgets.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(2);
-/// Whole-request timeout for blocking HTTP shims.
+/// Legacy library request timeout when no host HTTP budget is supplied.
 const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Maximum number of 3xx redirects followed for a single HTTP shim call.
 /// Redirects are NOT followed by the agent (it is built with `.max_redirects(0)`);
@@ -309,8 +309,9 @@ fn read_http_body(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>,
     Ok(body)
 }
 
-/// Hard wall-clock bound for ONE PHASE of an HTTP shim call — a single hop
-/// (connect + request + response headers) or the body read — enforced host-side.
+/// Legacy wall-clock bound for ONE PHASE of an HTTP shim call — a single hop
+/// (connect + request + response headers) or the body read — enforced host-side
+/// when no explicit HTTP budget is supplied.
 /// ureq's own `timeout_global` is the first line of defense but is RACY against
 /// a slow-dribbling peer whose chunk cadence collides with the deadline
 /// (observed on ureq 3.3.0: the same 2s-deadline request against a 100ms-dribble
@@ -319,7 +320,7 @@ fn read_http_body(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>,
 /// the guest-facing anti-hang bound must not depend on it. 500ms of grace past
 /// `HTTP_TOTAL_TIMEOUT` lets the library timeout fire first when it does work.
 ///
-/// The bound is PER PHASE, not per call: ureq constructs a fresh global timer
+/// This legacy bound is PER PHASE: ureq constructs a fresh global timer
 /// for every `agent` call, and `http_fetch`'s manual redirect loop issues up to
 /// `1 + MAX_HTTP_REDIRECTS` of them, so the design's own legitimate budget for
 /// a redirect chain is that many timers plus the body read. A whole-call bound
@@ -340,28 +341,26 @@ const MAX_OUTSTANDING_HTTP_WORKERS: usize = 64;
 static OUTSTANDING_HTTP_WORKERS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Watchdog heartbeat protocol between the shim worker and the guest-facing
-/// receiver: `Hop` opens a fresh `HTTP_WATCHDOG_TIMEOUT` window (sent after
-/// each completed redirect hop and once before the body read); `Done` carries
-/// the final result.
+/// Watchdog heartbeat protocol for [`http_fetch_body_bounded`]: `Hop` reports
+/// completed redirect hops and response headers; `Done` carries the final result.
 enum HttpProgress {
     Hop,
     Done(Result<Vec<u8>, u32>),
 }
 
 /// Issue `http_fetch` and read the response body on a detached worker thread,
-/// bounding EACH PHASE (every redirect hop, then the body read) by
-/// `HTTP_WATCHDOG_TIMEOUT` wall-clock via the `HttpProgress` heartbeat, and the
-/// number of windows by the same hop budget `http_fetch` itself enforces. A
-/// watchdog expiry maps to 502 exactly like a library-level transport failure.
+/// bounding the caller's wait. An explicit `IoGrants::http_timeout_ms` selects
+/// one deadline before worker creation; redirect and body progress cannot
+/// extend it. Otherwise, each phase uses `HTTP_WATCHDOG_TIMEOUT`, with the
+/// number of windows bounded by the hop budget `http_fetch` itself enforces.
+/// Expiry maps to 502 exactly like a library-level transport failure.
 ///
 /// The worker is detached: its late result lands in a dropped channel. Against
 /// an adversarial forever-dribbling peer the thread lives as long as the peer
 /// dribbles (ureq's expired-deadline grace read never gives up) — that is
 /// strictly better than stalling the guest, and the leak is bounded by
 /// `MAX_OUTSTANDING_HTTP_WORKERS` across the process, which matters for the
-/// long-lived sigil-mcp server. Worst-case guest-visible latency is one window
-/// per budgeted phase (`2 + MAX_HTTP_REDIRECTS` windows).
+/// long-lived sigil-mcp server.
 fn http_fetch_body_bounded(
     method: HttpMethod,
     url: String,
@@ -374,8 +373,6 @@ fn http_fetch_body_bounded(
 ) -> Result<Vec<u8>, u32> {
     use std::sync::atomic::Ordering;
 
-    // Unlike the legacy phase windows, an explicit provider budget is ONE
-    // deadline for the entire redirect chain and body; progress cannot reset it.
     let deadline = grants
         .http_timeout_ms
         .map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
@@ -404,8 +401,6 @@ fn http_fetch_body_bounded(
             let _slot = SlotGuard;
             let result = http_fetch(method, url, body.as_deref(), &grants, &headers, &worker_tx)
                 .and_then(|response| {
-                    // Fresh window for the body read: headers arrived, the
-                    // hop's window no longer applies.
                     let _ = worker_tx.send(HttpProgress::Hop);
                     read_http_body(response)
                 });
@@ -419,10 +414,10 @@ fn http_fetch_body_bounded(
     }
     drop(tx);
 
-    // One window for the initial hop, one per followable redirect, one for the
+    // One receive for the initial hop, one per followable redirect, one for the
     // body read. `http_fetch` bounds its own loop to the same hop budget, so a
-    // conforming worker can never exhaust these windows without producing
-    // `Done`; if it somehow does, fail closed.
+    // conforming worker cannot exhaust these receives without producing `Done`;
+    // if it somehow does, fail closed.
     for _ in 0..(2 + MAX_HTTP_REDIRECTS as usize) {
         let timeout = deadline.map_or(HTTP_WATCHDOG_TIMEOUT, |deadline| {
             deadline.saturating_duration_since(std::time::Instant::now())
@@ -527,8 +522,7 @@ fn redirect_method(status: u16, current: HttpMethod) -> HttpMethod {
 /// validated by `parse_http_url`.
 ///
 /// `watchdog` is the shim watchdog heartbeat (see `http_fetch_body_bounded`):
-/// each followed redirect sends `HttpProgress::Hop` to open a fresh window,
-/// mirroring the fresh ureq global timer the next `agent` call gets. Send
+/// each followed redirect sends `HttpProgress::Hop` to report progress. Send
 /// failures are ignored — the receiver drops its end after a watchdog expiry,
 /// and the worker's remaining work is then invisible by design.
 fn http_fetch(
@@ -595,8 +589,6 @@ fn http_fetch(
                 body = Vec::new();
             }
             method = next_method;
-            // Following a redirect: the next hop gets a fresh ureq global
-            // timer, so open a fresh watchdog window to match.
             let _ = watchdog.send(HttpProgress::Hop);
             continue;
         }
@@ -1213,7 +1205,7 @@ fn execute_ephemeral_inner(
     link_sigil_imports(&mut linker)?;
     link_ffi_imports(&mut linker, grants)?;
 
-    // Validate grants up front (cap counts + Seeded(0) rejection).
+    // Reject invalid grants before instantiation can run a guest start function.
     grants.validate().map_err(|e| ToolError::Trapped {
         message: e.to_string(),
     })?;
