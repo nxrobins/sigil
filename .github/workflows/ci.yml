@@ -1289,6 +1289,16 @@ jobs:
           grep -qE '^OK$' storage-workflow.log
           if grep -q 'skipped=' storage-workflow.log; then exit 1; fi
 
+      - name: Test fixed-dataset regression search and resume
+        # Committed PyTorch answers need no runtime Torch installation. Require
+        # native execution so a missing solver CLI cannot silently skip coverage.
+        run: |
+          set -euo pipefail
+          SIGIL_INTEGRATION_CLI="$PWD/target/debug/sigil" python3 -W error::ResourceWarning -m unittest -v library.tests.test_autoresearch_regression 2>&1 | tee regression-workflow.log
+          grep -qE '^Ran 10 tests in ' regression-workflow.log
+          grep -qE '^OK$' regression-workflow.log
+          if grep -q 'skipped=' regression-workflow.log; then exit 1; fi
+
   portability:
     needs: hygiene
     # GATED, not always-on. macOS bills at 10x and Windows at 2x, and measured

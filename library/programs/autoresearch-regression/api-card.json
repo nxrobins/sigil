@@ -1,0 +1,32 @@
+{
+  "contract_hash": "sha256:e1c8399ffea246728c092a3540375d947c909ca48cb448758e8aeeac5ecba042",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "limits": {
+    "checkpoint_input_bytes": 8191,
+    "dataset_bytes": 104,
+    "evaluation_context_bytes": 128,
+    "evaluation_identity_bytes": 64,
+    "evaluation_request_bytes": 1536,
+    "evaluation_response_bytes": 6144,
+    "fitting_request_bytes": 128,
+    "fitting_response_bytes": 968,
+    "fitting_rounds": 6,
+    "instructions": 12,
+    "json_record_bytes": 4096,
+    "search_generations": 40,
+    "search_population": 8,
+    "search_state_bytes": 1736,
+    "search_transitions": 368,
+    "tape_nodes": 768,
+    "task_steps": 12,
+    "total_graph_work": 2600,
+    "weights": 8
+  },
+  "package": "autoresearch-regression/tool",
+  "policy": "staged sign update, strict improvement, bounded adaptive rate",
+  "status": "experimental_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

@@ -45,7 +45,7 @@ class PublicRevisionTests(unittest.TestCase):
     def test_manifest_and_inventory_bind_the_public_documents(self):
         manifests = sorted((ROOT / 'packages').rglob('sigil-package.json'))
         manifests += sorted((ROOT / 'programs').glob('*/sigil-package.json'))
-        self.assertEqual(len(manifests), 27)
+        self.assertEqual(len(manifests), 28)
         for manifest in manifests:
             with self.subTest(package=manifest.parent):
                 value = json.loads(manifest.read_bytes())

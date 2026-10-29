@@ -1,0 +1,72 @@
+// Fixed regression rows and identity; validation rows are report-only, never fitting input.
+module tool_dataset;
+use sigil::vec;
+use sigil::numeric;
+use sigil::records;
+use sigil::bytes;
+
+pub fn data() -> Vec<f64> ! { Alloc } {
+    let rows: Vec<f64> = Vec::with_capacity(12);
+    rows.push(0.0 - 1.0); rows.push(0.0 - 1.0);
+    rows.push(0.0); rows.push(1.0);
+    rows.push(1.0); rows.push(2.5);
+    rows.push(2.0); rows.push(5.5);
+    rows.push(0.0 - 0.5); rows.push(0.0);
+    rows.push(1.5); rows.push(4.0);
+    return rows;
+}
+
+// SHA-256 of RGRD/version/train-count/validation-count/zero followed by LE f64 rows.
+// This is a compatibility identity, not a signature. Native RGDS exposes the
+// actual compiled rows so the executable test can recompute this value.
+pub fn identity() -> str {
+    return "028b1578cc66135645d790d76337e6f047c2ebd013e40f61dde1c68fde907b98";
+}
+fn high_word_one() -> u64 { let top: u64 = 1; return (top << 63) | 8135250678849263429; }
+fn high_word_three() -> u64 { let top: u64 = 1; return (top << 63) | 1764162964614996445; }
+pub fn bind(head: Vec<u64> @Mut) -> i64 {
+    head.set(20, 6202414140193344258); head.set(21, high_word_one());
+    head.set(22, 6994059520090292807); head.set(23, high_word_three());
+    return 0;
+}
+pub fn matches(head: Vec<u64> @ReadOnly) -> bool {
+    return head.get(20) == 6202414140193344258 && head.get(21) == high_word_one()
+        && head.get(22) == 6994059520090292807 && head.get(23) == high_word_three();
+}
+
+pub fn run(input: i64, len: i64) -> i64 ! { Alloc } {
+    if len > 48 { return -413; } else {}
+    let decoded = records::unhex(input, len, 24); if decoded < 0 { return decoded; } else {}
+    let p = decoded / 4294967296; let size = decoded % 4294967296;
+    if size < 8 || load8(p) != 82 || load8(p + 1) != 71 || load8(p + 4) != 1 || load8(p + 5) != 0 || load8(p + 6) != 0 || load8(p + 7) != 0 { return -422; } else {}
+    let rows = data();
+    if load8(p + 2) == 68 && load8(p + 3) == 83 {
+        if size != 8 { return -422; } else {}
+        let out = alloc(104);
+        store8(out, 82); store8(out + 1, 71); store8(out + 2, 82); store8(out + 3, 68);
+        store8(out + 4, 1); store8(out + 5, 4); store8(out + 6, 2); store8(out + 7, 0);
+        let copied = bytes::copy_into(out, 104, 8, rows.buf, 96, 0, 96);
+        if copied < 0 { return copied; } else {} return out * 4294967296 + 104;
+    } else {}
+    if load8(p + 2) != 80 || load8(p + 3) != 82 || size != 24 { return -422; } else {}
+    let parameters: Vec<f64> = Vec::with_capacity(2); parameters.push(0.0); parameters.push(0.0);
+    let copied = bytes::copy_into(parameters.buf, 16, 0, p, size, 8, 16);
+    if copied < 0 { return copied; } else {}
+    let slope = parameters.get(0); let bias = parameters.get(1);
+    if slope - slope != 0.0 || bias - bias != 0.0 || slope < 0.0 - 4096.0 || slope > 4096.0 || bias < 0.0 - 4096.0 || bias > 4096.0 { return -422; } else {}
+    let training = numeric::zeros(4, 1); let targets = numeric::zeros(4, 1);
+    let validation = numeric::zeros(2, 1); let expected = numeric::zeros(2, 1);
+    let score = numeric::new_scalar(); let out: Vec<f64> = Vec::with_capacity(2);
+    out.push(0.0); out.push(0.0); let mut i = 0;
+    while i < 6 {
+        let prediction = slope * rows.get(i * 2) + bias; let target = rows.get(i * 2 + 1);
+        let mut a = 0; let mut b = 0;
+        if i < 4 { a = numeric::set(training, i, 0, prediction); b = numeric::set(targets, i, 0, target); }
+        else { a = numeric::set(validation, i - 4, 0, prediction); b = numeric::set(expected, i - 4, 0, target); }
+        if a < 0 { return a; } else {} if b < 0 { return b; } else {} i = i + 1;
+    }
+    let trained = numeric::mse_into(training, targets, score); if trained < 0 { return trained; } else {}
+    out.set(0, score.value);
+    let measured = numeric::mse_into(validation, expected, score); if measured < 0 { return measured; } else {}
+    out.set(1, score.value); return out.buf * 4294967296 + 16;
+}

@@ -1,0 +1,23 @@
+// Wire dispatch only; search policy and numerical fitting remain separate.
+module tool;
+use tool_fit;
+use tool_dataset;
+use tool_search;
+use tool_state;
+use tool_exchange;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len >= 4 && load8(input_ptr) == 53 && load8(input_ptr + 1) == 50 && load8(input_ptr + 2) == 52 && load8(input_ptr + 3) == 55 {
+        return tool_dataset::run(input_ptr, input_len);
+    } else {}
+    if input_len >= 4 && load8(input_ptr) == 52 && load8(input_ptr + 1) == 49 && load8(input_ptr + 2) == 53 && load8(input_ptr + 3) == 51 {
+        if input_len >= 8 && load8(input_ptr + 4) == 52 && load8(input_ptr + 5) == 53 {
+            return tool_exchange::run(input_ptr, input_len);
+        } else {}
+        if input_len >= 8 && load8(input_ptr + 4) == 52 && (load8(input_ptr + 5) == 51 || load8(input_ptr + 5) == 102 || load8(input_ptr + 5) == 49) {
+            return tool_state::run(input_ptr, input_len);
+        } else {}
+        return tool_search::run(input_ptr, input_len);
+    } else {}
+    return tool_fit::run(input_ptr, input_len);
+}
