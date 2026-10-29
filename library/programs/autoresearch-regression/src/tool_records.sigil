@@ -1,0 +1,30 @@
+// Application schema only; the records library owns encoding, bounds and validation.
+module tool_records;
+use sigil::records;
+
+fn text(doc: JsonRecord @ReadOnly, key: str, value: str) -> JsonRecord ! { Alloc } {
+    let k = key.as_output(); let v = value.as_output();
+    return records::put_string(doc, k / 4294967296, key.len(), v / 4294967296, value.len());
+}
+fn blob(doc: JsonRecord @ReadOnly, key: str, ptr: i64, len: i64) -> JsonRecord ! { Alloc } {
+    let k = key.as_output();
+    return records::put_hex(doc, k / 4294967296, key.len(), ptr, len);
+}
+fn numbers(doc: JsonRecord @ReadOnly, key: str, ptr: i64, count: i64) -> JsonRecord ! { Alloc } {
+    let k = key.as_output();
+    return records::put_f64le(doc, k / 4294967296, key.len(), ptr, count);
+}
+
+pub fn emit(request: i64, size: i64, header: i64, summary: i64, weights: i64, accepted: i64, decisions: i64, trace: i64) -> i64 ! { Alloc } {
+    let empty = records::new(4096);
+    let a = text(empty, "format", "sigil-autoresearch-regression-fit-record-v1");
+    let b = text(a, "numeric", "binary64le-hex-v1");
+    let c = blob(b, "request_hex", request, size);
+    let d = blob(c, "header_le", header, 64);
+    let e = numbers(d, "summary_f64le", summary, 3);
+    let f = numbers(e, "weights_f64le", weights, 8);
+    let g = numbers(f, "accepted_f64le", accepted, 14);
+    let h = blob(g, "decisions_le", decisions, 48);
+    let result = numbers(h, "trace_f64le", trace, 66);
+    return records::finish(result);
+}

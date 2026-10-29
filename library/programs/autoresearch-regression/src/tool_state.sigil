@@ -1,0 +1,68 @@
+// Compose the reusable checkpoint envelope with search-specific identity/state checks.
+// Publication and storage are external; no claimed signature or host permission.
+module tool_state;
+use sigil::checkpoint;
+use sigil::records;
+use sigil::bytes;
+use sigil::vec;
+use tool_search;
+use tool_dataset;
+
+fn header(ptr: i64) -> Vec<u64> ! { Alloc } {
+    let h: Vec<u64> = Vec::with_capacity(32); let mut i = 0;
+    while i < 32 { h.push(0); i = i + 1; }
+    bytes::copy_into(h.buf, 256, 0, ptr, 256, 0, 256); return h;
+}
+fn same_job(a: Vec<u64> @ReadOnly, b: Vec<u64> @ReadOnly) -> bool {
+    // The changing RNG word and progress counters are not configuration.
+    return a.get(0) == b.get(0) && a.get(1) == b.get(1) && a.get(2) == b.get(2)
+        && a.get(3) == b.get(3) && a.get(4) == b.get(4) && a.get(7) == b.get(7)
+        && a.get(8) == b.get(8) && a.get(9) == b.get(9) && a.get(15) == b.get(15);
+}
+pub fn run(input: i64, len: i64) -> i64 ! { Alloc } {
+    if len > 20000 { return -413; } else {}
+    if len < 16 || len % 2 != 0 { return -422; } else {}
+    let prefix = records::unhex(input, 16, 8); if prefix < 0 { return prefix; } else {}
+    let mut p = prefix / 4294967296; let size = len / 2;
+    if size < 8 || load8(p) != 65 || load8(p + 1) != 83 || load8(p + 4) != 1 || load8(p + 5) != 0 || load8(p + 6) != 0 || load8(p + 7) != 0 { return -422; } else {}
+    let create = load8(p + 2) == 67 && load8(p + 3) == 75;
+    let restore = load8(p + 2) == 79 && load8(p + 3) == 80;
+    let advance = load8(p + 2) == 65 && load8(p + 3) == 68;
+    if !create && !restore && !advance { return -422; } else {}
+    let mut offset = 1744; if restore { offset = 40; } else {}
+    if size < offset { return -422; } else {}
+    let front = records::unhex(input, offset * 2, 1744); if front < 0 { return front; } else {}
+    p = front / 4294967296;
+    let domain = "autoresearch-regression-v1"; let d = domain.as_output(); let profile = tool_dataset::identity(); let c = profile.as_output();
+    if create {
+        if size != 1744 { return -422; } else {}
+        let valid = tool_search::validate_state(p + 8, 1736); if valid < 0 { return valid; } else {}
+        let h = header(p + 8); if h.get(13) != 0 { return -409; } else {}
+        return checkpoint::initialize(d / 4294967296, domain.len(), c / 4294967296, profile.len(), p + 8, 1736);
+    } else {}
+    if size <= offset { return -422; } else {}
+    let tail = records::unhex(input + offset * 2, len - offset * 2, 8191); if tail < 0 { return tail; } else {}
+    let old = checkpoint::open(tail / 4294967296, tail % 4294967296, d / 4294967296, domain.len(), c / 4294967296, profile.len());
+    if old.error < 0 { return old.error; } else {}
+    let valid = tool_search::validate_state(old.current, old.current_len); if valid < 0 { return valid; } else {}
+    let h = header(old.current); if h.get(13) != old.revision { return -409; } else {}
+    if old.revision > 0 {
+        let prior_valid = tool_search::validate_state(old.previous, old.previous_len); if prior_valid < 0 { return prior_valid; } else {}
+        let prior = header(old.previous);
+        if !same_job(prior, h) || prior.get(13) + 1 != h.get(13) { return -409; } else {}
+    } else {}
+    if restore {
+        // ASOP carries the original ASIN request so another seed/configuration
+        // cannot be mistaken for this job merely because its schema is valid.
+        if load8(p + 8) != 65 || load8(p + 9) != 83 || load8(p + 10) != 73 || load8(p + 11) != 78 || load8(p + 12) != 1 { return -422; } else {}
+        let expected: Vec<u64> = Vec::with_capacity(3); expected.push(0); expected.push(0); expected.push(0);
+        bytes::copy_into(expected.buf, 24, 0, p + 16, 24, 0, 24);
+        if expected.get(0) != h.get(3) || expected.get(1) != h.get(4) || expected.get(2) != h.get(15)
+            || load8(p + 13).as_u64() != h.get(7) || load8(p + 14).as_u64() != h.get(8) || load8(p + 15).as_u64() != h.get(9) { return -409; } else {}
+        return old.current * 4294967296 + old.current_len;
+    } else {}
+    let next_valid = tool_search::validate_state(p + 8, 1736); if next_valid < 0 { return next_valid; } else {}
+    let next = header(p + 8);
+    if !same_job(h, next) || next.get(13) != h.get(13) + 1 { return -409; } else {}
+    return checkpoint::advance(tail / 4294967296, tail % 4294967296, d / 4294967296, domain.len(), c / 4294967296, profile.len(), old.revision, p + 8, 1736);
+}

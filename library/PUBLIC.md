@@ -55,6 +55,13 @@ transport driver. SIGIL performs the numerical and search operations; Python
 transports bytes and creates checkpoint files. The optional KV host is separate
 and requires explicit capabilities and Public-checkpoint opt-in.
 
+The second [fixed-dataset regression workload](programs/autoresearch-regression/README.md)
+uses the same nine providers unchanged. It searches optimizer programs against
+four synthetic training rows and reports two validation rows separately. Its
+PyTorch references, native search comparisons and file-resume tests exercise a
+different objective, with distinct task and dataset identities. This addition
+is experimental and packaged separately from the initial library publication.
+
 This is not a GPU backend, Torch launcher or general tensor framework. An
 external GPU worker is still a separate integration. Unsigned certificate
 identities bind program inputs, not the truth of an external fitness result.

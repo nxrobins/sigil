@@ -1,0 +1,33 @@
+{
+  "format": "sigil-regression-dataset-v1",
+  "validation": [
+    [
+      -0.5,
+      0.0
+    ],
+    [
+      1.5,
+      4.0
+    ]
+  ],
+  "identity_sha256": "028b1578cc66135645d790d76337e6f047c2ebd013e40f61dde1c68fde907b98",
+  "model": "slope*x+bias",
+  "train": [
+    [
+      -1.0,
+      -1.0
+    ],
+    [
+      0.0,
+      1.0
+    ],
+    [
+      1.0,
+      2.5
+    ],
+    [
+      2.0,
+      5.5
+    ]
+  ]
+}

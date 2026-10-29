@@ -1,0 +1,28 @@
+// Wire transport only: requests and replies carry data, never host commands.
+module tool_exchange;
+use sigil::records;
+use tool_search;
+
+pub fn run(input: i64, len: i64) -> i64 ! { Alloc } {
+    if len > 15904 { return -413; } else {}
+    let decoded = records::unhex(input, len, 7952); if decoded < 0 { return decoded; } else {}
+    let ptr = decoded / 4294967296; let size = decoded % 4294967296;
+    if size < 8 || load8(ptr) != 65 || load8(ptr + 1) != 83 || load8(ptr + 2) != 69 || load8(ptr + 4) != 1 || load8(ptr + 5) != 0 || load8(ptr + 6) != 0 || load8(ptr + 7) != 0 { return -422; } else {}
+    let mode = load8(ptr + 3);
+    if mode == 68 { return tool_search::evaluation_work_request(ptr + 8, size - 8); } else {}
+    if mode == 82 {
+        if size < 11 { return -422; } else {}
+        let request_len = load8(ptr + 8) + 256 * load8(ptr + 9);
+        if request_len > 1536 { return -413; } else {}
+        if request_len > size - 11 { return -422; } else {}
+        return tool_search::evaluation_response(ptr + 11, request_len, load8(ptr + 10).as_u64(), ptr + 11 + request_len, size - 11 - request_len);
+    } else {}
+    if mode == 81 {
+        if size != 1808 { return -422; } else {}
+        return tool_search::evaluation_request(ptr + 72, 1736, ptr + 8, 64);
+    } else {}
+    if mode == 65 {
+        if size <= 1808 { return -422; } else {}
+        return tool_search::accept_evaluation(ptr + 72, 1736, ptr + 8, 64, ptr + 1808, size - 1808);
+    } else {} return -422;
+}
