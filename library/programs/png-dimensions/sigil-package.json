@@ -46,7 +46,7 @@
     "api_card_hash": "sha256:861a39582bab705044ced8121aa94ef24875dec9bae2215fcbea41c0b2259db6",
     "api_contract_hash": "sha256:c010bdaf2b3b4a9900ac0c4d1b50f6c7baeccd3e49b74c5dfc9e5061195ed2c0",
     "charter_hash": "sha256:304b7a3185175475a151e9b83f3c9e1cd88eb24f1e08f91a6418306f70cc3b85",
-    "evidence_manifest_hash": "sha256:d39da094caa4ac11ca65dec3045ec508c710c162cde7c23298dc71e0880c87d4"
+    "evidence_manifest_hash": "sha256:5a0156c9186a425aab30045adddaf96a3ec5f6096add7b076c88b919ec524084"
   },
   "features": {
     "available": {},
