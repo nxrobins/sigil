@@ -8,7 +8,7 @@ edition = "2024"
 default = ["solver", "json"]
 # The Z3 cache (z3_cache.rs) also needs sha2 + lru; pulled in under
 # the solver feature so a no-solver build doesn't compile the cache.
-solver = ["z3", "dep:lru", "dep:tempfile"]
+solver = ["z3", "dep:z3-sys", "dep:lru", "dep:tempfile"]
 json = ["dep:serde", "dep:serde_json"]
 # Phase 5a-1.6 / I21 / AP17: typed trace events for cross-module
 # dispatch decisions, use-scope construction, cycle detection. Default-
@@ -22,7 +22,17 @@ sigil-abi = { workspace = true }
 sigil-formal-bridge = { workspace = true }
 wasm-encoder = "0.246.2"
 semver = "1"
-z3 = { version = "0.12", optional = true }
+z3 = { version = "0.21.1", optional = true }
+# Never used directly: this entry exists only to turn on z3-sys's `bindgen`
+# feature, which `z3` does not re-export. Without it z3-sys links Z3 through
+# enum values pre-generated from ONE Z3 release (5.0.0 for z3-sys 0.13.1), and
+# Z3 renumbered `Z3_decl_kind` at 4.13.2, 4.14.1 and 5.0.0. The fragment guard
+# classifies every query node by that enum, so a mismatch would misclassify
+# operations inside an authority fence. With `bindgen` the enums are generated
+# from the pinned header (`Z3_SYS_Z3_HEADER`), the same asset the linker and
+# loader use (ci.yml `solver` job). Fails closed: bindgen panics at build time
+# when no header is given.
+z3-sys = { version = "0.13.1", optional = true, features = ["bindgen"] }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true }
@@ -86,10 +96,10 @@ insta = { workspace = true }
 # "solver")]` file attrs are left in place as belt-and-braces; this stanza
 # just stops the empty binaries from being built in the first place.
 #
-# The INVERSE gate is inexpressible: tests/parity_manifest.rs is
-# cfg(not(solver)) and Cargo has no "excluded-features", so that file
-# deliberately has NO stanza here and links one empty binary in the
-# solver lane instead.
+# The INVERSE gate is inexpressible: tests/parity_manifest.rs and
+# tests/solver_off_refinement_contracts.rs are cfg(not(solver)) and Cargo
+# has no "excluded-features", so those files deliberately have NO stanza
+# here and each links one empty binary in the solver lane instead.
 [[test]]
 name = "z3_corpus"
 required-features = ["solver"]

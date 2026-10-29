@@ -48,21 +48,30 @@ Mirrored from the Rust constants; a disagreement fails the build. Never hand-edi
 re-measuring (SC-P1: pin the measured value, never the documented one).
 
 ```pins
-PIN_CAP0_SRC_CHARS = 1150294
-PIN_CAP0_MODULE_BYTES = 454195
-PIN_CAP0_RUNNABLE_SRC_CHARS = 1150649
-PIN_CAP0_RUNNABLE_MODULE_BYTES = 454549
-PIN_WITH_DRIVER_SRC_CHARS = 1151129
-PIN_WITH_DRIVER_MODULE_BYTES = 454894
-PIN_STAGE1_CAP0_MODULE_BYTES = 454195
-PIN_STAGE1_RUNNABLE_MODULE_BYTES = 454549
-PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 454894
+PIN_CAP0_SRC_CHARS = 1572200
+PIN_CAP0_MODULE_BYTES = 627140
+PIN_CAP0_RUNNABLE_SRC_CHARS = 1572555
+PIN_CAP0_RUNNABLE_MODULE_BYTES = 627494
+PIN_WITH_DRIVER_SRC_CHARS = 1573035
+PIN_WITH_DRIVER_MODULE_BYTES = 627839
+PIN_STAGE1_CAP0_MODULE_BYTES = 627140
+PIN_STAGE1_RUNNABLE_MODULE_BYTES = 627494
+PIN_STAGE1_WITH_DRIVER_MODULE_BYTES = 627839
 PIN_FLOOR_SRC_CHARS = 1000000
 PIN_FLOOR_MODULE_BYTES = 400000
 PIN4_KNOWN_DIVERGENCES = 0
 PIN_AXIOM_TARGETS = 1308
-PIN_DIAGNOSTIC_TEST_GAPS = 59
+PIN_DIAGNOSTIC_TEST_GAPS = 56
 PIN_STRIP_LIST_ENTRIES = 6
+SHP_KNOWN_DIVERGENCES = 0
+SHP_EXPANDED_FLOOR = 173
+SHP_IDENTICAL_FLOOR_F = 54
+SHP_IDENTICAL_FLOOR_T = 180
+SHP_IDENTICAL_FLOOR_X = 365
+SHP_CORPUS_FLOOR_F = 218
+SHP_CORPUS_FLOOR_T = 183
+SHP_CORPUS_FLOOR_X = 647
+SHP_IDENTICAL_KINDS_COUNT = 28
 ```
 
 **Prose in §B does not restate these numbers.** Claims 26 and 29 each carried a figure that had
@@ -115,8 +124,10 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
 10. **Generic-enum method monomorphization is byte-identical**, and un-covered shapes fail closed
     rather than diverging. @test:ag6_generic_enum_method_corpus and @test:ag6_generic_enum_method_no_divergence
 11. **Generic-enum instance cell sizing is byte-identical in both construct forms** (qualified and
-    bare), at width-4/width-8 and with multiple type parameters, across annotations, returns, and
-    free-call arguments. Unresolved self-host contexts fail closed.
+    bare), at width-4/width-8 and with multiple type parameters, across annotations, returns,
+    arguments of methods and non-generic free functions, and tuple elements, including a narrow
+    literal payload stored at its instance's width (SR-032). Unresolved self-host contexts fail
+    closed.
     @test:generic_unit_variant_layout_is_context_independent
     @test:ag6_6_narrow_variant_size_corpus
     @test:ag6_7_unresolved_generic_enum_contexts_fail_closed
@@ -216,14 +227,28 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
 27. **Capability sinks deliberately require the capability type's full authority mask.** Callee
     bodies do not infer or weaken that contract; a narrowed three-authority capability is rejected
     while its full-authority twin is accepted. @test:cap_sink_contract_is_deliberately_full_mask
-28. **Known unsupported self-host taint contexts reject explicitly.** Early exits in nonpublic
-    contexts, tuple lets in nonpublic contexts, guarded matches, actor/spawn boundaries,
-    closure-value taint, and unknown syntax emit `SH_TAINT_UNSUPPORTED`; the composed self-host
-    compiler treats that verdict as a taint-stage rejection. (All-public tuple lets, `break`, and
-    `continue` are SUPPORTED — the oracle desugars the first pre-taint and emits no codes for the
-    other two, so the all-public projection is exact there.)
+28. **Known unsupported self-host taint contexts reject explicitly.** A tuple let under a nonpublic pc,
+    guarded matches, actor/spawn boundaries, closure-value taint, a function naming more `alloc`
+    regions than the shadow's region mask holds, a type alias, any shape the heap-floor typing
+    cannot classify at a non-public label, a call whose callee the shadow cannot name (a `grant`
+    of a closure held in a local included) or whose summary it cannot decide while a label (an
+    effect operation's parameter label included) makes the summaries live, a region body outside
+    the scalar-only rule, and unknown syntax emit `SH_TAINT_UNSUPPORTED`; the
+    composed self-host compiler treats that verdict as a taint-stage rejection. (Control-flow
+    joins, nonpublic early exits and the M6 region model are MODELLED since SHP-5a and pinned exact
+    against the oracle on fixtures and on a generated join surface; all-public tuple lets are exact
+    because the oracle desugars them pre-taint. The `split`/`draw` quantity rule and the
+    intraprocedural heap floors are MODELLED since SHP-5c-1, the call-site summaries since
+    SHP-5c-2 and the slot intrinsics and region statements since SHP-5c-3 — a region body admitted
+    by the scalar-only rule in place of production's escape lattice — each pinned on a reject and
+    a clean twin.)
     @test:sh_taint_unsupported_shapes_are_explicit
     @test:boot1_unsupported_taint_shape_fails_closed
+    @test:sh_taint_region_overflow_is_explicit
+    @test:sh_taint_reject_matches_oracle
+    @test:sh_taint_accept_is_clean_both_sides
+    @test:sh_taint_program_bound_sites_refuse_only_while_live
+    @test:joinmodel_surface_agrees_exactly
 29. **The diagnostic security surface is measured and drift-pinned.** The census distinguishes
     registration, active production references, direct test references, dedicated fixtures, and
     self-host shadows; its direct-test backlog (`PIN_DIAGNOSTIC_TEST_GAPS` codes, §A) and two
@@ -625,10 +650,11 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     @test:taint_checker_source_has_no_release_abort_primitives
 
 45. **The production formal verifier retains bounded large-envelope coverage.** The real self-host
-    trio projects roughly a quarter-million CSIR records and must pass the exact linked Lean verifier
+    trio projects several hundred thousand CSIR records and must pass the exact linked Lean verifier
     within two fail-closed bounds that have different owners. The tight one is the isolated scaling
-    canary, `SELFHOST_TRIO_CANARY_MS` (five seconds): the `Formal verifier scaling canary` step runs
-    the canary test alone with `SIGIL_CORPUS_SCALING_CANARY` set, so its wall clock measures the
+    canary, `SELFHOST_TRIO_CANARY_MS` (six seconds, re-baselined from five on 2026-10-04 on the
+    measured runner distribution its doc comment records): the `Formal verifier scaling canary` step
+    runs the canary test alone with `SIGIL_CORPUS_SCALING_CANARY` set, so its wall clock measures the
     verifier and nothing else, and a malformed arming value panics rather than disarming. The wider
     one is the corpus extractor's drop bound, `VALIDATE_BUDGET_MS` (thirty seconds): it exists to
     bound a hung compile and is asserted by the same test in every lane, armed or not, because a
@@ -645,8 +671,8 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     tail-recursive operand traversal. The canary has an
     explicit command in a required CI lane, and another test
     prevents that command or its arming line from disappearing. This is regression evidence for the measured fixture
-    and known bug classes, not an asymptotic proof or a claim that all one-million-record inputs
-    finish within five seconds.
+    and known bug classes, not an asymptotic proof or a claim that all two-million-record inputs
+    finish within six seconds.
     @test:selfhost_trio_completes_within_validation_budget
     @test:lean_kernel_caches_whole_program_indexes_outside_inner_loops
     @test:linked_lean_indexes_large_single_function_without_nested_copying
@@ -837,11 +863,16 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     (main: E001/E002), and is refused at emission with exactly R007 (its instance is filed in the
     outer ring); an outer-ring generic that declares its effect, with an inner module first, is
     likewise checker-accepted and refused with R007 (main accepted it and miscompiled the
-    cross-ring call indices — the bug claim 49 closes); a trusted generic's `handle Unsafe`
-    instantiated from an untrusted module is now exactly E002 in every module order, including
-    the trusted-first order main accepted, whereas its non-generic twin (which resolves only in
-    its trusted module) stays accepted. Not claimed: the wasm ring an instance is EMITTED into
-    still follows the filing module (hence the R007 refusals above, #768); the ring-blind
+    cross-ring call indices — the bug claim 49 closes); a trusted generic free fn's `handle
+    Unsafe` instantiated from an untrusted module is now exactly E002 in every module order,
+    including the trusted-first order main accepted, whereas its non-generic twin (which resolves
+    only in its trusted module) stays accepted. A generic METHOD differs: its instance is named
+    without its caller and checked once, under the module whose call creates it, so the same
+    `handle Unsafe` in a trusted generic method is exactly E002 when an untrusted module's call
+    creates the instance and accepted when a trusted module's call comes first (the untrusted
+    call then reuses an instance that resolved no name in its scope). Not claimed: the wasm ring
+    an instance is EMITTED into still follows the filing module (hence the R007
+    refusals above, #768); the ring-blind
     second E001 emitter (`bind_and_check_effect_rows`) reads no module at all, so the meet neither
     enables nor suppresses it (pinned, with a pure-closure control); NON-generic inner-ring code
     stays exempt from the effect walk by design — this claim is about WHICH modules govern a
@@ -861,6 +892,7 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     @test:use_imported_generic_is_checked_under_definer_trust
     @test:nongeneric_and_same_module_twins_prove_e002_fires
     @test:trusted_generic_instantiated_from_untrusted_caller_is_e002
+    @test:trusted_generic_method_handle_unsafe_follows_its_first_instantiator
     @test:caller_scope_helper_under_trusted_generic_handle_is_e002
     @test:impl_method_use_scope_fallback_is_governed_by_the_meet
     @test:inner_ring_generic_leak_is_exempt_only_when_every_governing_module_is_inner
@@ -988,6 +1020,67 @@ file exists to prevent, surviving inside the file itself. Measurements belong in
     @test:f_string_compare_after_a_secret_store_is_t001
     @test:intrinsic_memory_census_is_total
     @test:heap_floor_switch_configuration_is_pinned
+
+### Self-hosted backend parity (SHP)
+
+54. **On every program production accepts in the gated corpora, the committed self-compiled
+    compiler, handed the program production compiled, emits production's module or refuses; the
+    divergence set is pinned empty.** The seed and production `compile_module` both compile every
+    program production accepts in three corpora: the parity-manifest roots plus the Z3 corpus, the
+    agent tools, and the SIGIL programs embedded in the test sources (the self-hosted differential
+    suites excluded, being curated to the self-hosted surface). Both compile one input: the seed is
+    handed every file of production's source map in its order, so a program production expanded with
+    ambient stdlib modules reaches the seed with those modules after the source (SHP-3). On every
+    such program, production's stages (the stage chain the seed mirrors, plus the effect desugar)
+    are shown compiling that text to production's exact modules, and a floor on those programs
+    (`SHP_EXPANDED_FLOOR`) keeps the check from going vacuous. Each seed answer is classified
+    Identical, Poison, Refused, Trap or Diverge, and the classifier fails closed: a refusal counts
+    only in the exact form the pipeline writes (the poison marker alone, or a known stage and a
+    well-formed code stream), and any other output is a divergence, as is a module count that
+    differs from production's: a program with an outer-ring module is answered in the protocol's
+    two-module form, inner then outer, and each module must be production's. The divergence count
+    (`SHP_KNOWN_DIVERGENCES`) and its label set are pinned EMPTY, so any divergence fails the gate;
+    traps and production panics are exact sets; and per-corpus floors on byte-identical programs
+    (`SHP_IDENTICAL_FLOOR_F`, `SHP_IDENTICAL_FLOOR_T`, `SHP_IDENTICAL_FLOOR_X`) and on accepted
+    programs (`SHP_CORPUS_FLOOR_F`, `SHP_CORPUS_FLOOR_T`, `SHP_CORPUS_FLOOR_X`) keep coverage from
+    eroding and the gate from going vacuous. Programs of every construct class SHP-0b fixed or
+    fenced (the classes its review found outside the corpora included), SHP-1 taught or fenced,
+    SHP-2b emitted or fenced, SHP-5a's shadow admitted or its emitter fenced, SHP-5b emitted or
+    fenced (security release, cap borrows and the capability operations) and SHP-5c-3 emitted or
+    fenced (the slot intrinsics and region statements) are pinned by name to their verdicts, so a regression fails by the construct's name; the fence comparator is shown
+    reporting a planted wrong pin. The production AIR statement kinds Identical programs carry are
+    a grow-only set (`SHP_IDENTICAL_KINDS_COUNT` is its size), and its comparator is shown
+    reporting a planted kind and a removed one, each by name. A call to an
+    extern another module declares, which production rejects, is pinned refused by the seed too, and
+    a module answer is shown not to pass; so is an extern named like any intrinsic production's
+    resolver lists, read from that resolver. The classifier is shown catching a flipped byte, an
+    empty module and an invalid one, and every malformed refusal form; every malformed two-module
+    form (swapped, missing, empty or extra modules) and an outer module whose call names a
+    same-signature neighbour by its global function index (SR-018's bug); the expansion check
+    failing a text that drops one of production's modules and one that holds them in another order,
+    and a handler program production expands compiling to production's modules only with the effect
+    desugar; the extractor finding every planted literal form while comments, doc comments and char
+    literals yield nothing; and an embedded program's label staying with its pin when a copy of the
+    program appears in another file. The gate runs in the default `test` lane. **Scope, stated
+    exactly:** this bounds the seed on these corpora and the named fences, nowhere else; and an
+    Identical module is exactly as correct as production's, no more.
+    @test:shp_divergence_is_exactly_the_pinned_set
+    @test:shp0b_fences_hold_on_the_committed_seed
+    @test:shp1_fences_hold_on_the_committed_seed
+    @test:shp2_fences_hold_on_the_committed_seed
+    @test:shp5_fences_hold_on_the_committed_seed
+    @test:shp5_the_taint_stage_passes_control_flow_over_secrets
+    @test:shp5b_fences_hold_on_the_committed_seed
+    @test:shp5b_identical_kinds_cover_the_pinned_set
+    @test:shp5c3_fences_hold_on_the_committed_seed
+    @test:shp_classifier_detects_planted_divergence
+    @test:shp2_classifier_reads_the_two_ring_form
+    @test:shp3_the_seed_is_handed_the_program_production_compiled
+    @test:shp3_production_stages_include_the_effect_desugar
+    @test:shp2_call_to_another_modules_extern_is_refused
+    @test:shp2_extern_named_like_an_intrinsic_is_refused
+    @test:shp_extractor_finds_planted_programs
+    @test:shp_labels_stay_with_their_pins
 
 ---
 
@@ -1204,7 +1297,7 @@ file. The rows bound how far the self-hosted *projection* reaches — which is e
 | range pattern | **Poison** *(was OracleRejects; fixture was malformed)* |
 | closure capture | **Poison** *(was OracleRejects; fixture was malformed)* |
 | recursive generic enum | **ByteEqual** *(was Diverge; fixed)* |
-| u256 enum payload | **ByteEqual** *(prose said fenced — wrong)* |
+| u256 enum payload | **Poison** *(was ByteEqual; SHP-0b refuses every program that names `u256`, because the self-hosted emitter lowers `u256` values as scalars — claim 54)* |
 | `?`, `Option::map` | **OracleRejects** — the fixture never reached the
   selfhost, so these rows are **unverified coverage**, not verified fences |
 

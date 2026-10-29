@@ -1,0 +1,30 @@
+// expect-error: T210
+// Z3 corpus #106: axis-1 — DBC-0b: a literal store into a refined field is a sink.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `Index` carries `where value > 100`. The construction satisfies it, then
+// `idx.value = 5` stores a literal the predicate refutes. The store is a
+// refinement sink with the construction site's dispatch (the design-by-
+// contract spec's DBC0-3, probe P11): the collector emits `LiteralFits`
+// for the stored literal and Z3 refutes it, T210 at the store. Before
+// DBC-0b the store was not a sink, and every later read of `idx.value`
+// took `value > 100` from the record type: a broken invariant, certified
+// solver-verified. Without the solver the obligation is collected and
+// not decided (SR-038), as #27's reassignment is.
+//
+// MUTATION CONTRACT
+//
+// Deleting the mutation site leaves only `Index { value: 200 }`, which
+// satisfies `value > 100` and compiles cleanly (#25's shape).
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut idx: Index = Index { value: 200 };
+        idx.value = 5;  // MUTATION_SITE
+        return 1;
+    }
+}

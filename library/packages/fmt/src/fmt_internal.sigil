@@ -1,0 +1,56 @@
+// Experimental, unreviewed signed-decimal and boolean formatting; no host authority.
+module fmt_internal;
+
+pub fn decimal_i64(value: i64 @Internal) -> i64 @Internal ! { Alloc } {
+    // Keep the magnitude nonpositive so the minimum i64 is never negated.
+    let negative: bool @Internal = value < 0;
+    let mut remaining: i64 @Internal = value;
+    if value > 0 {
+        remaining = 0 - value;
+    } else {
+    }
+    let mut probe: i64 @Internal = remaining;
+    let mut digits: i64 @Internal = 1;
+    while probe <= -10 {
+        probe = probe / 10;
+        digits = digits + 1;
+    }
+    let mut length: i64 @Internal = digits;
+    if negative {
+        length = length + 1;
+    } else {
+    }
+    let out: i64 @Internal = alloc(length);
+    let mut cursor: i64 @Internal = length;
+    let mut left: i64 @Internal = digits;
+    while left > 0 {
+        cursor = cursor - 1;
+        store8(out + cursor, 48 - remaining % 10);
+        remaining = remaining / 10;
+        left = left - 1;
+    }
+    if negative {
+        store8(out, 45);
+    } else {
+    }
+    return out * 4294967296 + length;
+}
+
+pub fn boolean(value: bool @Internal) -> i64 @Internal ! { Alloc } {
+    if value {
+        let out: i64 @Internal = alloc(4);
+        store8(out, 116);
+        store8(out + 1, 114);
+        store8(out + 2, 117);
+        store8(out + 3, 101);
+        return out * 4294967296 + 4;
+    } else {
+        let out: i64 @Internal = alloc(5);
+        store8(out, 102);
+        store8(out + 1, 97);
+        store8(out + 2, 108);
+        store8(out + 3, 115);
+        store8(out + 4, 101);
+        return out * 4294967296 + 5;
+    }
+}

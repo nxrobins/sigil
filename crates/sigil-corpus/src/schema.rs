@@ -15,13 +15,13 @@ pub const SCHEMA_VERSION: &str = "1";
 /// HUNG compile, which is minutes, not to detect a slow one; the slow-compile
 /// detector is `SELFHOST_TRIO_CANARY_MS`, measured in isolation.
 ///
-/// Why thirty seconds and not the canary's five: the three selfhost files share
+/// Why thirty seconds and not the canary's bound: the three selfhost files share
 /// ONE memoized compile (`selfhost-trio`, the slowest unit by an order of
 /// magnitude — 2.4 s alone and 3.0 s under three concurrent full builds on a
 /// developer machine, 2026-09-30, where the next-slowest unit is 315 ms), so a
 /// single timeout drops EVERY selfhost idiom and the corpus stops being
 /// deterministic (ET-C5: 3962 vs 4140 records on PR #765, where the same trio
-/// passed the five-second bound twice in the isolated `checks` step and failed
+/// passed the then five-second bound twice in the isolated `checks` step and failed
 /// it only inside the parallel workspace `test` lane). Load contention, not a
 /// scaling regression — and a drop bound that flips on contention is a
 /// nondeterminism generator. Six times the failed bound leaves the hung-compile
@@ -31,16 +31,28 @@ pub const SCHEMA_VERSION: &str = "1";
 /// and runs to completion in the background (`validate::compile_within_budget`).
 pub const VALIDATE_BUDGET_MS: u64 = 30_000;
 /// The linked Lean verifier's SCALING-CANARY bound: the selfhost trio must
-/// compile within this many milliseconds when measured IN ISOLATION. This fixed
-/// five-second bound caught two accidental O(n²) verifier scans, so it stays
-/// tight and deliberately separate from `VALIDATE_BUDGET_MS`: widening the
-/// extractor's drop bound cannot disguise a verifier regression, and the canary
-/// cannot be loosened by the lane it happens to run in. Asserted by
+/// compile within this many milliseconds when measured IN ISOLATION. A fixed
+/// bound on it caught two accidental O(n²) verifier scans, so it stays tight and
+/// deliberately separate from `VALIDATE_BUDGET_MS`: widening the extractor's
+/// drop bound cannot disguise a verifier regression, and the canary cannot be
+/// loosened by the lane it happens to run in. Asserted by
 /// `validate::tests::selfhost_trio_completes_within_validation_budget` only when
 /// `SCALING_CANARY_ENV` is `1` — the `Formal verifier scaling canary` step in
 /// `ci.yml` sets it and runs that test alone; the parallel workspace lane, which
 /// does not set it, still asserts the extractor bound.
-pub const SELFHOST_TRIO_CANARY_MS: u64 = 5_000;
+///
+/// Re-baselined from five to six seconds on 2026-10-04, on a measured runner
+/// distribution rather than to absorb a regression. CI runners fall into two
+/// speed classes: in ten `checks` runs of a trio of main's size, the canary
+/// measured 2.3–3.3 s on the faster class and 4.2–4.8 s on the slower (4156,
+/// 4179, 4404, 4725, 4783 and 4796 ms), within 4% of five seconds. SHP-2a's
+/// extern checks then grew the trio's projection by 1.8% (376,314 → 382,995
+/// CSIR nodes) and its whole compile by 2.6% (timed pass by pass; the verifier
+/// is ~87% of it), and two slower-class runs measured 5067 and 5077 ms. A
+/// doubling of the verifier's cost still fails six seconds on the slower class;
+/// on the faster class it passes, as it already did at five: the blind spot of
+/// any absolute bound on runners whose speeds differ by about 2×.
+pub const SELFHOST_TRIO_CANARY_MS: u64 = 6_000;
 /// Arms the tight `SELFHOST_TRIO_CANARY_MS` assertion when set to exactly `1`.
 /// Absent = the extractor bound only (a contended lane must not fail on timing
 /// it cannot control); any OTHER value panics (fail closed — a typo in the CI

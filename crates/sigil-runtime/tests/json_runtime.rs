@@ -45,12 +45,36 @@ fn key_stores(key: &[u8]) -> String {
     s
 }
 
+/// `compile_tool` once per distinct composed source, shared by every run that composes it. The
+/// tests below compose 31 distinct sources across 133 runs (measured 2026-10-08), and each run used
+/// to recompile its source, most of that time in the formal gate. The key is the exact source text,
+/// so two runs share a module only when they would compile the identical program; each run still
+/// executes in a fresh store. No test here checks determinism, so sharing a compile hides nothing.
+/// A compile that panics leaves its cell empty, and the next caller compiles again.
+fn compiled(source: &str) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    type Cell = std::sync::Arc<std::sync::OnceLock<Result<std::sync::Arc<Vec<u8>>, String>>>;
+    static CELLS: std::sync::Mutex<std::collections::BTreeMap<String, Cell>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let cell = {
+        let mut cells = CELLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::sync::Arc::clone(cells.entry(source.to_string()).or_default())
+    };
+    cell.get_or_init(|| {
+        compile_tool(source)
+            .map(|result| std::sync::Arc::new(result.wasm))
+            .map_err(|e| format!("{e:?}"))
+    })
+    .clone()
+}
+
 /// Ok(output bytes) or Err(positive error magnitude from the sentinel).
 fn run(tool_body: &str, input: &[u8]) -> Result<Vec<u8>, i64> {
     let source = compose(tool_body);
-    let result = compile_tool(&source)
-        .unwrap_or_else(|e| panic!("tool should compile, got: {e:?}\n--- body ---\n{tool_body}"));
-    match execute_ephemeral(&result.wasm, input, FUEL, &IoGrants::none()) {
+    let wasm = compiled(&source)
+        .unwrap_or_else(|e| panic!("tool should compile, got: {e}\n--- body ---\n{tool_body}"));
+    match execute_ephemeral(&wasm, input, FUEL, &IoGrants::none()) {
         Ok(exec) => Ok(exec.output),
         Err(ToolError::Trapped { message }) => {
             let prefix = "tool returned error (";

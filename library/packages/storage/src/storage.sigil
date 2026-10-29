@@ -1,0 +1,50 @@
+// Grant-controlled opaque publication for one serialized writer; never a concurrent CAS.
+#[ring(outer)] #[trusted] module storage;
+use sigil::kv;
+
+fn span(ptr: i64 @Internal, len: i64 @Internal, maximum: i64 @Internal) -> i64 @Internal {
+    if ptr < 0 || len < 0 { return -400; } else {}
+    if ptr > 2147483647 || len > maximum || len > 2147483647 - ptr { return -413; } else {}
+    return 0;
+}
+fn address(ns: i64 @Internal, ns_len: i64 @Internal, key: i64 @Internal, key_len: i64 @Internal) -> i64 @Internal {
+    let n: i64 @Internal = span(ns, ns_len, 64); if n < 0 { return n; } else {}
+    let k: i64 @Internal = span(key, key_len, 128); if k < 0 { return k; } else {}
+    if ns_len == 0 || key_len == 0 { return -400; } else {}
+    return 0;
+}
+
+pub fn load(ns: i64 @Internal, ns_len: i64 @Internal, key: i64 @Internal, key_len: i64 @Internal) -> i64 @Internal ! { KvIO, Alloc, FFI, Unsafe } {
+    let checked: i64 @Internal = address(ns, ns_len, key, key_len);
+    if checked < 0 { return checked; } else {}
+    let result: i64 @Internal = kv::get(ns.as_i32(), ns_len.as_i32(), key.as_i32(), key_len.as_i32());
+    if result < 0 { return result; } else {}
+    if result % 4294967296 > 32768 { return -413; } else {}
+    return result;
+}
+
+pub fn publish(ns: i64 @Internal, ns_len: i64 @Internal, key: i64 @Internal, key_len: i64 @Internal, expected: i64 @Internal, expected_len: i64 @Internal, next: i64 @Internal, next_len: i64 @Internal) -> i64 @Internal ! { KvIO, Alloc, FFI, Unsafe } {
+    let checked: i64 @Internal = address(ns, ns_len, key, key_len);
+    if checked < 0 { return checked; } else {}
+    let old_span: i64 @Internal = span(expected, expected_len, 32768);
+    if old_span < 0 { return old_span; } else {}
+    let new_span: i64 @Internal = span(next, next_len, 32768);
+    if new_span < 0 { return new_span; } else {}
+    if next_len == 0 { return -400; } else {}
+    let old: i64 @Internal = load(ns, ns_len, key, key_len);
+    if old == -404 {
+        if expected_len != 0 { return -409; } else {}
+    } else {
+        if old < 0 { return old; } else {}
+        if expected_len == 0 || old % 4294967296 != expected_len { return -409; } else {}
+        let ptr: i64 @Internal = old / 4294967296;
+        let mut i: i64 @Internal = 0;
+        while i < expected_len {
+            if load8(ptr + i) != load8(expected + i) { return -409; } else {}
+            i = i + 1;
+        }
+    }
+    // Only one atomic KV write occurs, after all checks. The host must serialize
+    // writers across the preceding read: KV does not offer compare-and-swap.
+    return kv::put(ns.as_i32(), ns_len.as_i32(), key.as_i32(), key_len.as_i32(), next.as_i32(), next_len.as_i32());
+}

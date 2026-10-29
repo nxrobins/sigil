@@ -271,3 +271,18 @@ fn rf_capped_scan_full_occupancy_never_breaks() {
         64
     );
 }
+
+/// An enclosing `let mut i` beside `for i in 0..4`: the loop reads `a[i]` with its own `i`, and
+/// the outer binding, untouched by the loop, is still assignable after it. The run twin of the
+/// T042 pin in `crates/sigil-compiler/tests/range_for.rs`
+/// (`loop_variable_shadowing_an_outer_mut_binding_is_still_immutable`): the rule is the loop
+/// variable's, not the name's.
+#[test]
+fn rf_outer_mut_binding_survives_the_loop() {
+    assert_eq!(
+        neg(
+            "    let a: [i64; 4] = [1, 2, 3, 4];\n    let mut i: i64 = 7;\n    let mut s: i64 = 0;\n    for i in 0..4 {\n        s = s + a[i];\n    }\n    i = i + 1;\n    return 0 - (s * 10 + i);"
+        ),
+        108
+    );
+}

@@ -435,6 +435,8 @@ fn pin6_ledger_numbers_match_the_code() {
         include_str!("preserve_pins.rs"),
         include_str!("monomorph_differential.rs"),
         include_str!("soundness_contract.rs"),
+        // The SHP-0 gate owns the `SHP_*` pins (claim 54).
+        include_str!("selfhost_backend_parity.rs"),
     ];
 
     let mut unresolved = Vec::new();

@@ -157,14 +157,10 @@ const MONO_CENSUS_PINS: &[(&str, &str, &[&str])] = &[
         "module a;\nfn ida<T>(x: T) -> T { return x; }\nfn ta() -> i64 { let r: i64 = ida(1); return r; }\nmodule b;\nfn idb<T>(x: T) -> T { return x; }\nfn tb() -> i64 { let r: i64 = idb(2); return r; }\n",
         &["ta(F)", "ida__i64(F)", "idb__i64(F)", "tb(F)"],
     ),
-    // THE X-M7 DISCRIMINATOR PAIR — first-top-level-binding-wins (resolve.rs:886-903):
-    // the literal binds T first → id2__i64 (u32 does NOT override at top level)…
-    (
-        "p_mixed_annotated",
-        "module m;\nfn id2<T>(a: T, b: T) -> T { return a; }\nfn test(x: u32) -> u32 { let r: u32 = id2(5, x); return r; }\n",
-        &["test(F)", "id2__i64(F)"],
-    ),
-    // …and the concrete-first order binds u32.
+    // THE X-M7 BINDING RULE — first-top-level-binding-wins (resolve.rs:886-903): the
+    // concrete-first order binds u32. The literal-first order (`id2(5, x)`) binds the literal's
+    // i64, which the u32 argument does not fit, so it has no census: see
+    // `mono0_literal_first_binding_rejects_a_later_concrete_argument`.
     (
         "p_mixed_concrete_first",
         "module m;\nfn id2<T>(a: T, b: T) -> T { return a; }\nfn test(x: u32) -> u32 { let r: u32 = id2(x, 5); return r; }\n",
@@ -214,6 +210,20 @@ const MONO_CENSUS_PINS: &[(&str, &str, &[&str])] = &[
         &["test(F)"],
     ),
 ];
+
+/// X-M7's other order: in `id2(5, x)` the literal binds T first, so the instance is `id2<i64>`
+/// and the `u32` argument does not fit it (T071), nor does its `i64` result fit `let r: u32`
+/// (T041). Before SR-032's review the oracle accepted the program and compiled a module the engine
+/// refused, and this file pinned its census (`id2__i64`). The shadow's census of the same program
+/// stays pinned by `mono1_non_stub_pins`.
+#[test]
+fn mono0_literal_first_binding_rejects_a_later_concrete_argument() {
+    let src = "module m;\nfn id2<T>(a: T, b: T) -> T { return a; }\nfn test(x: u32) -> u32 { let r: u32 = id2(5, x); return r; }\n";
+    assert_eq!(
+        oracle_functions("p_mixed_annotated", src),
+        Err(vec!["T071".to_string(), "T041".to_string()])
+    );
+}
 
 /// The ordered census pins — the ground truth the MONO-1+ shadow must reproduce.
 #[test]
@@ -461,6 +471,23 @@ fn test() -> i64 { let q: i64 = use_it(P { x: 1 }); return q; }
 #[test]
 fn mono1_census_parity() {
     for (label, src) in MONO1_CORPUS {
+        // The oracle rejects X-M7's literal-first order where a later argument does not fit the
+        // literal's `i64` instance (T071, and T041 for the result): it has no census to compare,
+        // and the shadow's is pinned by `mono1_non_stub_pins`. Asserted, so the skip cannot hide
+        // a fixture that stopped compiling for another reason.
+        let oracle_rejects: Option<&[&str]> = match *label {
+            "d_mixed_annotated" => Some(&["T071", "T041"]),
+            "d_conflict_lit_then_str" => Some(&["T071"]),
+            _ => None,
+        };
+        if let Some(codes) = oracle_rejects {
+            assert_eq!(
+                oracle_functions(label, src),
+                Err(codes.iter().map(|c| c.to_string()).collect()),
+                "MONO-1 {label}: the oracle's verdict on the literal-first order moved"
+            );
+            continue;
+        }
         assert_eq!(
             mn_census_out(src),
             oracle_names(label, src),
@@ -3178,8 +3205,10 @@ fn pin_fence_registry_never_diverges() {
         "PIN-4: the UNVERIFIED (oracle-rejected) fixture manifest moved. These rows prove nothing \
          about the selfhost; fix a fixture so the hole is exercised, then remove its label."
     );
-    // The superseded prose table also claimed u256 enum payloads were FENCED;
-    // this registry shows ByteEqual (the hole is closed). Prose is not a gate — this is.
+    // The superseded prose table also claimed u256 enum payloads were FENCED; this
+    // registry showed ByteEqual (the hole closed) until SHP-0b refused every program that
+    // names `u256` (the emitter lowers its values as scalars), so the row now measures
+    // Poison. Prose is not a gate — this is.
 
     let unexpected: Vec<&&str> = diverged
         .iter()
@@ -3358,6 +3387,68 @@ fn take(e: E<i64>) -> i64 { return 1; }
 fn f() -> i64 { return take(N); }
 ",
         ),
+        // SHP-0b: a method argument is typed by its declared parameter, as a free call's is, so
+        // this context resolves the instance too (it was an AG6-7 fail-closed row before).
+        (
+            "method-arg/qualified-unit",
+            "module m;
+enum E<T> { V(T, i64), N }
+record Holder { value: i64 }
+impl Holder { fn take(self: Holder, e: E<i64>) -> i64 { return self::value; } }
+fn f() -> i64 { let h: Holder = Holder { value: 1 }; return h.take(E::N); }
+",
+        ),
+        (
+            "method-arg/bare-unit",
+            "module m;
+enum E<T> { V(T, i64), N }
+record Holder { value: i64 }
+impl Holder { fn take(self: Holder, e: E<i64>) -> i64 { return self::value; } }
+fn f() -> i64 { let h: Holder = Holder { value: 1 }; return h.take(N); }
+",
+        ),
+        // SR-032: a tuple literal is typed by its annotation's element types, so this context
+        // resolves the instance too (it was an AG6-7 fail-closed row before).
+        (
+            "tuple-element/qualified-unit",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn f() -> i64 { let pair: (E<i64>, i64) = (E::N, 1); return 1; }
+",
+        ),
+        // SR-032: a literal payload in a type-parameter slot takes the instance's type argument
+        // (an `i32` here, stored in 4 bytes, so the `i64` payload after it sits at offset 8), in
+        // every context whose instance the self-hosted emitter can see.
+        (
+            "narrow-payload/annotation",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn f() -> i64 { let e: E<i32> = E::V(3, 8); return 1; }
+",
+        ),
+        (
+            "narrow-payload/return",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn make() -> E<i32> { return E::V(3, 8); }
+fn f() -> i64 { let e: E<i32> = make(); return 1; }
+",
+        ),
+        (
+            "narrow-payload/call-arg",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn take(e: E<i32>) -> i64 { return 1; }
+fn f() -> i64 { return take(E::V(3, 8)); }
+",
+        ),
+        (
+            "narrow-payload/tuple-element",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn f() -> i64 { let pair: (E<i32>, i64) = (E::V(3, 8), 1); return 1; }
+",
+        ),
     ];
     for (name, src) in &shapes {
         assert_eq!(
@@ -3372,29 +3463,11 @@ fn f() -> i64 { return take(N); }
 fn ag6_7_unresolved_generic_enum_contexts_fail_closed() {
     let cases = [
         (
-            "tuple element",
-            "module m;
-enum E<T> { V(T, i64), N }
-fn f() -> i64 { let pair: (E<i64>, i64) = (E::N, 1); return 1; }
-",
-            FenceVerdict::Poison,
-        ),
-        (
             "record field",
             "module m;
 enum E<T> { V(T, i64), N }
 record Holder { value: E<i64> }
 fn f() -> i64 { let h: Holder = Holder { value: E::N }; return 1; }
-",
-            FenceVerdict::Poison,
-        ),
-        (
-            "method argument",
-            "module m;
-enum E<T> { V(T, i64), N }
-record Holder { value: i64 }
-impl Holder { fn take(self: Holder, e: E<i64>) -> i64 { return self::value; } }
-fn f() -> i64 { let h: Holder = Holder { value: 1 }; return h.take(E::N); }
 ",
             FenceVerdict::Poison,
         ),
@@ -3406,13 +3479,43 @@ fn f() -> i64 { let mut e: E<i64> = E::V(1, 2); e = E::N; return 1; }
 ",
             FenceVerdict::Poison,
         ),
+        // SR-032: production now resolves a bare unit variant from the place it is assigned to,
+        // and accepts this (it rejected it before); the emitter cannot see the place's type.
         (
             "bare reassignment",
             "module m;
 enum E<T> { V(T, i64), N }
 fn f() -> i64 { let mut e: E<i64> = E::V(1, 2); e = N; return 1; }
 ",
-            FenceVerdict::OracleRejects,
+            FenceVerdict::Poison,
+        ),
+        // SR-032: production types a literal payload in a type-parameter slot by the instance
+        // the slot asks for; where the emitter cannot see that instance, it refuses the payload.
+        (
+            "narrow-payload reassignment",
+            "module m;
+enum E<T> { V(T, i64), N }
+fn f() -> i64 { let mut e: E<i32> = E::V(1, 2); e = E::V(3, 8); return 1; }
+",
+            FenceVerdict::Poison,
+        ),
+        (
+            "narrow-payload record field",
+            "module m;
+enum E<T> { V(T, i64), N }
+record Holder { value: E<i32> }
+fn f() -> i64 { let h: Holder = Holder { value: E::V(3, 8) }; return 1; }
+",
+            FenceVerdict::Poison,
+        ),
+        (
+            "narrow-payload nested payload",
+            "module m;
+enum E<T> { V(T, i64), N }
+enum W { Wrap(E<i32>), Empty }
+fn f() -> i64 { let w: W = W::Wrap(E::V(3, 8)); return 1; }
+",
+            FenceVerdict::Poison,
         ),
     ];
     for (name, src, expected) in cases {

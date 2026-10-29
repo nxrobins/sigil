@@ -28,6 +28,11 @@ use crate::{
     compile_library_project_with_context, source::SourceFile,
 };
 
+mod local_sources;
+pub use local_sources::{LocalPackageDependency, create_local_package_lock_with_dependencies};
+mod refresh;
+pub use refresh::{PackageRefresh, refresh_local_tool_package};
+
 pub const PACKAGE_PROTOCOL_VERSION: &str = "sigil-package-v1";
 pub const RESOLVER_CONTRACT: &str = "sigil-resolver-v1";
 pub const PACKAGE_CERTIFICATE_SCHEMA: &str = "2";
@@ -316,7 +321,7 @@ impl PackageCompilation {
             .collect();
         let manifest = serde_json::to_vec(&serde_json::json!({
             "schema_version": "sigil-package-evidence-v1", "files": inventory,
-            "proof_tier": "solver_verified", "admission": "not_evaluated"
+            "proof_tier": self.proof_tier(), "admission": "not_evaluated"
         }))
         .map_err(|e| PackageError::infrastructure("E_EVIDENCE", e.to_string()))?;
         #[cfg(unix)]
@@ -440,6 +445,15 @@ impl PackageCompilation {
         }
     }
 
+    /// The proof tier this compilation can honestly claim, read from the
+    /// capability witness every time it is named. Every envelope, certificate,
+    /// evidence manifest and artifact identity that states a tier derives it
+    /// here, so none can carry `solver_verified` while the Z3 flow-sensitive
+    /// proofs were skipped.
+    pub fn proof_tier(&self) -> &'static str {
+        proof_tier(&self.compilation)
+    }
+
     /// Produce the deterministic package-aware wrapper. The legacy/base
     /// certificate stays at schema v9 and keeps its single-file behavior; only
     /// this explicit package path emits the wrapper.
@@ -448,12 +462,7 @@ impl PackageCompilation {
         let public_api = package_public_api(&self.graph, &self.compilation);
         let public_api_hash =
             package_public_api_hash(&public_api).expect("package public API is serializable");
-        let proof_tier = if self.compilation.capability_report.solver_verified {
-            "solver_verified"
-        } else {
-            "structural_only"
-        }
-        .to_owned();
+        let proof_tier = self.proof_tier().to_owned();
         let artifact_identity_hash = package_artifact_identity_hash(
             &self.graph,
             &self.compilation,
@@ -919,13 +928,24 @@ fn compare_local_package_certificate(
 
 fn load_locked_package(root: &Path) -> Result<ResolvedPackageGraph, PackageError> {
     let root = PackageDirectory::open_root(root)?;
-
     let lock_bytes = root.read_regular_file(Path::new(LOCK_FILE), MAX_JSON_BYTES, "E_MANIFEST")?;
-    let lock: Lockfile = parse_json(&lock_bytes, LOCK_FILE)?;
+    load_locked_snapshot(&root, &lock_bytes, None)
+}
+
+// Refresh validates its new metadata/lock snapshot through the same resolver
+// before publishing. Ordinary loading never supplies replacement manifest bytes.
+fn load_locked_snapshot(
+    root: &PackageDirectory,
+    lock_bytes: &[u8],
+    root_manifest_snapshot: Option<&[u8]>,
+) -> Result<ResolvedPackageGraph, PackageError> {
+    let lock: Lockfile = parse_json(lock_bytes, LOCK_FILE)?;
     validate_lock_shape(&lock)?;
 
-    let root_manifest_bytes =
-        root.read_regular_file(Path::new(MANIFEST_FILE), MAX_JSON_BYTES, "E_MANIFEST")?;
+    let root_manifest_bytes = match root_manifest_snapshot {
+        Some(bytes) => bytes.to_vec(),
+        None => root.read_regular_file(Path::new(MANIFEST_FILE), MAX_JSON_BYTES, "E_MANIFEST")?,
+    };
     let root_manifest: Manifest = parse_json(&root_manifest_bytes, MANIFEST_FILE)?;
     validate_manifest_shape(&root_manifest)?;
     let root_id = package_id(&root_manifest);
@@ -992,13 +1012,17 @@ fn load_locked_package(root: &Path) -> Result<ResolvedPackageGraph, PackageError
     let mut loaded = BTreeMap::<String, LoadedPackage>::new();
     let mut total_source_bytes = 0usize;
     for (identity, node) in &nodes {
-        let package_root = package_directory(&root, node, identity == &lock.root)?;
+        let package_root = package_directory(root, node, identity == &lock.root)?;
         let manifest_path = package_root.path.join(MANIFEST_FILE);
-        let manifest_bytes = package_root.read_regular_file(
-            Path::new(MANIFEST_FILE),
-            MAX_JSON_BYTES,
-            "E_OFFLINE_MISS",
-        )?;
+        let manifest_bytes = if identity == &lock.root {
+            root_manifest_bytes.clone()
+        } else {
+            package_root.read_regular_file(
+                Path::new(MANIFEST_FILE),
+                MAX_JSON_BYTES,
+                "E_OFFLINE_MISS",
+            )?
+        };
         let manifest: Manifest = parse_json(&manifest_bytes, &manifest_path.display().to_string())?;
         validate_manifest_shape(&manifest)?;
         let actual_id = package_id(&manifest);
@@ -1152,7 +1176,7 @@ fn load_locked_package(root: &Path) -> Result<ResolvedPackageGraph, PackageError
     }
 
     let source_framing_hash = package_source_set_hash(&sources);
-    let lockfile_hash = prefixed_sha256(&lock_bytes);
+    let lockfile_hash = prefixed_sha256(lock_bytes);
     let claims = order
         .iter()
         .map(|identity| (identity.clone(), loaded[identity].manifest.declared.clone()))
@@ -1186,7 +1210,7 @@ fn load_locked_package(root: &Path) -> Result<ResolvedPackageGraph, PackageError
         sources,
         certificate_nodes,
         graph_preimage: package_graph_preimage(&lock.nodes),
-        lockfile_bytes: lock_bytes,
+        lockfile_bytes: lock_bytes.to_vec(),
         ambient_stdlib: AmbientStdlibCertificateJson {
             modules: Vec::new(),
             derived: empty_derived_facts(),
@@ -2861,12 +2885,7 @@ fn package_artifact_preimage(
     frame(&mut digest, graph.graph_hash.as_bytes());
     frame(&mut digest, graph.source_framing_hash.as_bytes());
     frame(&mut digest, compiler_identity_hash.as_bytes());
-    let proof_tier = if compilation.capability_report.solver_verified {
-        "solver_verified"
-    } else {
-        "structural_only"
-    };
-    frame(&mut digest, proof_tier.as_bytes());
+    frame(&mut digest, proof_tier(compilation).as_bytes());
     frame(&mut digest, public_api_hash.as_bytes());
     frame(&mut digest, RUNTIME_VERSION.as_bytes());
     frame(&mut digest, &compilation.wasm_inner);
@@ -2877,6 +2896,18 @@ fn package_artifact_preimage(
         frame(&mut digest, b"outer-absent");
     }
     digest.0
+}
+
+/// `solver_verified` when the Z3 flow-sensitive proofs ran and discharged,
+/// otherwise `structural_only`: the two tiers package acceptance and the
+/// release gates distinguish. Derived, never copied, from
+/// `capability_report.solver_verified`, the witness the solver gate decides on.
+pub fn proof_tier(compilation: &Compilation) -> &'static str {
+    if compilation.capability_report.solver_verified {
+        "solver_verified"
+    } else {
+        "structural_only"
+    }
 }
 
 fn package_source_set_hash(sources: &[PackageSource]) -> String {
@@ -3021,8 +3052,20 @@ const COMPILER_ID_INPUTS: &[(&str, &[u8])] = &[
     ),
     ("src/ownership.rs", include_bytes!("ownership.rs")),
     ("src/package.rs", include_bytes!("package.rs")),
+    (
+        "src/package/local_sources.rs",
+        include_bytes!("package/local_sources.rs"),
+    ),
+    (
+        "src/package/refresh.rs",
+        include_bytes!("package/refresh.rs"),
+    ),
     ("src/parser.rs", include_bytes!("parser.rs")),
     ("src/parser/limits.rs", include_bytes!("parser/limits.rs")),
+    (
+        "src/refinement_decide.rs",
+        include_bytes!("refinement_decide.rs"),
+    ),
     ("src/registries.rs", include_bytes!("registries.rs")),
     ("src/ring_check.rs", include_bytes!("ring_check.rs")),
     ("src/slot_escape.rs", include_bytes!("slot_escape.rs")),

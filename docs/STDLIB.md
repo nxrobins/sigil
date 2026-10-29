@@ -81,12 +81,15 @@ The grant list per category is capped at 256 entries (Phase 5a-2 / I26
 
 ## Ring escalation
 
-Calling any FFI-backed stdlib module (`fs`, `crypto::sha*`, `time`,
-`random`, `http`, `kv`) requires the tool's own module to be declared
-`#[ring(outer)] #[trusted]`. The compiler emits R004 with a hint
-containing the literal escalation text if you forget. Inner-ring
-stdlib (`json`, `crypto::hex_*`) callable from either ring without
-escalation.
+Calling any outer-ring stdlib module (`fs`, `crypto`, `time`, `random`,
+`http`, `kv`) requires the tool's own module to be in the outer ring; the
+usual header is `#[ring(outer)] #[trusted]`, and `#[trusted]` is what a module
+needs to declare its own `extern` functions (R008) or to handle `Unsafe`.
+The compiler emits R004 with a hint
+containing the literal escalation text if you forget. The rule holds in
+both directions: inner-ring stdlib (`json`, `abi`) is callable only from
+inner-ring code, so an outer-ring tool that calls `json` also gets R004.
+`crypto::hex_*` lives in the outer-ring `crypto` module.
 
 See [`lang-ref.md`](../lang-ref.md) for the full Modules and `use`
 section, including the inner-ring effect-check exemption (a known

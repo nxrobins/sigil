@@ -87,7 +87,8 @@ R004-forbidden**. Capabilities and effects are therefore mutually exclusive per
 module. So a translated file is **cap-mode XOR effect-mode**, chosen by a
 whole-file pre-pass: any `@effects` → effect-mode (outer ring, FE1, below);
 otherwise cap-mode (inner ring, FE0). A file with both `@cap` and `@effects` →
-**FE201** (mixed-mode deferred — would need a cross-ring `grant` bridge). FE0
+**FE201** (mixed-mode deferred — would need a way across the ring boundary, which the language
+does not have; `grant` is not one, since its closure runs in the caller's ring). FE0
 (cap-mode) emits inner-ring capability contracts:
 
 | TS construct | Emitted SIGIL | Enforced by |
@@ -437,8 +438,8 @@ plan; the conformance suite is `crates/sigil-frontends/tests/typescript_golden.r
 
 - **Source-map fidelity** — an identity map is acceptable; diagnostics on emitted
   SIGIL need not map to exact `.ts` spans.
-- **Mixed cap + effect in one file** — deferred (would need a cross-ring `grant`
-  bridge); a mixed file is FE201.
+- **Mixed cap + effect in one file** — deferred (would need a way across the ring
+  boundary, which the language does not have); a mixed file is FE201.
 - **Effect least-privilege / nominal labels** — FE1 trusts the author's `@effects`
   and enforces *vocabulary-consistent propagation* (E001), not authority over real
   operations; labels are opaque, bound to no concrete I/O.
@@ -466,7 +467,8 @@ plan; the conformance suite is `crates/sigil-frontends/tests/typescript_golden.r
 ## The broader arc
 
 Next: `@taint`/`@requires` (taint / refinements), a `FrontendCorpus` extractor,
-and mixed cap+effect files via `grant`. The Solidity frontend is under way (SOL0 +
+and mixed cap+effect files (which first need a way across the ring boundary; `grant` is not
+one). The Solidity frontend is under way (SOL0 +
 SOL1 + SOL1c above: overflow-safe scalar contracts, address/mapping/index,
 caller-authority `msg.sender`, `&&`/`||`, the atomic bounded transfer, and
 modifiers → inlined guards); its capability/effect layer (`address`+`transfer` → a

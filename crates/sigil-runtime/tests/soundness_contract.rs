@@ -435,13 +435,13 @@ fn diagnostic_security_surface_is_censused() {
         .iter()
         .map(|entry| entry.code.as_str().to_string())
         .collect();
-    assert_eq!(registered.len(), 326, "registered diagnostic pin moved");
+    assert_eq!(registered.len(), 329, "registered diagnostic pin moved");
     let security: BTreeSet<String> = registered
         .iter()
         .filter(|code| matches!(code.as_bytes()[0], b'C' | b'E' | b'O' | b'R' | b'T'))
         .cloned()
         .collect();
-    assert_eq!(security.len(), 252, "security diagnostic pin moved");
+    assert_eq!(security.len(), 255, "security diagnostic pin moved");
 
     let exceptions: BTreeSet<String> = DIAGNOSTIC_EXCEPTIONS
         .lines()
@@ -500,7 +500,7 @@ fn diagnostic_security_surface_is_censused() {
         unwired, exceptions,
         "every unwired security code must be an explicit compatibility alias"
     );
-    assert_eq!(wired.len(), 250, "production-wired security-code pin moved");
+    assert_eq!(wired.len(), 253, "production-wired security-code pin moved");
 
     let mut test_refs = BTreeSet::new();
     for file in source_files_under(&root.join("crates"), &["rs", "sigil"]) {
@@ -519,7 +519,7 @@ fn diagnostic_security_surface_is_censused() {
                 .filter(|code| security.contains(code)),
         );
     }
-    assert_eq!(test_refs.len(), 193, "direct test-reference pin moved");
+    assert_eq!(test_refs.len(), 199, "direct test-reference pin moved");
     let gaps: BTreeSet<String> =
         manifest_identifiers(DIAGNOSTIC_TEST_GAPS, "diagnostic direct-test gap manifest")
             .into_iter()
@@ -528,7 +528,7 @@ fn diagnostic_security_surface_is_censused() {
     // `NAME: usize = …` constants, and a bare literal here is invisible to it. Claim 29 stated
     // this count as prose and drifted (it read 65 against an asserted 64) precisely because no
     // named constant existed to check it.
-    const PIN_DIAGNOSTIC_TEST_GAPS: usize = 59;
+    const PIN_DIAGNOSTIC_TEST_GAPS: usize = 56;
     assert_eq!(
         gaps.len(),
         PIN_DIAGNOSTIC_TEST_GAPS,
@@ -554,7 +554,7 @@ fn diagnostic_security_surface_is_censused() {
         })
         .filter(|stem| registered.contains(stem))
         .count();
-    assert_eq!(fixtures, 54, "dedicated diagnostic-fixture pin moved");
+    assert_eq!(fixtures, 56, "dedicated diagnostic-fixture pin moved");
 
     let mut selfhost = BTreeSet::new();
     for file in source_files_under(&root.join("selfhost"), &["sigil"]) {
@@ -566,19 +566,19 @@ fn diagnostic_security_surface_is_censused() {
                 .filter(|code| security.contains(code)),
         );
     }
-    assert_eq!(selfhost.len(), 28, "self-host diagnostic-shadow pin moved");
+    assert_eq!(selfhost.len(), 46, "self-host diagnostic-shadow pin moved");
 
     // NB: these doc pins now MATCH the assert_eq realities above (Phase 4
     // reconciled a pre-existing drift where the doc lagged the asserts by the
     // P031 registration and the T069 test-reference/gap movement).
     for pin in [
-        "PIN_REGISTERED_CODES = 326",
-        "PIN_SECURITY_CODES = 252",
-        "PIN_PRODUCTION_WIRED_SECURITY_CODES = 250",
-        "PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 193",
-        "PIN_DEDICATED_SOURCE_FIXTURES = 54",
-        "PIN_SELFHOST_SHADOW_CODES = 28",
-        "PIN_DIRECT_TEST_GAPS = 59",
+        "PIN_REGISTERED_CODES = 329",
+        "PIN_SECURITY_CODES = 255",
+        "PIN_PRODUCTION_WIRED_SECURITY_CODES = 253",
+        "PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 199",
+        "PIN_DEDICATED_SOURCE_FIXTURES = 56",
+        "PIN_SELFHOST_SHADOW_CODES = 46",
+        "PIN_DIRECT_TEST_GAPS = 56",
         "PIN_NONEMITTING_COMPATIBILITY_ALIASES = 2",
     ] {
         assert!(DIAGNOSTIC_CENSUS.contains(pin), "census lost pin {pin}");

@@ -524,28 +524,70 @@ mod step10_narrowing_helpers_tests {
         }
     }
 
+    /// An immutable binding's entry with these facts (DBC-0a).
+    fn entry(clauses: Vec<RefinementClause>) -> crate::type_check::refinement::RefinementEntry {
+        crate::type_check::refinement::RefinementEntry {
+            clauses,
+            mutable: false,
+        }
+    }
+
     #[test]
     fn compose_empty_stack_produces_single_clause() {
         let new_clause = lit_clause("x", RefinementOp::Gt, 0);
         let frame = compose_narrowing_frame(&[], "x", new_clause.clone());
-        assert_eq!(frame.get("x").unwrap().len(), 1);
-        assert_eq!(frame.get("x").unwrap()[0].op, RefinementOp::Gt);
+        let clauses = &frame
+            .get("x")
+            .expect("compose_narrowing_frame writes an entry for the narrowed name")
+            .clauses;
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].op, RefinementOp::Gt);
+    }
+
+    /// DBC0-1: an empty entry is a binding with no facts, and composition stops at it rather
+    /// than reading an outer binding's facts through it.
+    #[test]
+    fn compose_stops_at_an_empty_entry() {
+        let mut outer = crate::type_check::refinement::RefinementFrame::new();
+        outer.insert(
+            "x".into(),
+            entry(vec![lit_clause("x", RefinementOp::Gt, 0)]),
+        );
+        let mut shadow = crate::type_check::refinement::RefinementFrame::new();
+        shadow.insert("x".into(), entry(Vec::new()));
+        let stack = vec![outer, shadow];
+        let composed = compose_narrowing_frame(&stack, "x", lit_clause("x", RefinementOp::Lt, 100));
+        let clauses = &composed
+            .get("x")
+            .expect("compose_narrowing_frame writes an entry for the narrowed name")
+            .clauses;
+        assert_eq!(
+            clauses.len(),
+            1,
+            "the shadowing binding's empty entry must hide the outer facts"
+        );
+        assert_eq!(clauses[0].rhs, RefinementRhs::Literal(100));
     }
 
     #[test]
     fn compose_copies_forward_from_immediate_top() {
         // Outer frame has [x > 0]. New clause is x < 100. Composed
         // frame should contain [x > 0, x < 100].
-        use std::collections::HashMap;
-        let mut outer: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-        outer.insert("x".into(), vec![lit_clause("x", RefinementOp::Gt, 0)]);
+        let mut outer = crate::type_check::refinement::RefinementFrame::new();
+        outer.insert(
+            "x".into(),
+            entry(vec![lit_clause("x", RefinementOp::Gt, 0)]),
+        );
 
         let frame = compose_narrowing_frame(
             std::slice::from_ref(&outer),
             "x",
             lit_clause("x", RefinementOp::Lt, 100),
         );
-        let clauses = frame.get("x").unwrap();
+        let clauses = &frame
+            .get("x")
+            .expect("compose_narrowing_frame writes an entry for the narrowed name")
+            .clauses;
         assert_eq!(clauses.len(), 2);
         assert_eq!(clauses[0].op, RefinementOp::Gt);
         assert_eq!(clauses[0].rhs, RefinementRhs::Literal(0));
@@ -559,15 +601,23 @@ mod step10_narrowing_helpers_tests {
     fn compose_walks_past_intermediate_unrelated_frame() {
         // Stack from bottom to top: [(x:>0), (y:>0)]
         // Push (x<100) — should compose [x>0, x<100], NOT [x<100].
-        use std::collections::HashMap;
-        let mut frame_outer: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-        frame_outer.insert("x".into(), vec![lit_clause("x", RefinementOp::Gt, 0)]);
-        let mut frame_middle: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-        frame_middle.insert("y".into(), vec![lit_clause("y", RefinementOp::Gt, 0)]);
+        let mut frame_outer = crate::type_check::refinement::RefinementFrame::new();
+        frame_outer.insert(
+            "x".into(),
+            entry(vec![lit_clause("x", RefinementOp::Gt, 0)]),
+        );
+        let mut frame_middle = crate::type_check::refinement::RefinementFrame::new();
+        frame_middle.insert(
+            "y".into(),
+            entry(vec![lit_clause("y", RefinementOp::Gt, 0)]),
+        );
 
         let stack = vec![frame_outer, frame_middle];
         let composed = compose_narrowing_frame(&stack, "x", lit_clause("x", RefinementOp::Lt, 100));
-        let clauses = composed.get("x").unwrap();
+        let clauses = &composed
+            .get("x")
+            .expect("compose_narrowing_frame writes an entry for the narrowed name")
+            .clauses;
         assert_eq!(
             clauses.len(),
             2,
@@ -582,15 +632,23 @@ mod step10_narrowing_helpers_tests {
         // Stack: [(x:>0), (x:>5)]
         // Push (x<100) — should compose with MOST RECENT (top-most)
         // entry, which is (x:>5).
-        use std::collections::HashMap;
-        let mut frame_outer: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-        frame_outer.insert("x".into(), vec![lit_clause("x", RefinementOp::Gt, 0)]);
-        let mut frame_middle: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-        frame_middle.insert("x".into(), vec![lit_clause("x", RefinementOp::Gt, 5)]);
+        let mut frame_outer = crate::type_check::refinement::RefinementFrame::new();
+        frame_outer.insert(
+            "x".into(),
+            entry(vec![lit_clause("x", RefinementOp::Gt, 0)]),
+        );
+        let mut frame_middle = crate::type_check::refinement::RefinementFrame::new();
+        frame_middle.insert(
+            "x".into(),
+            entry(vec![lit_clause("x", RefinementOp::Gt, 5)]),
+        );
 
         let stack = vec![frame_outer, frame_middle];
         let composed = compose_narrowing_frame(&stack, "x", lit_clause("x", RefinementOp::Lt, 100));
-        let clauses = composed.get("x").unwrap();
+        let clauses = &composed
+            .get("x")
+            .expect("compose_narrowing_frame writes an entry for the narrowed name")
+            .clauses;
         // Pulls from top-most (x:>5), then appends new (x<100).
         // The deeper (x:>0) is NOT included — it was already shadowed
         // by the middle frame at lookup time, and composition follows

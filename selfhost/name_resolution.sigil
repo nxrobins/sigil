@@ -438,7 +438,8 @@ fn nr_emit_dups(names: Vec<str>, code: str, diags: Vec<str> @Mut) -> i64 ! { All
 }
 
 // Collect the param NAMES (nr_seg0 of each P_K_PARAM child's text; the form is
-// `name` or `name;region`) under `parent` (a fn / handler / actor-init node).
+// `name` or `name;region`) under `parent` (a fn / handler / actor-init node, an
+// effect operation or a trait method signature).
 fn nr_collect_params(nodes: Arena<PNode>, kids: Vec<i64>, parent: i64, out: Vec<str> @Mut) -> i64 ! { Alloc } {
     let pn: PNode = nodes.get(parent);
     let mut i: i64 = 0;
@@ -515,25 +516,54 @@ fn nr_check_actor(nodes: Arena<PNode>, kids: Vec<i64>, actorid: i64, diags: Vec<
     return 0;
 }
 
-// First-occurrence subchecks for one item: N005 for a fn's params, the actor checks
-// for an actor. (impl/use are skipped before this; dup items skip subchecks.)
+// N005 for each parameter list a declaration holds as children of one kind — an
+// effect's operations (P_K_EFFECT_OP), a trait's method signatures (P_K_TRAIT_SIG),
+// an impl block's methods (P_K_FN) — each list checked on its own, so one name in two
+// members is no duplicate (production's check_duplicate_params, called once per member).
+fn nr_check_member_params(nodes: Arena<PNode>, kids: Vec<i64>, declid: i64, memberkind: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let dn: PNode = nodes.get(declid);
+    let mut i: i64 = 0;
+    while i < dn.child_count {
+        let cid: i64 = kids.get(dn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == memberkind {
+            let mut params: Vec<str> = Vec::new();
+            let c: i64 = nr_collect_params(nodes, kids, cid, params);
+            let e: i64 = nr_emit_dups(params, "N005;", diags);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// First-occurrence subchecks for one item: N005 for a fn's params and for every list
+// an effect's operations or a trait's method signatures hold (production's EffectDecl
+// and TraitDef arms), the actor checks for an actor. (impl/use are skipped before
+// this; dup items skip subchecks, as production's N002 `continue` skips the rest of
+// the item.)
 fn nr_subcheck_item(nodes: Arena<PNode>, kids: Vec<i64>, itemid: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let it: PNode = nodes.get(itemid);
     if it.kind == P_K_FN {
         let mut params: Vec<str> = Vec::new();
         let c: i64 = nr_collect_params(nodes, kids, itemid, params);
         let e: i64 = nr_emit_dups(params, "N005;", diags);
-    } else {
-        if it.kind == P_K_ACTOR {
-            let a: i64 = nr_check_actor(nodes, kids, itemid, diags);
-        } else {
-        }
+    }
+    if it.kind == P_K_ACTOR {
+        let a: i64 = nr_check_actor(nodes, kids, itemid, diags);
+    }
+    if it.kind == P_K_EFFECT_DECL {
+        let eo: i64 = nr_check_member_params(nodes, kids, itemid, P_K_EFFECT_OP, diags);
+    }
+    if it.kind == P_K_TRAIT {
+        let ts: i64 = nr_check_member_params(nodes, kids, itemid, P_K_TRAIT_SIG, diags);
     }
     return 0;
 }
 
 // One module's items: N002 (dup item name); the FIRST occurrence of each name gets
-// its subchecks, a duplicate emits N002 and is skipped (item-level continue).
+// its subchecks, a duplicate emits N002 and is skipped (item-level continue). An impl
+// block is nameless — no DefId, no N002 — yet each of its methods' lists is checked
+// for N005 all the same: production's ImplDef arm sits outside the name guard.
 fn nr_validate_items(nodes: Arena<PNode>, kids: Vec<i64>, modid: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let mn: PNode = nodes.get(modid);
     let mut seen_names: Vec<str> = Vec::new();
@@ -552,6 +582,9 @@ fn nr_validate_items(nodes: Arena<PNode>, kids: Vec<i64>, modid: i64, diags: Vec
             } else {
                 let d: i64 = diags.push("N002;");
             }
+        }
+        if cn.kind == P_K_IMPL {
+            let im: i64 = nr_check_member_params(nodes, kids, cid, P_K_FN, diags);
         }
         i = i + 1;
     }

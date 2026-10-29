@@ -64,7 +64,9 @@ trusting-trust discrimination canary also ship. Those claims are bounded exactly
 glue, and the Rust oracle remains the comparison authority.
 
 This does **not** claim universal source coverage or oracle independence. Unsupported forms must
-remain rejected or poisoned until a new exact surface lands with differential evidence.
+remain rejected or poisoned until a new exact surface lands with differential evidence. How far
+that holds beyond the curated corpora is measured, and driven to never-diverge, by
+[self-host-backend-parity.md](self-host-backend-parity.md).
 
 ## Historical provenance
 

@@ -1,0 +1,10 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/fmt.sigil": "sha256:14ccd6674756c6ed89986af55bac3d749f2c2260e58440a05c8af3557933668f",
+    "src/fmt_internal.sigil": "sha256:74d0dcc4bfd9d8fe4c64cdfcc3a19ec51c0af5d4e76e95417a41e6bc055782a0",
+    "src/fmt_secret.sigil": "sha256:f0ebe2be9ef62dad321f3490e216cd6760d919888e078b364f5b7ac6675a8749"
+  },
+  "package": "sigil/fmt",
+  "previous_version": "0.1.0-dogfood.1"
+}

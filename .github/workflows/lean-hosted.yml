@@ -45,8 +45,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Keyed by SHA for a push to main, so a merge is never cancelled by the next
+# one (ci.yml's concurrency block records the measurement); a pull request
+# still cancels its superseded run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 permissions:

@@ -360,6 +360,7 @@ TypedProgram {
                     },
                 },
             ],
+            externs: [],
         },
     ],
     records: {},

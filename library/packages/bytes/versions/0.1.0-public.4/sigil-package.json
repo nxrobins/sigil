@@ -1,0 +1,60 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "bytes::copy_into(dst_ptr:Public,dst_len:Public,dst_offset:Public,src_ptr:Public,src_len:Public,src_offset:Public,count:Public)->Public",
+      "bytes::read_u32_be(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::read_u32_le(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::write_u32_le(ptr:Public,len:Public,offset:Public,value:Public)->Public",
+      "bytes_out::append(out:Public,src_ptr:Public,src_len:Public,src_offset:Public,count:Public)->Public",
+      "bytes_out::append_output(out:Public,packed:Public)->Public",
+      "bytes_out::finish(out:Public)->Public",
+      "bytes_out::new(capacity:Public)->Public",
+      "bytes_out::push_byte(out:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid borrowed linear-memory region"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source Public byte access and fixed-capacity output builder; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:34d842dc435197eccd0e5dcb6b263f713ae21b81a54e4d0a46e31a29b14b393d",
+    "api_contract_hash": "sha256:18a228e6950c88b43c2e53962fb4c2241846c577d8865c76f47d3fca6564d84d",
+    "charter_hash": "sha256:88ff740a26858f2d869657ddc0f491ad6661c8c9629dab7f143a13a1525b46e3",
+    "evidence_manifest_hash": "sha256:f642c7642cff1f4f2a62c22b11ccede15a2a9d68eeb7a3c270998a98d900b562"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "bytes",
+    "bytes_out"
+  ],
+  "name": "bytes",
+  "namespace": "sigil",
+  "version": "0.1.0-public.4"
+}

@@ -1,0 +1,26 @@
+// expect-ok
+// Z3 corpus #110: axis-1 — DBC-0b: stores that keep a refined field's invariant are accepted.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The sink refuses the broken store, not the shape. `idx.value = 500` is a
+// literal Z3 discharges against `value > 100` (`LiteralFits` holds), and
+// `idx.value = big()` stores a value whose fact (`big() -> i64 where
+// @ > 100`) matches the clause syntactically, so no obligation is emitted.
+// Both compile, with the solver and without (#106 is the refused twin).
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+fn big() -> i64 where @ > 100 {
+    return 500;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut idx: Index = Index { value: 200 };
+        idx.value = 500;
+        idx.value = big();
+        return idx.value;
+    }
+}

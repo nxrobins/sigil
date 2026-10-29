@@ -624,7 +624,7 @@ define_catalog! {
     CodeEntry {
         code: R001,
         title: "Outer-ring code cannot own capabilities",
-        default_hint: "Capabilities live in the inner ring. Pass a borrowed capability via `grant(&cap, fn(ref) -> ...)` instead of taking ownership in outer-ring code.",
+        default_hint: "Outer-ring code cannot own a capability. Keep the code that owns and uses the capability in an inner-ring module. Outer-ring code may take a borrowed `&Cap` parameter, but no call crosses the ring boundary, including one made inside a `grant` body (R004), so an inner-ring capability cannot be handed to outer-ring code.",
         category: Category::Ring,
     },
     CodeEntry {
@@ -636,13 +636,13 @@ define_catalog! {
     CodeEntry {
         code: R003,
         title: "Inner-ring code cannot call `extern` functions",
-        default_hint: "Two ways to fix: (1) move the FFI to a `#[ring(outer)] #[trusted]` module and call the outer module's wrapper from the inner ring via `grant(&cap, fn(ref) -> ...)`, or (2) declare the calling module itself as `#[ring(outer)] #[trusted]` if it's the FFI surface module.",
+        default_hint: "Inner-ring code cannot reach FFI, directly or through another module: a call into an outer-ring wrapper is a cross-ring call (R004), including one made inside a `grant` body. Declare the calling module itself `#[ring(outer)] #[trusted]` if it is FFI surface code (outer-ring code cannot own capabilities, R001, or call inner-ring modules, R004), or keep the FFI call out of inner-ring code.",
         category: Category::Ring,
     },
     CodeEntry {
         code: R004,
-        title: "Direct cross-ring call requires a grant",
-        default_hint: "Inner and outer rings can only interact via `grant(&cap, fn(ref) -> ...)`. Direct calls across the boundary are forbidden.",
+        title: "Call across the ring boundary",
+        default_hint: "No call crosses the ring boundary, in either direction, including one made inside a `grant` body: `grant` lends a borrowed capability to a closure that runs in the caller's own ring. Declare the calling module `#[ring(outer)] #[trusted]` if it needs FFI-backed code, or call only modules in its own ring.",
         category: Category::Ring,
     },
     CodeEntry {
@@ -661,6 +661,24 @@ define_catalog! {
         code: R007,
         title: "Monomorphized generic instance is filed in the other ring",
         default_hint: "A monomorphized generic instance is filed in the FIRST module of the compilation unit and takes that module's ring, so every caller of the generic must be in that ring. If the generic is defined in the caller's own module, declare that module first; if it is defined in the other ring, the call crosses the ring boundary in source as well, so move the generic into the caller's ring. Otherwise keep the generic and its callers in a single-ring program.",
+        category: Category::Ring,
+    },
+    CodeEntry {
+        code: R008,
+        title: "Outer-ring `extern` requires `#[trusted]`",
+        default_hint: "Declaring an `extern` binds a host function, and only a `#[trusted]` module may do that. Add `#[trusted]` after the module's `#[ring(outer)]`, or call the host function through a trusted module's non-generic wrapper instead, such as the stdlib `fs` module; calling such a wrapper needs only the outer ring. Generic code may call an `extern` only when every module governing its instance is `#[trusted]`, which can include the module that calls it.",
+        category: Category::Ring,
+    },
+    CodeEntry {
+        code: R009,
+        title: "Messaging, spawn or capability operation in outer-ring code",
+        default_hint: "The outer-ring module has no host import for `send`, `ask`, `spawn` or a capability operation (`.restrict()`, `.split()`, `.draw()`, `mint`), so outer-ring code cannot use them. Move the code that messages, spawns or operates on a capability into an inner-ring module. Outer-ring code is FFI surface: it cannot own a capability (R001), and no call crosses the ring boundary (R004), so it cannot reach that code by a call either.",
+        category: Category::Ring,
+    },
+    CodeEntry {
+        code: R014,
+        title: "Actor declared in an outer-ring module",
+        default_hint: "The actor runtime hosts only the inner-ring module, so an actor declared in a `#[ring(outer)]` module could never run. Declare the actor in an inner-ring module. An outer-ring module is FFI surface: it holds functions, such as a tool's `tool_main`, and not actors.",
         category: Category::Ring,
     },
     CodeEntry {

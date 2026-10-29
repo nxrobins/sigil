@@ -187,6 +187,17 @@ pub struct TypedModule {
     pub trusted: bool,
     pub span: Span,
     pub functions: Vec<TypedFunction>,
+    /// Every `extern` this module declares, in source order. Declarations carry no body to
+    /// type, so they are recorded here only so the ring pass can hold each to its declaring
+    /// module's trust (R008): binding a host function is the privilege `#[trusted]` grants.
+    pub externs: Vec<TypedExternDecl>,
+}
+
+/// One `extern "ABI" fn` declaration, as the ring pass needs it: the name it binds and where.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedExternDecl {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -821,9 +832,10 @@ pub enum TypedIntrinsicKind {
     /// Lowered to `f ^ ((t ^ f) & -c)` where `c` is `cond as i64`; never
     /// to Wasm `select` (which some backends compile to a CPU branch).
     CtSelect,
-    /// Phase 2H §3.5: `ct_lt(a, b)` — branch-free signed less-than.
-    /// Lowered to `((a - b) >> 63) & 1`; the shift amount is a constant
-    /// so the operation is data-independent on every supported CPU.
+    /// Phase 2H §3.5: `ct_lt(a, b)` — branch-free less-than, signed for
+    /// two `i64` operands and unsigned for two `u64` operands. Lowered to the
+    /// sign bit of an overflow-safe word (`wasm.rs`); the shift amount is a
+    /// constant so the operation is data-independent on every supported CPU.
     CtLt,
     /// `vec_store(base, index, bound, val: T)` — stdlib `Vec<T>` element
     /// write. The element `AirType` is frozen here at type-check from the

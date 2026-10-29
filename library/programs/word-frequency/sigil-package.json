@@ -1,0 +1,64 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:c91fcbd280c82ddcef4e0a09128d5800f1b1183fb29baabc538e188940f03b3e",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/bytes",
+      "requirement": "=0.1.0-public.5",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:1a0e00b9d448af0126d126d9503dcef7b4a16835a8fc47c841de30e076a3436b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/fmt",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source word-frequency tool using bounded bytes access/copy and fmt; not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:4d83f20ff8ac4a0ead90e451e7810d5843d4bfca01db6813737fa3fb1a012b6d",
+    "api_contract_hash": "sha256:4fa75715c31aaa8339d39f99d55398804c79a3a5246188733b1b74376bafab4b",
+    "charter_hash": "sha256:209a692e8a8cdac943eb4101e893beee6f0f747ee62f09dc9fcb967fe59e0351",
+    "evidence_manifest_hash": "sha256:191a892e044a85baf313b3310300a4c9b4e2b4bc9c79bfd60416aecfab4a8bfe"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "word-frequency",
+  "version": "0.1.0-public.1"
+}

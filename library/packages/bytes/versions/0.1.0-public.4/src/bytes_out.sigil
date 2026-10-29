@@ -1,0 +1,60 @@
+// Fixed-capacity Public output; the first failure prevents successful finish.
+module bytes_out;
+use sigil::bytes;
+
+record Builder { ptr: i64, capacity: i64, length: i64, error: i64 }
+
+pub fn new(capacity: i64) -> Builder ! { Alloc } {
+    if capacity < 0 {
+        return Builder { ptr: 0, capacity: 0, length: 0, error: -400 };
+    } else {}
+    if capacity > 2147483647 {
+        return Builder { ptr: 0, capacity: 0, length: 0, error: -413 };
+    } else {}
+    let ptr = alloc(capacity);
+    return Builder { ptr: ptr, capacity: capacity, length: 0, error: 0 };
+}
+
+fn state_status(out: Builder @Mut) -> i64 {
+    if out.error < 0 { return out.error; } else {}
+    if out.ptr < 0 || out.capacity < 0 || out.length < 0 { return -400; } else {}
+    if out.ptr > 2147483647 || out.capacity > 2147483647 || out.length > out.capacity {
+        return -413;
+    } else {}
+    return 0;
+}
+
+pub fn append(out: Builder @Mut, src_ptr: i64, src_len: i64, src_offset: i64, count: i64) -> i64 {
+    let checked = state_status(out);
+    if checked < 0 { out.error = checked; return checked; } else {}
+    let copied = bytes::copy_into(out.ptr, out.capacity, out.length, src_ptr, src_len, src_offset, count);
+    if copied < 0 { out.error = copied; return copied; } else {}
+    out.length = copied;
+    return copied;
+}
+
+pub fn append_output(out: Builder @Mut, packed: i64) -> i64 {
+    let checked = state_status(out);
+    if checked < 0 { out.error = checked; return checked; } else {}
+    if packed < 0 { out.error = packed; return packed; } else {}
+    let ptr = packed / 4294967296;
+    let len = packed - ptr * 4294967296;
+    return append(out, ptr, len, 0, len);
+}
+
+pub fn push_byte(out: Builder @Mut, value: i64) -> i64 {
+    let checked = state_status(out);
+    if checked < 0 { out.error = checked; return checked; } else {}
+    // Validate the slot and byte before writing: failed pushes retain the prefix.
+    if out.length == out.capacity { out.error = -413; return -413; } else {}
+    if value < 0 || value > 255 { out.error = -422; return -422; } else {}
+    store8(out.ptr + out.length, value);
+    out.length = out.length + 1;
+    return out.length;
+}
+
+pub fn finish(out: Builder @Mut) -> i64 {
+    let checked = state_status(out);
+    if checked < 0 { return checked; } else {}
+    return out.ptr * 4294967296 + out.length;
+}

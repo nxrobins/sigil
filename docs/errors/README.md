@@ -169,10 +169,13 @@ Regenerate: `SIGIL_REGEN_DOC_PAGES=1 cargo test -p sigil-compiler --test diagnos
 - [R001](R001.md) — Outer-ring code cannot own capabilities
 - [R002](R002.md) — Capability reference returned from an outer-ring function
 - [R003](R003.md) — Inner-ring code cannot call `extern` functions
-- [R004](R004.md) — Direct cross-ring call requires a grant
+- [R004](R004.md) — Call across the ring boundary
 - [R005](R005.md) — Compatibility alias for T109 ring-error sanitization
 - [R006](R006.md) — `#[trusted]` requires `#[ring(outer)]`
 - [R007](R007.md) — Monomorphized generic instance is filed in the other ring
+- [R008](R008.md) — Outer-ring `extern` requires `#[trusted]`
+- [R009](R009.md) — Messaging, spawn or capability operation in outer-ring code
+- [R014](R014.md) — Actor declared in an outer-ring module
 ## SourceLimit
 
 - [S001](S001.md) — Source exceeds maximum byte size

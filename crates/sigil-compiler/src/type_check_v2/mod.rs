@@ -323,3 +323,318 @@ fn discharge_subsumption_at_construction(
         expected, actual, detail, site,
     ))
 }
+
+#[cfg(all(test, feature = "solver"))]
+mod native_decider_agreement {
+    //! DBC-1a (the design-by-contract spec's §8): the native decider agrees with Z3 on an
+    //! exhaustive grid of the live fragment, every operator against both i64 edges, their
+    //! neighbours and small values, with 2^64, 2^255 and 2^256 - 1 as wide values and bounds
+    //! where the route admits them. The grid's cardinality is pinned at its measured value.
+    //! The walk lives in the orchestrator because this is the one file allowed to call the
+    //! `z3_capability::check_refinement*` primitives (the CI lint "v2 is the sole refinement-Z3
+    //! caller"); from DBC-1b on, the orchestrator runs both backends on every obligation and
+    //! a disagreement is an internal error. SC-P4: the walk takes its oracle as a parameter,
+    //! so the anti-stub compares the native decider with a planted wrong verdict against the
+    //! unplanted native decider, which shows the walk reports a divergence in each of its
+    //! three shapes without spending a second Z3 pass.
+
+    use crate::ast::{RefValue, RefinementClause, RefinementOp, RefinementRhs};
+    use crate::refinement_decide::{
+        NativeSubsumption, NativeVerdict, decide_cross_field, decide_literal_fits,
+        decide_subsumption,
+    };
+    use crate::span::Span;
+    use crate::z3_capability::{
+        RefinementVerdict, SubsumptionResult, check_refinement, check_refinement_subsumption,
+        check_refinement_xfield,
+    };
+
+    const OPS: [RefinementOp; 6] = [
+        RefinementOp::Le,
+        RefinementOp::Lt,
+        RefinementOp::Ge,
+        RefinementOp::Gt,
+        RefinementOp::Eq,
+        RefinementOp::Ne,
+    ];
+    const NARROW: [i64; 9] = [
+        i64::MIN,
+        i64::MIN + 1,
+        -2,
+        -1,
+        0,
+        1,
+        2,
+        i64::MAX - 1,
+        i64::MAX,
+    ];
+    /// 2^64, 2^255 and 2^256 - 1 as little-endian limbs.
+    const WIDE: [[u64; 4]; 3] = [[0, 1, 0, 0], [0, 0, 0, 1 << 63], [u64::MAX; 4]];
+    /// Measured and pinned (§8): 6 operators × 12 values × 12 bounds literal fits, 6 × 9 × 9
+    /// cross-field pairs, and (6 × 9)² subsumption pairs over the narrow bounds (a wide bound
+    /// is refused by both routes before any decision; `wide_bound_subsumption_is_refused_by_
+    /// both_backends` pins that separately).
+    const GRID_CELLS: usize = 864 + 486 + 2916;
+
+    fn clause(op: RefinementOp, rhs: RefinementRhs) -> RefinementClause {
+        RefinementClause {
+            field: "x".to_string(),
+            op,
+            rhs,
+            span: Span::new(0, 0),
+        }
+    }
+
+    /// `x op bound` at `x`, evaluated the plain way over i128: the check that a reported
+    /// counterexample separates the two clauses, independent of both deciders.
+    fn holds_at(op: RefinementOp, x: i128, bound: i64) -> bool {
+        let bound = i128::from(bound);
+        match op {
+            RefinementOp::Le => x <= bound,
+            RefinementOp::Lt => x < bound,
+            RefinementOp::Ge => x >= bound,
+            RefinementOp::Gt => x > bound,
+            RefinementOp::Eq => x == bound,
+            RefinementOp::Ne => x != bound,
+        }
+    }
+
+    /// The anti-stub's planted disagreement: which cell, if any, has the native verdict
+    /// inverted before the comparison.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Planted {
+        None,
+        LiteralFits(usize),
+        CrossField(usize),
+        Subsumption(usize),
+    }
+
+    fn invert(verdict: NativeVerdict) -> NativeVerdict {
+        match verdict {
+            NativeVerdict::Holds => NativeVerdict::Violated,
+            NativeVerdict::Violated => NativeVerdict::Holds,
+        }
+    }
+
+    fn agree(native: NativeVerdict, oracle: RefinementVerdict) -> bool {
+        matches!(
+            (native, oracle),
+            (NativeVerdict::Holds, RefinementVerdict::Holds)
+                | (NativeVerdict::Violated, RefinementVerdict::Violated)
+        )
+    }
+
+    /// The native decider in the Z3 route's verdict shapes: the anti-stub's oracle.
+    fn native_fits(clause: &RefinementClause, value: RefValue) -> RefinementVerdict {
+        match decide_literal_fits(clause, value) {
+            NativeVerdict::Holds => RefinementVerdict::Holds,
+            NativeVerdict::Violated => RefinementVerdict::Violated,
+        }
+    }
+
+    fn native_xfield(clause: &RefinementClause, lhs: i64, rhs: i64) -> RefinementVerdict {
+        match decide_cross_field(clause, lhs, rhs) {
+            NativeVerdict::Holds => RefinementVerdict::Holds,
+            NativeVerdict::Violated => RefinementVerdict::Violated,
+        }
+    }
+
+    fn native_subsumption(
+        supplied: &RefinementClause,
+        required: &RefinementClause,
+    ) -> SubsumptionResult {
+        match decide_subsumption(supplied, required) {
+            NativeSubsumption::Holds => SubsumptionResult::Holds,
+            NativeSubsumption::Violated { counterexample } => {
+                SubsumptionResult::Violated { counterexample }
+            }
+        }
+    }
+
+    /// Walks the whole grid, comparing the native decider (with `planted` applied) against the
+    /// three oracle functions: the number of cells compared, and every disagreement as a line
+    /// naming the cell and both verdicts. An oracle timeout is a disagreement too: the native
+    /// decider never times out, and the grid is far inside Z3's rlimit.
+    fn disagreements<F, X, S>(
+        fits: F,
+        xfield: X,
+        subsumption: S,
+        planted: Planted,
+    ) -> (usize, Vec<String>)
+    where
+        F: Fn(&RefinementClause, RefValue) -> RefinementVerdict,
+        X: Fn(&RefinementClause, i64, i64) -> RefinementVerdict,
+        S: Fn(&RefinementClause, &RefinementClause) -> SubsumptionResult,
+    {
+        let mut cells = 0;
+        let mut bad = Vec::new();
+
+        let values: Vec<RefValue> = NARROW
+            .iter()
+            .map(|n| RefValue::Narrow(*n))
+            .chain(WIDE.iter().map(|w| RefValue::Wide(*w)))
+            .collect();
+        let bounds: Vec<RefinementRhs> = NARROW
+            .iter()
+            .map(|n| RefinementRhs::Literal(*n))
+            .chain(WIDE.iter().map(|w| RefinementRhs::LiteralWide(*w)))
+            .collect();
+        let mut index = 0;
+        for op in OPS {
+            for value in &values {
+                for bound in &bounds {
+                    let c = clause(op, bound.clone());
+                    let mut native = decide_literal_fits(&c, *value);
+                    if planted == Planted::LiteralFits(index) {
+                        native = invert(native);
+                    }
+                    let oracle = fits(&c, *value);
+                    if !agree(native, oracle) {
+                        bad.push(format!(
+                            "LiteralFits {value:?} {op:?} {bound:?}: native {native:?}, oracle {oracle:?}"
+                        ));
+                    }
+                    cells += 1;
+                    index += 1;
+                }
+            }
+        }
+
+        let mut index = 0;
+        for op in OPS {
+            for lhs in NARROW {
+                for rhs in NARROW {
+                    let c = clause(op, RefinementRhs::Field("y".to_string()));
+                    let mut native = decide_cross_field(&c, lhs, rhs);
+                    if planted == Planted::CrossField(index) {
+                        native = invert(native);
+                    }
+                    let oracle = xfield(&c, lhs, rhs);
+                    if !agree(native, oracle) {
+                        bad.push(format!(
+                            "CrossField {lhs} {op:?} {rhs}: native {native:?}, oracle {oracle:?}"
+                        ));
+                    }
+                    cells += 1;
+                    index += 1;
+                }
+            }
+        }
+
+        let mut index = 0;
+        for supplied_op in OPS {
+            for supplied_bound in NARROW {
+                for required_op in OPS {
+                    for required_bound in NARROW {
+                        let supplied = clause(supplied_op, RefinementRhs::Literal(supplied_bound));
+                        let required = clause(required_op, RefinementRhs::Literal(required_bound));
+                        let mut native = decide_subsumption(&supplied, &required);
+                        if planted == Planted::Subsumption(index) {
+                            native = match native {
+                                NativeSubsumption::Holds => NativeSubsumption::Violated {
+                                    counterexample: None,
+                                },
+                                NativeSubsumption::Violated { .. } => NativeSubsumption::Holds,
+                            };
+                        }
+                        let oracle = subsumption(&supplied, &required);
+                        let name = format!(
+                            "Subsumption (x {supplied_op:?} {supplied_bound}) ⊆ (x {required_op:?} {required_bound})"
+                        );
+                        match (native, oracle) {
+                            (NativeSubsumption::Holds, SubsumptionResult::Holds) => {}
+                            (
+                                NativeSubsumption::Violated { .. },
+                                SubsumptionResult::Violated { counterexample },
+                            ) => {
+                                // The oracle's witness, when it reports one, must separate the
+                                // clauses.
+                                if let Some(x) = counterexample
+                                    && !(holds_at(supplied_op, i128::from(x), supplied_bound)
+                                        && !holds_at(required_op, i128::from(x), required_bound))
+                                {
+                                    bad.push(format!(
+                                        "{name}: oracle witness {x} does not separate"
+                                    ));
+                                }
+                            }
+                            (native, oracle) => {
+                                bad.push(format!("{name}: native {native:?}, oracle {oracle:?}"));
+                            }
+                        }
+                        cells += 1;
+                        index += 1;
+                    }
+                }
+            }
+        }
+
+        (cells, bad)
+    }
+
+    #[test]
+    fn dbc1_native_decider_agrees_with_z3() {
+        let (cells, bad) = disagreements(
+            check_refinement,
+            check_refinement_xfield,
+            check_refinement_subsumption,
+            Planted::None,
+        );
+        assert_eq!(
+            cells, GRID_CELLS,
+            "the grid moved; re-pin its cardinality at the measured value"
+        );
+        assert!(
+            bad.is_empty(),
+            "the native decider disagrees with Z3 on {} of {cells} cells:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+    }
+
+    #[test]
+    fn anti_stub_a_planted_wrong_verdict_is_reported_in_each_shape() {
+        // Against itself, the native decider agrees everywhere; with one verdict inverted it
+        // disagrees in exactly that cell, in each shape the walk compares.
+        let (cells, bad) = disagreements(
+            native_fits,
+            native_xfield,
+            native_subsumption,
+            Planted::None,
+        );
+        assert_eq!(cells, GRID_CELLS);
+        assert!(bad.is_empty(), "{bad:?}");
+        for planted in [
+            Planted::LiteralFits(0),
+            Planted::CrossField(0),
+            Planted::Subsumption(0),
+        ] {
+            let (_, bad) = disagreements(native_fits, native_xfield, native_subsumption, planted);
+            assert_eq!(
+                bad.len(),
+                1,
+                "{planted:?}: exactly the planted cell must disagree, found {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_bound_subsumption_is_refused_by_both_backends() {
+        let wide = clause(RefinementOp::Ge, RefinementRhs::LiteralWide(WIDE[0]));
+        let narrow = clause(RefinementOp::Ge, RefinementRhs::Literal(0));
+        for (supplied, required) in [(&wide, &narrow), (&narrow, &wide), (&wide, &wide)] {
+            assert_eq!(
+                decide_subsumption(supplied, required),
+                NativeSubsumption::Violated {
+                    counterexample: None
+                }
+            );
+            assert_eq!(
+                check_refinement_subsumption(supplied, required),
+                SubsumptionResult::Violated {
+                    counterexample: None
+                }
+            );
+        }
+    }
+}

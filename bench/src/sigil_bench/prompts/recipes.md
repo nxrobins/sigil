@@ -46,7 +46,10 @@ Critical differences from pure tools:
    length come in as `i32`. Mismatching causes a type error at
    `tool_main`.
 2. **`#[ring(outer)] #[trusted]` on the module.** FFI requires the outer
-   ring; without `#[trusted]` you cannot declare `extern "C"`.
+   ring. Leave this line off and the effect row below is E003, because an
+   inner-ring function may not declare `FFI` or `Unsafe`; an `extern` call
+   from inner-ring code is R003. Keep `#[trusted]` as well: an outer-ring
+   module that declares an `extern` without it is R008.
 3. **Effect row must include `FFI` and `Unsafe`** plus the resource
    effect (`FsIO` for filesystem, `NetIO` for network) and `Alloc` if
    you allocate output buffers.
@@ -85,7 +88,7 @@ The `#[ring(outer)] #[trusted]` annotation, the effect row (including
 saves you is the `extern "C"` boilerplate and the packed-pointer
 unpack helper.
 
-**Pure-Sigil stdlib (`json`, `crypto::hex_*`)** — runs inner-ring,
+**Pure-Sigil stdlib (`json`, `abi`)** — runs inner-ring,
 no escalation needed:
 
 ```sigil
@@ -108,15 +111,16 @@ own return, so you can `return` its value directly.
 
 ### Ring escalation rule (R004)
 
-Calling any FFI-backed stdlib module (`fs`, `crypto::sha*`, `time`,
-`random`, `http`, `kv`) from a tool that DIDN'T declare `#[ring(outer)] #[trusted]`
+Calling any outer-ring stdlib module (`fs`, `crypto`, `time`, `random`,
+`http`, `kv`) from a tool that DIDN'T declare `#[ring(outer)] #[trusted]`
 emits R004 with the literal escalation text in the hint. Add the
 annotation; don't try to work around it.
 
-Pure-Sigil stdlib (`json`, `crypto::hex_*`) is callable from either
-ring without escalation. If your task only needs pure-Sigil stdlib,
-keep the tool inner-ring — fewer effect-row entries, smaller wasm,
-no grant ceremony.
+The rule holds in both directions: pure-Sigil stdlib (`json`, `abi`) is
+callable only from inner-ring tools, so an outer-ring tool calling it
+also gets R004, and a `grant` body does not change that. If your task
+only needs pure-Sigil stdlib, keep the tool inner-ring — fewer
+effect-row entries, smaller wasm, no grant ceremony.
 
 ### Where to look up signatures
 
@@ -214,14 +218,15 @@ delegate the magnitude to the unsigned form.
 | Code | Meaning | Fix |
 |---|---|---|
 | `T060` | Undefined local | Typo in identifier or missing `let` binding. |
-| `T070` | Effect-row mismatch | Add the missing effect to your function signature. |
-| `T080` | Type mismatch | Check `i32` vs `i64` — FFI uses `i32`. |
-| `R001` | Wrong ring for FFI | Add `#[ring(outer)] #[trusted]` to the module. |
-| `R002` | Missing `#[trusted]` | Required to declare `extern "C"`. |
-| `O001` | Capability not granted | Host did not pass the grant; not a source problem. |
-| `S002` | Missing `tool_main` | Add `pub fn tool_main(...)`. |
-| `S003` | Wrong `tool_main` signature | Match the recipe shape exactly. |
+| `E001` | Undeclared effect required by callee | Add the missing effect to your function's effect row. |
+| `T071` | Function argument type mismatch | Check `i32` vs `i64` — FFI uses `i32`. |
+| `E003` | Inner-ring function declares a privilege effect | Add `#[ring(outer)] #[trusted]` to the module. |
+| `R003` | Inner-ring code cannot call `extern` functions | Add `#[ring(outer)] #[trusted]` to the module. |
+| `R004` | Call across the ring boundary | To call `fs`, `http` or another FFI-backed module, declare your module `#[ring(outer)] #[trusted]`; an outer-ring tool cannot call `json` or `abi`. |
+| `R008` | Outer-ring `extern` requires `#[trusted]` | Add `#[trusted]` after `#[ring(outer)]`. |
+| `S002` | Tool module missing `tool_main` | Add `pub fn tool_main(...)`. |
+| `T283` | `tool_main` is not `pub` | Declare it `pub fn tool_main(...)`. |
 
 When in doubt, call `sigil_lookup_error("CODE")` from outside this
 prompt context — the harness exposes that tool. The catalog block
-below carries the same data verbatim.
+below explains most codes, not all of them.

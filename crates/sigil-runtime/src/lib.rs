@@ -16,6 +16,7 @@ pub mod fuel;
 pub mod grants;
 pub mod host_contract;
 pub mod message;
+mod module_cache;
 pub mod runtime;
 pub mod serve;
 pub mod supervisor;
@@ -25,7 +26,8 @@ pub use actor::{ActorId, ActorInstance};
 pub use audit::{AuditEvent, AuditEventKind, AuditLog};
 pub use capability::{Capability, CapabilityError, CapabilityId, CapabilityTable, FuelCapability};
 pub use ephemeral::{
-    ToolError, ToolResult, execute_ephemeral, execute_ephemeral_with_memory_budget,
+    ToolError, ToolResult, execute_ephemeral, execute_ephemeral_with_budgets,
+    execute_ephemeral_with_memory_budget,
 };
 pub use fuel::{FuelBudget, FuelExhausted};
 pub use grants::{

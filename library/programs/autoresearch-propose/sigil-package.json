@@ -1,0 +1,57 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:801d724366c1268808a2035cbc8fb238c987f9207f5fc80fa61797720c868154",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/rng",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source autoresearch candidate mutation using seeded RNG; not a complete search.",
+  "evidence": {
+    "api_card_hash": "sha256:511575b70223e264b96aed1647f73a502d032727fd5f7a0f8e6ffa0b7e12484c",
+    "api_contract_hash": "sha256:5f95ca177d4f3fae7ce56fefbc96252cbfe51b9e989995156afff98839d5a776",
+    "charter_hash": "sha256:3f335b1e2c4cdd2f59004eb980d5e7c116f8d850929b9cad7511ae40968a57d3",
+    "evidence_manifest_hash": "sha256:53e291a887a502451e8386bf6dda606f25394786efa290f86e9b95015bd3f1ca"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "autoresearch-propose",
+  "version": "0.1.0-public.1"
+}

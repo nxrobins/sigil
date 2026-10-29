@@ -1,0 +1,22 @@
+{
+  "contract_hash": "sha256:24b297aae7e629e9bd0442429f8a0a80af0611ed1ae5aed1252f1eec304bf4f4",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "limits": {
+    "container_entries": 10000,
+    "nesting": 63
+  },
+  "package": "sigil/json",
+  "source_codec": "byte-identical stdlib/sigil/json.sigil",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "json::array_len(input_ptr:Flow,input_len:Flow)->Flow",
+    "json::escape_string(input_ptr:Flow,input_len:Flow)->Flow",
+    "json::parse_field(input_ptr:Flow,input_len:Flow,key_ptr:Flow,key_len:Flow)->Flow",
+    "json::parse_index(input_ptr:Flow,input_len:Flow,index:Flow)->Flow",
+    "json::validate(input_ptr:Flow,input_len:Flow)->Flow"
+  ],
+  "version": "0.1.0-public.1"
+}

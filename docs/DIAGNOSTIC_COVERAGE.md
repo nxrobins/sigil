@@ -8,20 +8,20 @@ The machine check is `diagnostic_security_surface_is_censused` in
 `crates/sigil-runtime/tests/soundness_contract.rs`.
 
 ```pins
-PIN_REGISTERED_CODES = 326
-PIN_SECURITY_CODES = 252
-PIN_PRODUCTION_WIRED_SECURITY_CODES = 250
-PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 193
-PIN_DEDICATED_SOURCE_FIXTURES = 54
-PIN_SELFHOST_SHADOW_CODES = 28
-PIN_DIRECT_TEST_GAPS = 59
+PIN_REGISTERED_CODES = 329
+PIN_SECURITY_CODES = 255
+PIN_PRODUCTION_WIRED_SECURITY_CODES = 253
+PIN_DIRECT_TEST_REFERENCED_SECURITY_CODES = 199
+PIN_DEDICATED_SOURCE_FIXTURES = 56
+PIN_SELFHOST_SHADOW_CODES = 46
+PIN_DIRECT_TEST_GAPS = 56
 PIN_NONEMITTING_COMPATIBILITY_ALIASES = 2
 ```
 
 ## Interpretation
 
 - **Registered:** every entry in `diagnostics::registry::CODES`; prefix totals are C=10, E=11,
-  I=5, L=5, M=11, N=16, O=3, P=30, R=32, S=7, T=196.
+  I=5, L=5, M=11, N=16, O=3, P=30, R=35, S=7, T=196.
 - **Security:** the C/E/O/R/T families. This intentionally includes runtime feedback (`R8xx`) and
   stable compatibility aliases.
 - **Production wired:** a compiler `codes::XXXX` reference or, for `R8xx`, a runtime/CLI/MCP source

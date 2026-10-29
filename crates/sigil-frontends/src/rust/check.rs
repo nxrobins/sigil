@@ -127,7 +127,8 @@ fn resolve<'a>(scopes: &'a Scopes, name: &str) -> Option<&'a Binding> {
 
 pub fn check(program: &RsProgram) -> Result<(), FrontendDiag> {
     // 0. Whole-file mode: caps (inner ring) and effects (outer ring) are mutually
-    //    exclusive — a mixed file would need a cross-ring `grant` bridge (deferred).
+    //    exclusive — a mixed file would need a way across the ring boundary, which the
+    //    language does not have: no call crosses it, a `grant` body included (deferred).
     let has_cap = program.functions.iter().any(|f| !f.caps.is_empty());
     let has_effect = program.functions.iter().any(|f| f.effects.is_some());
     if has_cap && has_effect {

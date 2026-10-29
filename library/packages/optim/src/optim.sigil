@@ -1,0 +1,100 @@
+// Staged, bounded sign updates: the accepted parameters stay unchanged until commit.
+module optim;
+use sigil::numeric;
+
+record ParameterTrial { original: Matrix, proposed: Matrix, phase: i64, error: i64 }
+
+fn finite(value: f64) -> bool { return value - value == 0.0; }
+
+fn same_shape(a: Matrix @ReadOnly, b: Matrix @ReadOnly) -> bool {
+    return a.rows == b.rows && a.cols == b.cols;
+}
+
+// The numeric getter validates shape, spans and every input value before access.
+fn readable(a: Matrix @ReadOnly, cell: Scalar @Mut) -> i64 {
+    return numeric::get_into(a, 0, 0, cell);
+}
+
+fn overlaps(a: Matrix @ReadOnly, b: Matrix @ReadOnly) -> bool {
+    return a.data.buf < b.data.buf + b.data.count * 8 && b.data.buf < a.data.buf + a.data.count * 8;
+}
+
+fn checked(trial: ParameterTrial @ReadOnly, phase: i64, cell: Scalar @Mut) -> i64 {
+    if trial.error < 0 { return trial.error; } else {}
+    if trial.error != 0 || trial.phase != phase { return -400; } else {}
+    let original = readable(trial.original, cell);
+    if original < 0 { return original; } else {}
+    let proposed = readable(trial.proposed, cell);
+    if proposed < 0 { return proposed; } else {}
+    if !same_shape(trial.original, trial.proposed) || overlaps(trial.original, trial.proposed) { return -400; } else {}
+    return 0;
+}
+
+fn next_value(value: f64, gradient: f64, step: f64) -> f64 {
+    if gradient > 0.0 { return value - step; } else {}
+    if gradient < 0.0 { return value + step; } else {}
+    return value;
+}
+
+pub fn new_trial(rows: i64, cols: i64) -> ParameterTrial ! { Alloc } {
+    let original = numeric::zeros(rows, cols);
+    let proposed = numeric::zeros(rows, cols);
+    return ParameterTrial { original: original, proposed: proposed, phase: 0, error: original.error };
+}
+
+pub fn begin_sign(trial: ParameterTrial @Mut, weights: Matrix @ReadOnly, gradient: Matrix @ReadOnly, step: f64, low: f64, high: f64, cell: Scalar @Mut) -> i64 {
+    let status = checked(trial, 0, cell);
+    if status < 0 { return status; } else {}
+    let w = readable(weights, cell);
+    if w < 0 { return w; } else {}
+    let g = readable(gradient, cell);
+    if g < 0 { return g; } else {}
+    if !same_shape(weights, gradient) || !same_shape(weights, trial.original) { return -422; } else {}
+    if overlaps(weights, trial.original) || overlaps(weights, trial.proposed) || overlaps(gradient, trial.original) || overlaps(gradient, trial.proposed) { return -400; } else {}
+    if !finite(step) || !finite(low) || !finite(high) || step < 0.0 || low > high { return -422; } else {}
+    let mut i = 0;
+    while i < weights.data.count {
+        let value = weights.data.get(i);
+        if value < low || value > high || !finite(next_value(value, gradient.data.get(i), step)) { return -422; } else {}
+        i = i + 1;
+    }
+    // All possible returned errors precede both writes. No arithmetic can fail
+    // during this pass; traps/fuel interruption remain outside this guarantee.
+    let saved = numeric::scale_into(weights, 1.0, trial.original);
+    if saved < 0 { return saved; } else {}
+    i = 0;
+    while i < weights.data.count {
+        let mut value = next_value(weights.data.get(i), gradient.data.get(i), step);
+        if value < low { value = low; } else {}
+        if value > high { value = high; } else {}
+        trial.proposed.data.set(i, value); i = i + 1;
+    }
+    trial.phase = 1;
+    return 0;
+}
+
+pub fn commit_into(trial: ParameterTrial @Mut, weights: Matrix @Mut, cell: Scalar @Mut) -> i64 {
+    let status = checked(trial, 1, cell);
+    if status < 0 { return status; } else {}
+    let current = readable(weights, cell);
+    if current < 0 { return current; } else {}
+    if !same_shape(weights, trial.original) { return -422; } else {}
+    if overlaps(weights, trial.original) || overlaps(weights, trial.proposed) { return -400; } else {}
+    let mut i = 0;
+    while i < weights.data.count {
+        if weights.data.get(i) != trial.original.data.get(i) { return -409; } else {}
+        i = i + 1;
+    }
+    let committed = numeric::scale_into(trial.proposed, 1.0, weights);
+    if committed < 0 { return committed; } else {}
+    trial.phase = 0;
+    return 0;
+}
+
+pub fn rollback(trial: ParameterTrial @Mut) -> i64 {
+    if trial.error < 0 { return trial.error; } else {}
+    if trial.error != 0 || trial.phase != 1 { return -400; } else {}
+    // Accepted weights never changed: rollback discards the pending proposal.
+    trial.phase = 0;
+    return 0;
+}

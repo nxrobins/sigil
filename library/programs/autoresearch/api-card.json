@@ -1,0 +1,30 @@
+{
+  "contract_hash": "sha256:ad1243fa45d537c9a39e19f55f9c108347c25aca3f53dcb36d8331633cc67403",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "limits": {
+    "checkpoint_input_bytes": 8191,
+    "evaluation_identity_bytes": 64,
+    "evaluation_request_bytes": 1536,
+    "evaluation_response_bytes": 6144,
+    "fitting_request_bytes": 128,
+    "fitting_response_bytes": 968,
+    "fitting_rounds": 6,
+    "instructions": 12,
+    "json_record_bytes": 4096,
+    "search_generations": 40,
+    "search_population": 8,
+    "search_state_bytes": 1736,
+    "search_transitions": 368,
+    "tape_nodes": 768,
+    "task_steps": 20,
+    "total_graph_work": 2600,
+    "weights": 8
+  },
+  "package": "autoresearch/tool",
+  "policy": "staged sign update, strict improvement, bounded adaptive rate",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

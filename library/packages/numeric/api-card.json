@@ -1,0 +1,26 @@
+{
+  "allocation": "constructors only; preallocated status-returning operators",
+  "ambient_stdlib": [
+    "option",
+    "result",
+    "vec"
+  ],
+  "contract_hash": "sha256:64e2664701cc278eb1ef751511fe7e04a27a0b49690b32bd27c413a94e1a5fee",
+  "device": "CPU/Wasm",
+  "dtype": "f64",
+  "effects": [
+    "Alloc"
+  ],
+  "errors": {
+    "-400": "invalid metadata/index/alias",
+    "-413": "shape/span ceiling",
+    "-422": "shape mismatch/nonfinite/rate"
+  },
+  "host_imports": [],
+  "output_atomicity": "returned errors preserve destinations; no interruption/concurrency guarantee",
+  "ownership": "constructor-owned live Public backing; metadata checks are not ownership proofs",
+  "package": "sigil/numeric",
+  "shape": "row-major positive dimensions; at most 4096 elements per matrix",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

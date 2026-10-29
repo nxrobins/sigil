@@ -17,11 +17,12 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("effect", include_str!("../effect_check_differential.rs")),
     ("ring", include_str!("../ring_check_differential.rs")),
     ("ownership", include_str!("../own_check_differential.rs")),
+    ("shp", include_str!("../selfhost_backend_parity.rs")),
 ];
 
 /// Blank-line-separated blocks: `source key|suite name|case floor`, then required test labels.
 pub const CASES: &str = r#"
-pipeline|pipeline differential|31
+pipeline|pipeline differential|33
 boot0_first_fail_order boot0_oracle_deterministic boot0_protocol_comparison
 boot0_mega_composition_feasible boot1_pipeline_parity boot1_unsupported_taint_shape_fails_closed
 boot1_execution_capstone boot1_every_gate_fires boot1_deterministic mono4_composed_parity
@@ -33,6 +34,7 @@ stage3b_ddc_honest_passes_backdoored_caught stage3b_backdoor_targets_only_self
 stage3b_backdoored_compiler_still_functions ag6_5_with_driver_byte_capstone
 pin_certified_artifact_size pin_census_anti_vacuity pin7_digest_instrument_is_not_vacuous
 pin_certified_artifact_digest pin_strip_list_length
+shp2a_extern_and_ring_checks_match_the_oracle shp2b_two_ring_programs_match_the_oracle
 
 monomorph|monomorph differential|106
 mono0_census_pins mono0_layout_asymmetry mono0_poly_recursion_rejects_loud
@@ -185,4 +187,15 @@ ownership|ownership differential|8
 own0_oracle_pins own0_cfg_move_state_is_propagated own0_cfg_borrow_state_is_propagated
 own0_oracle_deterministic malformed_air_cfg_fails_closed_without_panicking own_verdict_parity
 own1_non_stub own1_shadow_deterministic
+
+shp|self-host backend parity|16
+shp_divergence_is_exactly_the_pinned_set shp_classifier_detects_planted_divergence
+shp_extractor_finds_planted_programs shp0b_fences_hold_on_the_committed_seed
+shp1_fences_hold_on_the_committed_seed shp2_classifier_reads_the_two_ring_form
+shp2_fences_hold_on_the_committed_seed shp3_the_seed_is_handed_the_program_production_compiled
+shp2_call_to_another_modules_extern_is_refused shp2_extern_named_like_an_intrinsic_is_refused
+shp3_production_stages_include_the_effect_desugar
+shp2_outer_ring_actor_is_rejected_by_production_and_refused_by_the_seed
+shp5_fences_hold_on_the_committed_seed shp5_the_taint_stage_passes_control_flow_over_secrets
+shp5b_fences_hold_on_the_committed_seed shp5b_identical_kinds_cover_the_pinned_set
 "#;

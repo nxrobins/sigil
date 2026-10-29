@@ -1,0 +1,16 @@
+{
+  "contract_hash": "sha256:ba60753b64bef3354d9201010affb3c2f0167145cec76cfeb08aa13d48a6cf46",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "package": "sigil/checkpoint",
+  "scope": "canonical compatibility/revision envelopes; no storage",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "checkpoint::advance(ptr:Flow,len:Flow,domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow,expected_revision:Flow,next:Flow,next_len:Flow)->Flow",
+    "checkpoint::initialize(domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow,current:Flow,current_len:Flow)->Flow",
+    "checkpoint::open(ptr:Flow,len:Flow,domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow)->Flow"
+  ],
+  "version": "0.1.0-public.1"
+}

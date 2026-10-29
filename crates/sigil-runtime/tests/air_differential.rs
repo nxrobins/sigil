@@ -1415,6 +1415,17 @@ fn cv_render_stmt(s: &air::AirStmt) -> String {
             align,
             persistent: _,
         } => format!("BA v{} {}/{}", dst.0, size_bytes, align),
+        // SHP-5c-3: the slot cell statements and the region bookends. The region's name is not
+        // rendered (the self-hosted statement carries none; the bytes carry none either).
+        air::AirStmt::SlotNew { dst, cap_type: _ } => format!("SlotNew v{}", dst.0),
+        air::AirStmt::SlotPut { slot, cap } => format!("SlotPut v{} cap v{}", slot.0, cap.0),
+        air::AirStmt::SlotTake { dst_cap, slot } => format!("SlotTake v{}<-v{}", dst_cap.0, slot.0),
+        air::AirStmt::RegionBegin { save_var, .. } => format!("RBegin v{}", save_var.0),
+        air::AirStmt::RegionEnd {
+            limit_var,
+            save_var,
+            ..
+        } => format!("REnd v{} lim v{}", save_var.0, limit_var.0),
         other => {
             panic!("CV render (X2): uncovered AirStmt variant reached the renderer: {other:?}")
         }
@@ -1577,6 +1588,39 @@ const CV_CORPORA: &[&[(&str, &str)]] = &[
     BODY_BARE_ENUM_CORPUS,
     BODY_METHOD_CORPUS,
     BODY_TUPLE_CORPUS,
+    BODY_SLOT_REGION_CORPUS,
+];
+
+/// SHP-5c-3: slots and regions. A `slot_new::<C>()` is the oracle's SlotNew into the let's
+/// local; a `slot_put` is SlotPut then the Unit placeholder assign; a `slot_take` is SlotTake
+/// into the let's (or a call argument's fresh) local. A region statement is its Unit dst, the
+/// limit local, the U32 save local, RegionBegin, the body inline, RegionEnd; a region handle
+/// used as a value is a fresh i64 local assigned 0 per use.
+const BODY_SLOT_REGION_CORPUS: &[(&str, &str)] = &[
+    (
+        "sr_slot_round_trip",
+        "module m;\ncap type Fuel { burn }\nfn boot(seed: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, seed); let extracted: Fuel = slot_take(s); return 0; }\n",
+    ),
+    (
+        "sr_slot_take_into_call",
+        "module m;\ncap type Fuel { burn }\nfn consume(f: Fuel) -> i64 { return 1; }\nfn boot(seed: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, seed); return consume(slot_take(s)); }\n",
+    ),
+    (
+        "sr_slot_param_copy",
+        "module m;\ncap type Fuel { burn }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Fuel) -> i64 { let s: Slot<Fuel> = slot_new::<Fuel>(); let s2 = s; return fill(s2, c); }\n",
+    ),
+    (
+        "sr_slot_rotation",
+        "module m;\ncap type Fuel { burn }\nfn boot(c1: Fuel, c2: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, c1); let first: Fuel = slot_take(s); slot_put(s, c2); let second: Fuel = slot_take(s); return 0; }\n",
+    ),
+    (
+        "sr_region_scalar_body",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { let inner: i64 = 42; let used: i64 = inner + 1; }; return 1; }\n",
+    ),
+    (
+        "sr_region_handle",
+        "module m;\nfn g(r: Region) -> i64 { return 0; }\nfn f() -> i64 ! { Alloc } { region buf(64) { let h: Region = buf; let x: i64 = g(buf); }; return 0; }\n",
+    ),
 ];
 
 /// SH-SURFACE ST-3: tuples. A tuple construct `(a, b)` lowers exactly like a record

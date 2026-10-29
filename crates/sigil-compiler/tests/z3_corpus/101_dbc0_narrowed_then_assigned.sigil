@@ -1,0 +1,35 @@
+// expect-error: T211
+// Z3 corpus #101: axis-1 — DBC-0a: a narrowing records no fact for a `mut` binding.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `if y > 0` records nothing for `y`, because `y` is a `let mut` whose value may change inside
+// the arm (DBC0-2). The assignment `y = 0` then reaches `need_positive(y)` with no fact on `y`,
+// and the collector refuses the symbolic argument with T211, in both build configurations.
+// Before DBC-0a the narrowing's fact outlived the assignment: the call was accepted, and the
+// solver build certified it (SR-037, the design-by-contract spec's probe P4).
+//
+// MUTATION CONTRACT
+//
+// Deleting the call leaves the assignment with no refined sink after it, and the program compiles
+// cleanly. (Binding `y` immutably, with no assignment, would let the narrowing carry instead.)
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+fn probe(input: i64) -> i64 {
+    let mut y: i64 = input;
+    if y > 0 {
+        y = 0;
+        return need_positive(y);  // MUTATION_SITE
+    }
+    return 1;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return probe(5);
+    }
+}

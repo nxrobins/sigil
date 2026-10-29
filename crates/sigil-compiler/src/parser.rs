@@ -5012,8 +5012,15 @@ impl Parser {
 
     fn parse_effect_decl(&mut self) -> Option<EffectDecl> {
         let start = self.advance().span; // consume 'effect'
-        let (name, end_span) = self.expect_ident("expected effect name")?;
+        let (name, name_span) = self.expect_ident("expected effect name")?;
         let mut ops = Vec::new();
+        // The marker form's span ends at the effect NAME (byte-identical with the
+        // legacy form); the operation-bearing form's ends at its `}`, so the
+        // operations — children of the declaration in the parser differential's
+        // projection — nest inside it (ET-P6). The self-hosted `parser.sigil`
+        // mirror does the same. A missing `}` keeps the name's end (and its
+        // diagnostic), as before.
+        let mut end_span = name_span;
         // `effect Name;` (bare marker) OR
         // `effect Name { fn op(params) -> Ty; .. }` (operation-bearing, EH0).
         if self.at_semicolon() {
@@ -5031,11 +5038,10 @@ impl Parser {
                 }
                 ops.push(self.parse_effect_op()?);
             }
-            self.expect_rbrace("expected `}` to close effect declaration");
+            if let Some(close) = self.expect_rbrace("expected `}` to close effect declaration") {
+                end_span = close;
+            }
         }
-        // Span ends at the effect NAME — byte-identical with the legacy form and
-        // the self-hosted `parser.sigil` mirror (the operation list does not
-        // extend the decl span). See parser_differential parity.
         Some(EffectDecl {
             name,
             ops,

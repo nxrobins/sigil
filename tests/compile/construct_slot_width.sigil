@@ -1,0 +1,33 @@
+// Construct parts typed by the slot they are written to — an enum payload after a narrow literal payload, a generic enum assigned to an annotated place, a narrow array beside an i64 in a tuple, and an array of narrow tuples — each laid out at the widths its readers use (SR-032).
+module tool;
+
+enum E { V(i32, i64), N }
+enum G<T> { V(T, i64), N }
+
+fn payload(e: E) -> i64 {
+    match e {
+        E::V(a, b) => { return a.as_i64() + b; },
+        E::N => { return 0; },
+    }
+    return 0;
+}
+
+fn instance(g: G<i32>) -> i64 {
+    match g {
+        G::V(a, b) => { return a.as_i64() + b; },
+        G::N => { return 0; },
+    }
+    return 0;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 {
+    let e: E = E::V(3, 40);
+    let mut g: G<i32> = G::N;
+    g = G::V(5, 60);
+    let t: ([i32; 2], i64) = ([1, 2], 3);
+    let (arr, n) = t;
+    let second: i32 = arr[1];
+    let pairs: [(i32, i64); 2] = [(7, 70), (8, 80)];
+    let (x, y) = pairs[1];
+    return payload(e) + instance(g) + second.as_i64() + n + x.as_i64() + y + input_len;
+}

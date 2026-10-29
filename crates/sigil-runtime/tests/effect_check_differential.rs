@@ -131,6 +131,16 @@ const CORPUS_REJECT: &[(&str, &str, &[&str])] = &[
         "#[ring(outer)]\nmodule m;\neffect NetIO;\nfn expensive() -> i64 ! { NetIO } { return 0; }\nfn boot() -> i64 ! {} { return expensive(); }\n",
         &["E001"],
     ),
+    // E001 — the same leak with an OPERATION-BEARING declaration registering NetIO. Until
+    // the SHP-5c-2 third review the self-hosted parser carried the operation names on the
+    // declaration's text (`NetIO;transmit`), so the self-hosted checker registered that string
+    // whole, dropped `NetIO` from both rows as unregistered and accepted the leak — a
+    // fail-open production never had. The declaration's text is the bare name now.
+    (
+        "E001 call-leak (operation-bearing NetIO registers by its bare name)",
+        "#[ring(outer)]\nmodule m;\neffect NetIO { fn transmit(x: i64) -> i64; }\nfn expensive() -> i64 ! { NetIO } { return 0; }\nfn boot() -> i64 ! {} { return expensive(); }\n",
+        &["E001"],
+    ),
     // E001 — via the BUILT-IN effect FFI (no `effect` decl needed; FFI is always registered).
     (
         "E001 call-leak (built-in FFI)",
@@ -186,6 +196,12 @@ const CORPUS_ACCEPT: &[(&str, &str)] = &[
     (
         "E001 accept: caller declares NetIO",
         "#[ring(outer)]\nmodule m;\neffect NetIO;\nfn expensive() -> i64 ! { NetIO } { return 0; }\nfn boot() -> i64 ! { NetIO } { return expensive(); }\n",
+    ),
+    // Its operation-bearing twin: registering by the bare name fires no false E001 when the
+    // caller declares NetIO too.
+    (
+        "E001 accept: caller declares operation-bearing NetIO",
+        "#[ring(outer)]\nmodule m;\neffect NetIO { fn transmit(x: i64) -> i64; }\nfn expensive() -> i64 ! { NetIO } { return 0; }\nfn boot() -> i64 ! { NetIO } { return expensive(); }\n",
     ),
     // alloc accept twin: `effect Alloc;` registers Alloc AND the caller declares it → clean.
     (

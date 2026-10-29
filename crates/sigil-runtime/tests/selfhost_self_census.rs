@@ -27,6 +27,11 @@ const CENSUS_FUEL: u64 = 3_000_000_000;
 /// memory envelope during census parsing. Keep the runtime default unchanged and raise only this
 /// explicitly measured instrumentation row.
 const AIR_CENSUS_BUDGET: usize = 32 * 1024 * 1024;
+/// The parser source is the second stressor: since SHP-5c-3 merged with the SHP-5c-2 third
+/// review, the `all` lane's type check over parser.sigil outgrows the 16 MB envelope (a guest
+/// allocation trap at 16 MB, complete at 24 MB in 52 M fuel, measured 2026-10-08), so its row
+/// takes the AIR row's measured raise. Every other per-module row keeps the default sandbox.
+const PARSER_CENSUS_BUDGET: usize = 32 * 1024 * 1024;
 /// SELF-4: the per-call memory budget for the COMPOSED Stage-1 row. Measured 2026-07-14:
 /// every single-gate lane completes at 64 MB, the full `all` chain at 128 MB (peak fuel
 /// 74 M — 40x under CENSUS_FUEL). 256 MB = measured x2 headroom, 4x under the 1 GiB
@@ -455,11 +460,12 @@ const ROW_SELF_CONTAINED: [&str; 9] = [
 
 /// Parser's taint lane became CLEAN with the all-public tuple-let/break arms (HB-2 rung 1) —
 /// its unsupported shapes were exactly those two. Its isolated tc LANE still reports the
-/// cross-module artifacts raw, but the `all` lane's gate 2 now FILTERS the artifact codes
-/// (T046/T060/T062/T071 — the sibling-gate discipline; see pipeline.sigil), so the isolated
-/// module falls through the whole chain to emission — where the 224 KB standalone parse tree
-/// TRAPS the default 16 MB census sandbox. Fail-closed (a trap, loud), and the per-module
-/// budget deliberately stays the default (only AIR and COMPOSED carry measured raises).
+/// cross-module artifacts raw, and the `all` lane's gate 2 enforces T060 again (see
+/// pipeline.sigil), so the isolated module stops at the type check on its cross-module const
+/// references; it once fell through to emission, where the standalone parse tree trapped the
+/// default 16 MB census sandbox. That type check now outgrows the default sandbox itself, so
+/// this row runs under PARSER_CENSUS_BUDGET, as AIR and COMPOSED run under their own measured
+/// raises.
 const ROW_PARSER: [&str; 9] = [
     "PARSE:0",
     "CLEAN",
@@ -523,10 +529,10 @@ const ROW_PIPELINE: [&str; 9] = [
 fn assert_row(name: &str, src: &str, want: &[&str; 9]) {
     let mut drift = Vec::new();
     for (lane, expected) in LANES.iter().zip(want.iter()) {
-        let got = if name == "air" {
-            census_cell_budgeted(lane, src, AIR_CENSUS_BUDGET)
-        } else {
-            census_cell(lane, src)
+        let got = match name {
+            "air" => census_cell_budgeted(lane, src, AIR_CENSUS_BUDGET),
+            "parser" => census_cell_budgeted(lane, src, PARSER_CENSUS_BUDGET),
+            _ => census_cell(lane, src),
         };
         if &got != expected {
             drift.push(format!("{name} × {lane}: actual {got}, pinned {expected}"));

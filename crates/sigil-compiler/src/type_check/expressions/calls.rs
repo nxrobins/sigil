@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 use super::super::resolve::{
-    register_concrete_enum, render_type, resolve_int_literals_or_reject, resolve_type_expr,
-    resolve_type_expr_kinded, try_array_size_mismatch_diagnostic, try_cap_deadline_diagnostic,
-    try_state_mismatch_diagnostic, type_compatible, unify,
+    apply_subst, default_int_lit_in_type, register_concrete_enum, render_type,
+    resolve_int_literals_or_reject, resolve_type_expr, resolve_type_expr_kinded,
+    try_array_size_mismatch_diagnostic, try_cap_deadline_diagnostic, try_state_mismatch_diagnostic,
+    type_compatible, unify,
 };
 use super::super::statements::{self, check_function_block};
 use super::super::{
@@ -16,8 +17,8 @@ use super::super::{
 use super::super::{traits, universe};
 use super::intrinsics::{infer_intrinsic_call_expr, resolve_intrinsic_call};
 use super::{
-    check_generic_aggregate_cap_smuggle, infer_arg_with_expected, type_is_concrete,
-    type_mentions_generic,
+    check_generic_aggregate_cap_smuggle, fit_to_instance_slot, infer_arg_with_expected,
+    type_is_concrete, type_mentions_generic,
 };
 use crate::air::mangle_type;
 use crate::ast::{CallExpr, TypeExpr};
@@ -43,37 +44,106 @@ pub(super) fn infer_call_expr(
     // and the cross-module sig are both arg-independent (CF-I7) — so each arg can
     // be pinned to its concrete parameter type while inferring. This enables
     // nested inference (`f(Vec::new())`) and narrows literals to the param width
-    // (#132). Generic-fn / enum-ctor / closure fallbacks and intrinsics resolve
-    // to `concrete_params = None` and are unaffected.
+    // (#132). Generic-fn / closure fallbacks and intrinsics resolve to
+    // `concrete_params = None` and are unaffected.
     let intrinsic_shape = resolve_intrinsic_call(&expr.callee);
     // Clone the concrete param types in a scope that DROPS the resolution's
     // borrow of `tracker` before the `&mut tracker` arg loop; `resolution` is
     // recomputed after the loop (CF-I7: arg-independent ⇒ identical result).
-    let concrete_params: Option<Vec<Type>> = if intrinsic_shape.is_some() {
-        None
+    let (resolved_params, unresolved) = if intrinsic_shape.is_some() {
+        (None, false)
     } else {
         match resolve_function_call_with_context(&expr.callee, module_name, function_sigs, tracker)
         {
-            Some(CrossModuleResolution::Found(sig)) => Some(sig.params.clone()),
-            _ => None,
+            Some(CrossModuleResolution::Found(sig)) => (Some(sig.params.clone()), false),
+            None => (None, true),
+            Some(_) => (None, false),
         }
     };
-    let typed_args = expr
-        .args
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| {
-            infer_arg_with_expected(
+    // An enum-variant constructor is reached (Fallback 2 of
+    // `infer_unresolved_call_expr`) exactly when nothing resolved and no generic fn
+    // has this name, so its arguments are pinned to their payload slots here, the
+    // way a resolved call's are pinned to its parameters. The construct lays each
+    // payload out at its ARGUMENT's width while a `match` reads it at the declared
+    // payload type's offsets, so an unpinned `3` in an `i32` slot was stored as 8
+    // bytes and every later payload read the wrong bytes (`E::V(3, 40)` with
+    // `V(i32, i64)` matched `b` as `40 << 32`). The variant decision is the one
+    // Fallback 2 makes again after the loop (`classify_variant_callee`, CF-I7).
+    // A generic function's arguments are pinned to its parameters too
+    // (`generic_formal_slots`), as far as a turbofish or the arguments before
+    // them have bound the type parameters, and a closure-typed local's arguments
+    // to its parameter types (`closure_param_slots`). The three follow the order
+    // in which `infer_unresolved_call_expr` dispatches after the loop: a generic
+    // function, then a variant, then a closure-typed local.
+    let slots: ArgSlots = if let Some(params) = resolved_params {
+        ArgSlots::Params(params)
+    } else if !unresolved {
+        ArgSlots::Unpinned
+    } else if let Some((_, generic_def)) = universe.generic_fns.get(&callee_name) {
+        generic_formal_slots(generic_def, &expr.callee, universe)
+    } else {
+        match classify_variant_callee(&expr.callee, universe, tracker) {
+            VariantCallee::Chosen(enum_name) => {
+                variant_payload_slots(&enum_name, &expr.callee, universe, tracker)
+            }
+            VariantCallee::NotAVariant => closure_param_slots(&expr.callee, &callee_name, env),
+            VariantCallee::NoSuchVariant(_) | VariantCallee::Ambiguous(_) => ArgSlots::Unpinned,
+        }
+    };
+    // The bindings a turbofish and the arguments so far make for a generic
+    // callee's type parameters, with `unify`'s first-binding-wins order, which
+    // Fallback 1 recomputes over the same typed arguments after the loop.
+    let mut bindings: HashMap<String, Type> = match &slots {
+        ArgSlots::Generic { bound, .. } => bound.clone(),
+        ArgSlots::Params(_) | ArgSlots::Unpinned => HashMap::new(),
+    };
+    let mut typed_args: Vec<TypedExpr> = Vec::with_capacity(expr.args.len());
+    for (i, arg) in expr.args.iter().enumerate() {
+        let typed = match &slots {
+            ArgSlots::Params(params) => infer_arg_with_expected(
                 arg,
-                concrete_params.as_ref().and_then(|ps| ps.get(i)),
+                params.get(i),
                 env,
                 current_return,
                 context,
                 tracker,
                 diagnostics,
-            )
-        })
-        .collect::<Vec<_>>();
+            ),
+            ArgSlots::Generic {
+                formals,
+                unpin_fn_slots,
+                ..
+            } => {
+                let slot = formals
+                    .get(i)
+                    .map(|formal| apply_subst(formal, &bindings))
+                    .filter(|slot| !(*unpin_fn_slots && type_mentions_fn(slot)));
+                let typed = infer_arg_with_expected(
+                    arg,
+                    slot.as_ref(),
+                    env,
+                    current_return,
+                    context,
+                    tracker,
+                    diagnostics,
+                );
+                if let Some(formal) = formals.get(i) {
+                    unify(formal, &typed.ty, &mut bindings);
+                }
+                typed
+            }
+            ArgSlots::Unpinned => infer_arg_with_expected(
+                arg,
+                None,
+                env,
+                current_return,
+                context,
+                tracker,
+                diagnostics,
+            ),
+        };
+        typed_args.push(typed);
+    }
     if let Some(shape) = intrinsic_shape {
         return infer_intrinsic_call_expr(
             expr,
@@ -342,10 +412,24 @@ pub(super) fn infer_call_expr(
                 crate::ast::Ring::Inner => "inner",
                 crate::ast::Ring::Outer => "outer",
             };
+            // The fix depends on the direction. An inner-ring caller can escalate itself to
+            // reach FFI-backed code. An outer-ring caller is already in the outer ring, and
+            // adding `#[trusted]` does not change its ring, so that advice is no fix: it can only
+            // leave the outer ring or stay in it. Leaving means dropping `#[trusted]` too when
+            // present, since `#[trusted]` without `#[ring(outer)]` does not parse. The
+            // inner-ring text is unchanged, byte for byte.
+            let fix = match tracker.current_module_ring {
+                crate::ast::Ring::Inner => {
+                    "Add `#[ring(outer)] #[trusted]` to the calling module to use FFI-backed stdlib, or call only stdlib modules in the same ring."
+                }
+                crate::ast::Ring::Outer => {
+                    "Outer-ring code cannot call into the inner ring. If the calling module does not need FFI, remove its `#[ring(outer)]` attribute, and `#[trusted]` if present, so it runs in the inner ring; otherwise call only outer-ring modules from it."
+                }
+            };
             diagnostics.push(Diagnostic::error(
                 codes::R004,
                 format!(
-                    "cross-ring call: `{module}::{name}` lives in {callee_ring_str} ring, but the caller is in {caller_ring_str} ring. Add `#[ring(outer)] #[trusted]` to the calling module to use FFI-backed stdlib, or call only stdlib modules in the same ring."
+                    "cross-ring call: `{module}::{name}` lives in {callee_ring_str} ring, but the caller is in {caller_ring_str} ring. {fix}"
                 ),
                 Some(expr.span),
             ));
@@ -450,28 +534,7 @@ fn infer_unresolved_call_expr(
 
         // Resolve type args: turbofish or inference
         let concrete_args: Vec<Type> = if !turbofish_blocked && !expr.callee.type_args.is_empty() {
-            expr.callee
-                .type_args
-                .iter()
-                .enumerate()
-                .map(|(i, ta)| {
-                    // HK turbofish: a higher-kinded parameter (`F: * -> *`)
-                    // is supplied as a bare constructor NAME
-                    // (`unwrap::<Box, i64>`). The inference path binds it to
-                    // `TypeCtor(Box)` via unify; mirror that here so the
-                    // body's `HktApp{F,[A]}` erases to `Named(Box,[A])`.
-                    // Resolving normally would yield a malformed 0-arg
-                    // `Named(Box, [])` (Box has arity 1) that trips the
-                    // use-site arity gate / path-substitution guard.
-                    if let Some(pname) = type_params.get(i)
-                        && hkt.iter().any(|(n, _)| n == pname)
-                    {
-                        Type::TypeCtor(ta.path.display_name())
-                    } else {
-                        resolve_type_expr(ta, universe, &HashMap::new(), &[])
-                    }
-                })
-                .collect()
+            turbofish_type_args(&expr.callee, type_params, &hkt, universe)
         } else {
             // Infer via unification
             let formal_types: Vec<Type> = generic_def
@@ -555,28 +618,26 @@ fn infer_unresolved_call_expr(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        // Re-narrow integer-LITERAL arguments to the now-known concrete
-        // (substituted) parameter types. A generic signature is NOT in
-        // `function_sigs`, so the arg loop above ran with `expected = None`
-        // (CF-I1): an `IntLit` arg at a `T` position stayed `IntLit` and
+        // Narrow every argument to the now-known concrete (substituted)
+        // parameter type, and report one that does not fit it
+        // (`narrow_generic_arguments`). A generic signature is NOT in
+        // `function_sigs`, so the arg loop above pinned an argument only as far
+        // as a turbofish or the arguments before it had bound its type
+        // parameters (CF-I1): an `IntLit` at a `T` position stayed `IntLit` and
         // would default to i64 by the end-of-typecheck mop-up. When this
         // instance binds T=i32/u32, that default mismatches the i32/u32
-        // parameter, and AIR emits an `i64.const` into an i32 call slot —
-        // an INVALID wasm module that only fails at instantiation. Mirror
-        // the non-generic path's `infer_arg_with_expected` narrowing, now
-        // that type-arg inference has supplied the concrete param types.
-        for (i, param) in generic_def.params.iter().enumerate() {
-            let Some(arg) = typed_args.get_mut(i) else {
-                continue;
-            };
-            if !matches!(arg.ty, Type::IntLit(_)) {
-                continue;
-            }
-            let concrete = resolve_type_expr(&param.ty, universe, &subst, &[]);
-            if type_is_concrete(&concrete) && type_compatible(&concrete, &arg.ty) {
-                resolve_int_literals_or_reject(arg, &concrete, codes::T071, diagnostics);
-            }
-        }
+        // parameter, and AIR emits an `i64.const` into an i32 call slot — an
+        // INVALID wasm module that only fails at instantiation.
+        narrow_generic_arguments(
+            &generic_def,
+            type_params,
+            &hkt,
+            &subst,
+            &callee_name,
+            &mut typed_args,
+            universe,
+            diagnostics,
+        );
 
         // Phase 4 (row polymorphism): bind each row variable from the actual
         // arguments' effect rows (union across occurrences = least solution;
@@ -640,6 +701,15 @@ fn infer_unresolved_call_expr(
 
         // Cache-before-check: prevents recursive deadlock
         if tracker.reserve_specialization(&qualified, expr.span, diagnostics) {
+            // The body is checked once: inside a speculation its report is kept until a
+            // real inference uses the instance (`begin_speculation`).
+            let attempt = tracker.begin_creation(&qualified);
+            let mut own = Vec::new();
+            let diagnostics: &mut Vec<Diagnostic> = if attempt.is_some() {
+                &mut own
+            } else {
+                &mut *diagnostics
+            };
             // Phase 4: rows written in the return type are instantiated via
             // the AST/Type overlay — the type-subst map is structurally
             // incapable of touching a row (rows are `Vec<String>` on the AST
@@ -798,6 +868,7 @@ fn infer_unresolved_call_expr(
                 });
                 tracker.depth -= 1;
             }
+            tracker.end_creation(attempt, &qualified, own);
         }
 
         // Phase 4: the CALLER-visible return type gets the same row overlay as
@@ -851,22 +922,18 @@ fn infer_unresolved_call_expr(
     // produce identical TypedExpr shapes — both route through
     // the SAME `infer_variant_type_args`-equivalent code below.
     {
-        // Step 1: collect candidate enum names that contain a
-        // variant matching the callee's last segment.
         let variant_segment = expr.callee.segments.last().cloned().unwrap_or_default();
-        let qualifier: Option<&String> = if expr.callee.segments.len() == 2 {
-            expr.callee.segments.first()
-        } else {
-            None
-        };
-
-        let candidate_enums: Vec<String> = if let Some(qual) = qualifier {
-            // Qualified path: only consider the named enum.
-            if universe.enums.get(qual).is_some_and(|(_, variants)| {
-                variants.iter().any(|(name, _)| name == &variant_segment)
-            }) {
-                vec![qual.clone()]
-            } else if universe.enums.contains_key(qual) {
+        // Steps 1 and 2 (candidate enums, then disambiguation) live in
+        // `classify_variant_callee`, shared with `infer_call_expr`'s payload-slot
+        // pin so the two make the same decision.
+        let chosen_enum_name: Option<String> = match classify_variant_callee(
+            &expr.callee,
+            universe,
+            tracker,
+        ) {
+            VariantCallee::Chosen(enum_name) => Some(enum_name),
+            VariantCallee::NotAVariant => None,
+            VariantCallee::NoSuchVariant(qual) => {
                 // Enum exists but variant doesn't — fire T072 and
                 // bail. This is more specific than the bare-variant
                 // "not found" path which falls through to T062.
@@ -884,64 +951,30 @@ fn infer_unresolved_call_expr(
                     span: expr.span,
                     refinement: None,
                 };
-            } else {
-                // Qualifier is not a known enum — fall through to
-                // T062 below.
-                Vec::new()
             }
-        } else if expr.callee.segments.len() == 1 {
-            // Bare path: scan all enums for matching variant.
-            // BTreeSet for deterministic ordering per N22-PRB.
-            let mut matches: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            for (enum_name, (_, variants)) in &universe.enums {
-                if variants.iter().any(|(name, _)| name == &variant_segment) {
-                    matches.insert(enum_name.clone());
-                }
-            }
-            matches.into_iter().collect()
-        } else {
-            // 3+ segments — not a variant call.
-            Vec::new()
-        };
-
-        // Step 2: disambiguate.
-        let chosen_enum_name: Option<String> = match candidate_enums.len() {
-            0 => None,
-            1 => Some(candidate_enums[0].clone()),
-            _ => {
-                // N5-PRB: prefer annotation context.
-                let expected_enum = match &tracker.current_expected_type {
-                    Some(Type::Named(name, _)) => Some(name.clone()),
-                    _ => None,
-                };
-                if let Some(exp) = expected_enum
-                    && candidate_enums.iter().any(|n| n == &exp)
-                {
-                    Some(exp)
-                } else {
-                    // N22-PRB: T236 ambiguous bare variant.
-                    let listed = candidate_enums
-                        .iter()
-                        .map(|n| format!("`{n}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    diagnostics.push(Diagnostic::error(
+            VariantCallee::Ambiguous(candidate_enums) => {
+                // N22-PRB: T236 ambiguous bare variant.
+                let listed = candidate_enums
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diagnostics.push(Diagnostic::error(
                             codes::T236,
                             format!(
                                 "ambiguous bare variant `{variant_segment}` — found in enums [{listed}]; add a type annotation (`let x: EnumName<...> = {variant_segment}(...)`) or qualify the constructor (`EnumName::{variant_segment}(...)`)"
                             ),
                             Some(expr.span),
                         ));
-                    return TypedExpr {
-                        ty: Type::Error,
-                        kind: TypedExprKind::Call(TypedCallExpr {
-                            callee: callee_name,
-                            args: typed_args,
-                        }),
-                        span: expr.span,
-                        refinement: None,
-                    };
-                }
+                return TypedExpr {
+                    ty: Type::Error,
+                    kind: TypedExprKind::Call(TypedCallExpr {
+                        callee: callee_name,
+                        args: typed_args,
+                    }),
+                    span: expr.span,
+                    refinement: None,
+                };
             }
         };
 
@@ -1005,6 +1038,31 @@ fn infer_unresolved_call_expr(
                     ));
                 }
             }
+            // CF-I3 for payloads: an integer literal that its concrete declared slot
+            // cannot hold (`S::V(5000000000)` for `V(i32)`, or any integer literal
+            // for `V(f64)`) is not narrowed by the pin in `infer_call_expr`, so it
+            // stays `IntLit` — skipped by the check above — and the end-of-typecheck
+            // mop-up would default it to `i64`: 8 bytes stored into a narrower slot,
+            // past the end of the cell when that variant is the widest. Reject it,
+            // as the record-field path does. A type-parameter position is not
+            // checked here: it is pinned to the expected type's instance, and a
+            // literal that does not fit leaves the whole value incompatible with
+            // that slot, which the slot's own check reports.
+            for (formal, arg) in payload_types.iter().zip(typed_args.iter()) {
+                if let Type::IntLit(n) = arg.ty
+                    && type_is_concrete(formal)
+                {
+                    diagnostics.push(Diagnostic::error(
+                        codes::T071,
+                        format!(
+                            "enum variant `{variant_segment}` payload expected `{}`, found the \
+                             integer literal `{n}`, which does not fit it",
+                            render_type(formal)
+                        ),
+                        Some(arg.span),
+                    ));
+                }
+            }
 
             // Refinement quarantine (Phase 2): variant refinement discharge now
             // runs in the v2 obligation pass, not inline here.
@@ -1017,10 +1075,56 @@ fn infer_unresolved_call_expr(
                 for (formal, actual) in payload_types.iter().zip(typed_args.iter()) {
                     unify(formal, &actual.ty, &mut bindings);
                 }
+                // A type parameter no payload binds (`B` in `Either::L(7)`) takes the
+                // expected instance's argument, as a unit variant's parameters do (GAP 2).
+                // Left unbound it became `Type::Error`, which lowers to zero width, so
+                // under `let e: Either<i32, i64>` the construct registered and allocated
+                // `Either<i32, error>` (8 bytes) rather than the 12-byte instance its
+                // readers use. A parameter a payload did bind keeps that binding, so a
+                // payload of the wrong type still mismatches the slot.
+                if let Some(instance) = expected_enum_instance(&enum_name, &type_params, tracker) {
+                    for (param, arg) in instance {
+                        bindings.entry(param).or_insert(arg);
+                    }
+                }
                 let concrete_args: Vec<Type> = type_params
                     .iter()
                     .map(|p| bindings.get(p).cloned().unwrap_or(Type::Error))
                     .collect();
+                // SR-032: a payload whose declared type mentions a type parameter is
+                // pinned while it is inferred only when the expected type names the
+                // instance (`variant_payload_slots`). Otherwise it was typed by its own
+                // value, so `let b = B::V((1, 40));` for `enum B<T> { V((i32, T)) }`
+                // laid the tuple out as `(i64, i64)` while a `match` read it as
+                // `(i32, i64)`, and a closure taking a `(i64, i64)` was stored in a
+                // `Fn((i32, i64)) -> T` payload unchecked. Each such payload is fitted
+                // to the instance now (`fit_to_instance_slot`), and one stored
+                // otherwise is T071, as a concrete payload's mismatch is above.
+                let instance: HashMap<String, Type> = type_params
+                    .iter()
+                    .cloned()
+                    .zip(concrete_args.iter().cloned())
+                    .collect();
+                for (formal, arg) in payload_types.iter().zip(typed_args.iter_mut()) {
+                    if !type_mentions_generic(formal) {
+                        continue;
+                    }
+                    let slot = apply_subst(formal, &instance);
+                    if !fit_to_instance_slot(arg, &slot, codes::T071, diagnostics) {
+                        let mut concrete = slot;
+                        default_int_lit_in_type(&mut concrete);
+                        diagnostics.push(Diagnostic::error(
+                            codes::T071,
+                            format!(
+                                "enum variant `{variant_segment}` payload expected `{}`, found `{}`",
+                                render_type(&concrete),
+                                render_type(&arg.ty)
+                            ),
+                            Some(arg.span),
+                        ));
+                        arg.ty = Type::Error;
+                    }
+                }
                 let cty = Type::Named(enum_name.clone(), concrete_args.clone());
 
                 // T242: cap-smuggle defense at generic-enum
@@ -1140,19 +1244,16 @@ fn infer_unresolved_call_expr(
             let Some(arg) = typed_args.get_mut(idx) else {
                 break;
             };
-            // Narrow a fitting integer-LITERAL arg to the closure's concrete
-            // parameter width. The arg loop above ran with `expected = None`
-            // (the callee is a local, not a resolved sig), so an `IntLit` at
-            // an i32/u32 closure param stayed `IntLit` and would default to
-            // i64 — AIR then emits an `i64.const` into a narrow `call_indirect`
-            // slot → INVALID wasm. Mirrors the resolved-function-call and
-            // generic-call narrowing. A non-fitting / incompatible literal
-            // stays `IntLit` and is reported by the `type_compatible` check
-            // just below (overflow → T071), exactly as before.
-            if matches!(arg.ty, Type::IntLit(_))
-                && type_is_concrete(expected)
-                && type_compatible(expected, &arg.ty)
-            {
+            // Narrow each argument to the closure's concrete parameter type. The
+            // arg loop above pinned it already (`closure_param_slots`), so this
+            // is the backstop for a parameter the loop did not see: an `IntLit`
+            // left at an i32/u32 closure param would default to i64, and AIR
+            // would emit an `i64.const` into a narrow `call_indirect` slot →
+            // INVALID wasm. Mirrors the resolved-function-call and generic-call
+            // narrowing. A non-fitting / incompatible literal stays `IntLit` and
+            // is reported by the `type_compatible` check just below (overflow →
+            // T071), exactly as before.
+            if type_is_concrete(expected) && type_compatible(expected, &arg.ty) {
                 resolve_int_literals_or_reject(arg, expected, codes::T071, diagnostics);
             }
             if !type_compatible(expected, &arg.ty) {
@@ -1200,6 +1301,366 @@ fn infer_unresolved_call_expr(
     }
 }
 
+/// The slots a call's arguments are written to, decided before any argument is
+/// inferred (CF-I7: from the callee, the expected type and the bindings in scope,
+/// never an argument).
+enum ArgSlots {
+    /// Each argument takes its slot's type: a resolved function's parameters, an
+    /// enum variant's payloads, or a closure-typed local's parameters.
+    Params(Vec<Type>),
+    /// A generic function, or a generic enum's variant with no instance in view:
+    /// each parameter's or payload's declared type with its type parameters free
+    /// (`formals`), and the type arguments a turbofish names (`bound`). An
+    /// argument is pinned to its formal once the turbofish or the
+    /// arguments before it have bound every type parameter the formal mentions:
+    /// the construct-slot rule of a resolved call, for the slots a generic call
+    /// can already see. Before, no argument of a generic function was pinned, so
+    /// `g(true, (1, 40))` for `t: (i32, i64)` laid the tuple out as `(i64, i64)`
+    /// while the instance read it as `(i32, i64)`. Fallback 1 narrows the rest
+    /// once the instance is known (`narrow_generic_arguments`).
+    Generic {
+        formals: Vec<Type>,
+        bound: HashMap<String, Type>,
+        /// Whether a slot that mentions a function type stays unpinned: true for
+        /// a generic function, whose closure argument's effect row can bind a row
+        /// variable (`type_mentions_fn`). False for a generic enum, which declares
+        /// no row variable (E011), so its function-typed payload is pinned like
+        /// any other. With the filter, `W::F((1, 40, f), 7)` for
+        /// `F((i32, i64, Fn(i64) -> i64), T)` laid the tuple out as `(i64, i64, _)`,
+        /// and no fit reached that payload, since its type mentions no type
+        /// parameter.
+        unpin_fn_slots: bool,
+    },
+    /// Nothing to pin: an intrinsic, an unknown callee, or a call Fallback 1 or 2
+    /// rejects (a row-polymorphic turbofish, an ambiguous or missing variant).
+    Unpinned,
+}
+
+/// The formals of a generic callee for `ArgSlots::Generic`, with the type
+/// arguments its turbofish names, resolved as Fallback 1 resolves them. A
+/// turbofish on a function with an effect-row variable is `Unpinned`: Fallback 1
+/// rejects it (E011).
+fn generic_formal_slots(
+    generic_def: &crate::ast::FnDef,
+    callee: &crate::ast::Path,
+    universe: &TypeUniverse,
+) -> ArgSlots {
+    let type_params = crate::ast::type_kinded_param_names(generic_def);
+    let hkt = crate::ast::hkt_params(&generic_def.type_params);
+    let bound: HashMap<String, Type> = if callee.type_args.is_empty() {
+        HashMap::new()
+    } else if !crate::ast::effect_row_param_names(generic_def).is_empty() {
+        return ArgSlots::Unpinned;
+    } else {
+        type_params
+            .iter()
+            .cloned()
+            .zip(turbofish_type_args(callee, &type_params, &hkt, universe))
+            .collect()
+    };
+    ArgSlots::Generic {
+        formals: generic_def
+            .params
+            .iter()
+            .map(|p| resolve_type_expr_kinded(&p.ty, universe, &HashMap::new(), &type_params, &hkt))
+            .collect(),
+        bound,
+        unpin_fn_slots: true,
+    }
+}
+
+/// A turbofish's type arguments, in order. A higher-kinded parameter
+/// (`F: * -> *`) is supplied as a bare constructor NAME (`unwrap::<Box, i64>`):
+/// the inference path binds it to `TypeCtor(Box)` via unify, and this mirrors
+/// that so the body's `HktApp{F,[A]}` erases to `Named(Box,[A])`. Resolving it
+/// normally would yield a malformed 0-arg `Named(Box, [])` (Box has arity 1)
+/// that trips the use-site arity gate / path-substitution guard.
+fn turbofish_type_args(
+    callee: &crate::ast::Path,
+    type_params: &[String],
+    hkt: &[(String, usize)],
+    universe: &TypeUniverse,
+) -> Vec<Type> {
+    callee
+        .type_args
+        .iter()
+        .enumerate()
+        .map(|(i, ta)| {
+            if let Some(pname) = type_params.get(i)
+                && hkt.iter().any(|(n, _)| n == pname)
+            {
+                Type::TypeCtor(ta.path.display_name())
+            } else {
+                resolve_type_expr(ta, universe, &HashMap::new(), &[])
+            }
+        })
+        .collect()
+}
+
+/// The parameter types of the closure-typed local a call names, for
+/// `ArgSlots::Params`. The closure path of `infer_unresolved_call_expr` reaches
+/// exactly this callee once nothing resolved, no generic function has the name
+/// and no enum declares it as a variant. Its arguments were inferred unpinned,
+/// so `f((1, 40))` for `f: Fn((i32, i64)) -> i64` laid the tuple out as
+/// `(i64, i64)`.
+fn closure_param_slots(
+    callee: &crate::ast::Path,
+    callee_name: &str,
+    env: &HashMap<String, Type>,
+) -> ArgSlots {
+    match env.get(callee_name) {
+        Some(Type::Fn(params, ..)) if callee.segments.len() == 1 => {
+            ArgSlots::Params(params.clone())
+        }
+        _ => ArgSlots::Unpinned,
+    }
+}
+
+/// Whether `t` contains a function type anywhere. A generic function's
+/// function-typed slot is left unpinned (`ArgSlots::Generic`'s `unpin_fn_slots`),
+/// so that no expected type reaches an argument whose closure binds the
+/// function's row variable (`bind_and_check_effect_rows`). This is a precaution:
+/// closure inference reads no expected type today. Its cost is the parts beside
+/// a function type, which are narrowed after inference instead, and an enum
+/// construct there, which is built first and is T071 where the instance reads
+/// it otherwise.
+fn type_mentions_fn(t: &Type) -> bool {
+    match t {
+        Type::Fn(..) => true,
+        Type::Named(_, args) | Type::Tuple(args) => args.iter().any(type_mentions_fn),
+        Type::Array { elem, .. } => type_mentions_fn(elem),
+        Type::Ref(inner, _) | Type::Slice(inner) | Type::Ptr(inner) | Type::MutPtr(inner) => {
+            type_mentions_fn(inner)
+        }
+        _ => false,
+    }
+}
+
+/// What a call's callee names among the enum variants: Steps 1 and 2 of Fallback 2.
+enum VariantCallee {
+    /// The variant's enum: the only enum declaring it, or the one the expected type
+    /// names (N5-PRB).
+    Chosen(String),
+    /// `Q::V` where `Q` is an enum with no variant `V` (T072).
+    NoSuchVariant(String),
+    /// A bare variant several enums declare, none of them named by the expected type
+    /// (T236). The candidates are in `BTreeSet` order (N22-PRB).
+    Ambiguous(Vec<String>),
+    /// Not a variant constructor: no enum declares the name, the qualifier is not an
+    /// enum, or the path has three or more segments.
+    NotAVariant,
+}
+
+/// Which enum a call's callee constructs. It reads only the callee path, the
+/// universe and the expected type, never an argument (CF-I7), so `infer_call_expr`
+/// makes the same decision before its argument loop (to pin each argument to its
+/// payload slot) that Fallback 2 makes at construction.
+fn classify_variant_callee(
+    callee: &crate::ast::Path,
+    universe: &TypeUniverse,
+    tracker: &MonomorphTracker,
+) -> VariantCallee {
+    let declares = |variants: &[(String, Vec<Type>)], variant: &str| {
+        variants.iter().any(|(name, _)| name == variant)
+    };
+    let candidate_enums: Vec<String> = match callee.segments.as_slice() {
+        // Qualified path: only the named enum is a candidate.
+        [qual, variant] => match universe.enums.get(qual) {
+            Some((_, variants)) if declares(variants, variant) => vec![qual.clone()],
+            Some(_) => return VariantCallee::NoSuchVariant(qual.clone()),
+            // The qualifier is not an enum: the call falls through to T062.
+            None => return VariantCallee::NotAVariant,
+        },
+        // Bare path: every enum declaring the variant, in BTreeSet order (N22-PRB).
+        [variant] => universe
+            .enums
+            .iter()
+            .filter(|(_, (_, variants))| declares(variants, variant))
+            .map(|(name, _)| name.clone())
+            .collect::<std::collections::BTreeSet<String>>()
+            .into_iter()
+            .collect(),
+        // Three or more segments: not a variant call.
+        _ => return VariantCallee::NotAVariant,
+    };
+    match candidate_enums.as_slice() {
+        [] => VariantCallee::NotAVariant,
+        [only] => VariantCallee::Chosen(only.clone()),
+        // N5-PRB: the expected type picks among several candidates.
+        _ => match &tracker.current_expected_type {
+            Some(Type::Named(expected, _)) if candidate_enums.contains(expected) => {
+                VariantCallee::Chosen(expected.clone())
+            }
+            _ => VariantCallee::Ambiguous(candidate_enums),
+        },
+    }
+}
+
+/// The slot each argument of a variant constructor is stored into: the variant's
+/// declared payload types, with the enum's type parameters substituted from the
+/// expected type when it names this enum with fully concrete arguments — the
+/// instance a `let` annotation, a return type, a parameter or an enclosing slot
+/// asks for, as GAP 1 does for a generic record (`let e: G<i32> = G::V(3)` pins
+/// `3` to `i32`, so `unify` binds `T = i32` and the construct is the `G<i32>` the
+/// readers expect).
+///
+/// A generic enum with no instance in view takes `ArgSlots::Generic`: a payload is
+/// pinned once the payloads before it bind the type parameters its type mentions,
+/// as a generic function's argument is, and a function-typed payload too, since an
+/// enum binds no effect-row variable. Before, such a payload was never pinned,
+/// so `E::V(x, Some(5))` for `V(T, Option<T>)` with `x: i32` built the `Some` at
+/// `Option<i64>`; a payload bound later or only by a literal is fitted to the
+/// instance after the construct's bindings are known (`fit_to_instance_slot`).
+fn variant_payload_slots(
+    enum_name: &str,
+    callee: &crate::ast::Path,
+    universe: &TypeUniverse,
+    tracker: &MonomorphTracker,
+) -> ArgSlots {
+    let Some(variant) = callee.segments.last() else {
+        return ArgSlots::Unpinned;
+    };
+    let Some((type_params, variants)) = universe.enums.get(enum_name) else {
+        return ArgSlots::Unpinned;
+    };
+    let Some((_, payload_types)) = variants.iter().find(|(name, _)| name == variant) else {
+        return ArgSlots::Unpinned;
+    };
+    match expected_enum_instance(enum_name, type_params, tracker) {
+        Some(subst) => ArgSlots::Params(
+            payload_types
+                .iter()
+                .map(|payload| apply_subst(payload, &subst))
+                .collect(),
+        ),
+        None if !type_params.is_empty() => ArgSlots::Generic {
+            formals: payload_types.clone(),
+            bound: HashMap::new(),
+            unpin_fn_slots: false,
+        },
+        None => ArgSlots::Params(payload_types.clone()),
+    }
+}
+
+/// The instance of the generic enum `enum_name` that the expected type asks for, as a
+/// substitution of its type parameters: present only when the expected type names this
+/// enum with one argument per parameter and every argument is concrete (CF-I1), so a
+/// type parameter of the enclosing function is never bound into a construct.
+fn expected_enum_instance(
+    enum_name: &str,
+    type_params: &[String],
+    tracker: &MonomorphTracker,
+) -> Option<HashMap<String, Type>> {
+    match &tracker.current_expected_type {
+        Some(Type::Named(name, args))
+            if !type_params.is_empty()
+                && name == enum_name
+                && args.len() == type_params.len()
+                && args.iter().all(type_is_concrete) =>
+        {
+            Some(
+                type_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The diagnostic for argument `idx` of `callee_name`, whose type does not fit
+/// the parameter type `expected`: the protocol-aware T266 (typestate), T195 (a
+/// capability deadline) or T227 (an array size) where one applies, else T071.
+fn argument_mismatch_diagnostic(
+    callee_name: &str,
+    idx: usize,
+    expected: &Type,
+    arg: &TypedExpr,
+    universe: &TypeUniverse,
+) -> Diagnostic {
+    let arg_label = format!("argument #{}", idx + 1);
+    let site_ctx = format!("function `{callee_name}` argument #{}", idx + 1);
+    if let Some(t266) =
+        try_state_mismatch_diagnostic(expected, &arg.ty, universe, &site_ctx, arg.span)
+    {
+        // Typestate (T266): same protocol nominal, wrong state — the
+        // protocol-aware form of the generic T071 below.
+        t266
+    } else if let Some(t195) =
+        try_cap_deadline_diagnostic(expected, &arg.ty, &arg_label, &site_ctx, arg.span)
+    {
+        t195
+    } else if let Some(t227) =
+        try_array_size_mismatch_diagnostic(expected, &arg.ty, &site_ctx, arg.span)
+    {
+        t227
+    } else {
+        Diagnostic::error(
+            codes::T071,
+            format!(
+                "function `{}` expected argument of type `{}`, found `{}`",
+                callee_name,
+                render_type(expected),
+                render_type(&arg.ty)
+            ),
+            Some(arg.span),
+        )
+    }
+}
+
+/// Fallback 1, once the instance is known: fit each argument of a generic call
+/// to its parameter type with the instance's type arguments substituted
+/// (`fit_to_instance_slot`), and report one that does not fit.
+///
+/// The argument loop pins an argument only once a turbofish or the arguments
+/// before it have bound the type parameters its formal mentions, and never one
+/// whose formal mentions a function type (`type_mentions_fn`). An argument whose
+/// parameter is bound later (`g((4, 7), a)` for `t: (i32, T), a: T`), only by a
+/// literal (`g(0, (4, 7))`), inside the argument itself (`g((y, 5, 4))` for
+/// `t: (T, T, i64)` with `y: i32`), or beside a closure (`g((c, (1, 40)), 0)` for
+/// `p: (Fn(i64) -> i64, (i32, i64))`) was inferred with no slot, so its integer
+/// literals kept the `i64` default while the instance read the parameter's
+/// types. A generic call also had no argument check at all: `g(true, t)` for
+/// `t: (i32, i64)`, given a `(i64, i64)`, compiled and read the wrong bytes, and
+/// so did a closure taking a `(i64, i64)` for `Fn((i32, i64)) -> T`, at the top
+/// level or inside a tuple or an `Option`. Each argument stored otherwise than
+/// the instance reads it now gets the resolved call's diagnostic
+/// (`argument_mismatch_diagnostic`) and is poisoned to `Type::Error`.
+#[allow(clippy::too_many_arguments)]
+fn narrow_generic_arguments(
+    generic_def: &crate::ast::FnDef,
+    type_params: &[String],
+    hkt: &[(String, usize)],
+    subst: &HashMap<String, Type>,
+    callee_name: &str,
+    typed_args: &mut [TypedExpr],
+    universe: &TypeUniverse,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (i, param) in generic_def.params.iter().enumerate() {
+        let Some(arg) = typed_args.get_mut(i) else {
+            continue;
+        };
+        let formal =
+            resolve_type_expr_kinded(&param.ty, universe, &HashMap::new(), type_params, hkt);
+        let slot = apply_subst(&formal, subst);
+        if !fit_to_instance_slot(arg, &slot, codes::T071, diagnostics) {
+            let mut concrete = slot;
+            default_int_lit_in_type(&mut concrete);
+            diagnostics.push(argument_mismatch_diagnostic(
+                callee_name,
+                i,
+                &concrete,
+                arg,
+                universe,
+            ));
+            arg.ty = Type::Error;
+        }
+    }
+}
+
 fn finish_resolved_call_expr(
     expr: &CallExpr,
     sig: &FunctionSig,
@@ -1223,34 +1684,13 @@ fn finish_resolved_call_expr(
 
     for (idx, (arg, expected)) in typed_args.iter().zip(sig.params.iter()).enumerate() {
         if !type_compatible(expected, &arg.ty) {
-            let arg_label = format!("argument #{}", idx + 1);
-            let site_ctx = format!("function `{callee_name}` argument #{}", idx + 1);
-            if let Some(t266) =
-                try_state_mismatch_diagnostic(expected, &arg.ty, universe, &site_ctx, arg.span)
-            {
-                // Typestate (T266): same protocol nominal, wrong state — the
-                // protocol-aware form of the generic T071 below.
-                diagnostics.push(t266);
-            } else if let Some(t195) =
-                try_cap_deadline_diagnostic(expected, &arg.ty, &arg_label, &site_ctx, arg.span)
-            {
-                diagnostics.push(t195);
-            } else if let Some(t227) =
-                try_array_size_mismatch_diagnostic(expected, &arg.ty, &site_ctx, arg.span)
-            {
-                diagnostics.push(t227);
-            } else {
-                diagnostics.push(Diagnostic::error(
-                    codes::T071,
-                    format!(
-                        "function `{}` expected argument of type `{}`, found `{}`",
-                        callee_name,
-                        render_type(expected),
-                        render_type(&arg.ty)
-                    ),
-                    Some(arg.span),
-                ));
-            }
+            diagnostics.push(argument_mismatch_diagnostic(
+                &callee_name,
+                idx,
+                expected,
+                arg,
+                universe,
+            ));
         }
     }
 
@@ -1266,9 +1706,23 @@ fn finish_resolved_call_expr(
         ));
     }
 
-    let kind = if universe.extern_fns.contains(&callee_name) {
+    // An extern call is a call that RESOLVED to an extern declaration, so the test is on the
+    // resolved signature. Matching the bare callee name against every extern in the program
+    // turned a module's own `fn fs_read` into an FFI import whenever any module, even an
+    // inner-ring one, declared an extern of that name: untrusted code reached the host with no
+    // `#[trusted]` anywhere in the program. FAIL DIRECTION: a resolved local function is never
+    // an FFI call; an extern still is.
+    //
+    // The call is named by the extern's DECLARED name, never by the callee's spelling, because
+    // that name is the host import that every later pass binds. A module may call its own extern
+    // as `u::fs_read` (or `sigil::u::fs_read`). As an import name that spelling is not an
+    // identifier, so the formal gate refused the program with an internal-error code (I013),
+    // although the bare spelling compiles. A qualified spelling reaches here only when it names
+    // the module the call resolves in (`call_resolve.rs`): an extern is private, so a qualified
+    // call into another module stops at T155 in `infer_call_expr`.
+    let kind = if let Some(declared) = universe.extern_fns.get(&sig.qualified_name) {
         TypedExprKind::ExternCall(TypedExternCallExpr {
-            extern_name: callee_name,
+            extern_name: declared.clone(),
             args: typed_args,
         })
     } else {

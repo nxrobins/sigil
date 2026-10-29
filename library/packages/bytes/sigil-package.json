@@ -1,0 +1,50 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "bytes::read_u32_le(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::write_u32_le(ptr:Public,len:Public,offset:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid borrowed linear-memory region"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source Public u32 read/write slice only; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:1798eb332c74630df514c49df553821070b42dda5074b1c4c77dac634718b6d6",
+    "api_contract_hash": "sha256:2731def7fdaa2b298e15057d70d36819c02e71839745e222731aa682b971a08a",
+    "charter_hash": "sha256:7e8505ed77f56f81fb696f6804142d66b480444bd8218f22d046c436ff26d5d9",
+    "evidence_manifest_hash": "sha256:41eca65d5bf596006a4cd128d1104062c02bd50bcf1f38b71bb21c5d2f5b7f0b"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "bytes"
+  ],
+  "name": "bytes",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

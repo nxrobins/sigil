@@ -1,26 +1,37 @@
 //! Ring boundary checker.
 //!
 //! Enforces the two-ring trust model:
-//! - R001: Outer ring cannot own capabilities (only borrow via grants)
+//! - R001: Outer ring cannot own capabilities (a borrowed `&Cap` parameter is allowed)
 //! - R002: Capability references cannot escape outer ring functions
 //! - R003: Inner ring cannot call extern functions (forward-looking for 2E)
-//! - R004: Cross-ring direct calls are forbidden (must use grants; emitted by
+//! - R004: no call crosses the ring boundary, in either direction — one made inside a
+//!   `grant` body included, because a `grant` closure runs in its caller's ring (emitted by
 //!   `type_check::expressions::calls` at the SOURCE call site, not here)
 //! - R007: a lowered call crosses the ring boundary although no source call did
 //!   (`check_air_ring_placement`, below — an AIR-level gate, not a source one)
+//! - R008: an outer-ring module that declares an `extern` must be `#[trusted]`, and an `extern`
+//!   call in generic code needs every module governing the instance to be `#[trusted]`; binding a
+//!   host function is the privilege the attribute grants (inner-ring `extern` calls are R003)
+//! - R009: outer-ring code cannot message, spawn, or restrict, split, draw or mint a capability:
+//!   the outer module has no host import for them (`check_air_outer_ring_imports`, below — an
+//!   AIR-level gate, like R007)
+
+use std::collections::BTreeSet;
 
 use crate::{
     air::{AirProgram, AirStmt},
     ast::Ring,
     diagnostics::{Diagnostic, codes},
     type_check::{Type, TypedModule, TypedProgram, TypedStmt},
-    typed_ast::{TypedExpr, TypedExprKind},
+    typed_ast::{InstanceHome, TypedExpr, TypedExprKind},
+    wasm,
 };
 
 pub fn check_rings(program: &TypedProgram) -> Result<(), Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
     for module in &program.modules {
+        check_extern_trust(module, &mut diagnostics);
         check_module_ring_rules(module, program, &mut diagnostics);
     }
 
@@ -118,6 +129,83 @@ pub fn check_air_ring_placement(program: &AirProgram) -> Result<(), Vec<Diagnost
     }
 }
 
+/// R009: an outer-ring function cannot message, spawn, or restrict, split, draw or mint a
+/// capability.
+///
+/// `wasm::emit` builds the outer module with a reduced host-import set that leaves out `send`,
+/// `ask`, `spawn` and the capability imports. The reduced set is deliberate: the outer ring is FFI
+/// surface, which cannot own capabilities (R001) or call inner-ring code (R004), and
+/// `attack_47_two_ring_import_segregation` pins the outer module's imports. A statement that calls
+/// one of the missing imports has nothing to call in the outer module. Before this gate, the
+/// emitter panicked on such a statement (an ICE on a program every checker accepted). R001 refuses
+/// an owned capability bound to a variable, but not a message or spawn, and not a capability
+/// operation whose result is never bound (`fuel.split(50);`, `mint FileAccess for f;`).
+///
+/// FAIL DIRECTION: closed. The gate asks `wasm::outer_ring_missing_import`, which reads the
+/// emitter's own import table, about every statement of every outer-ring function in the final
+/// AIR `emit` receives (the same placement as R007). A statement the outer module cannot emit is
+/// refused at compile time, and the emitter's `.expect` is its unreachable backstop. It reports
+/// once per function and operation, at the function's declaration, because AIR statements carry
+/// no span.
+pub fn check_air_outer_ring_imports(program: &AirProgram) -> Result<(), Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+    for function in program.functions.iter().filter(|f| f.ring == Ring::Outer) {
+        let mut reported = BTreeSet::new();
+        for stmt in function.blocks.iter().flat_map(|block| &block.stmts) {
+            let Some((operation, import)) = wasm::outer_ring_missing_import(stmt) else {
+                continue;
+            };
+            if !reported.insert(operation) {
+                continue;
+            }
+            diagnostics.push(Diagnostic::error(
+                codes::R009,
+                format!(
+                    "`{}` (outer ring) uses `{operation}`, which calls the host import `{import}`; \
+                     the outer-ring module has no host import for messaging, spawning or \
+                     capability operations",
+                    function.name,
+                ),
+                Some(function.def_span),
+            ));
+        }
+    }
+
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
+/// R008: an outer-ring module may declare an `extern` only if it is `#[trusted]`.
+///
+/// A declaration binds a host function, so it is held to the trust of the module that WRITES
+/// it, which is the module recorded here; no generic routing applies, because a declaration is
+/// never monomorphized. The inner ring is out of scope on purpose: an inner-ring module cannot
+/// be `#[trusted]` at all (R006), and any call it makes to an `extern` is already R003, so a
+/// second code there would only double-report. FAIL DIRECTION: closed. The check runs on the
+/// declaration, so an untrusted module cannot bind a host function even if nothing calls it.
+/// Generic code is the one way to call an extern a module did not declare (its names resolve
+/// in the instantiating module's scope); `check_module_ring_rules` holds those calls to the
+/// governing meet.
+fn check_extern_trust(module: &TypedModule, diagnostics: &mut Vec<Diagnostic>) {
+    if module.ring != Ring::Outer || module.trusted {
+        return;
+    }
+    for decl in &module.externs {
+        diagnostics.push(Diagnostic::error(
+            codes::R008,
+            format!(
+                "outer-ring module `{}` declares extern function `{}` but is not `#[trusted]`: \
+                 binding a host function requires `#[ring(outer)] #[trusted]`",
+                module.name, decl.name
+            ),
+            Some(decl.span),
+        ));
+    }
+}
+
 /// The word a ring is spelled with in a diagnostic (`#[ring(outer)]` / the default inner ring).
 fn ring_word(ring: Ring) -> &'static str {
     match ring {
@@ -188,73 +276,133 @@ fn check_module_ring_rules(
             // privileged trust boundary — it can only be invoked from
             // outer-ring code (where R001/R002 quarantine cap state).
             // Inner-ring code is the safe-by-construction policy tier
-            // and must reach FFI only through a `grant(&cap, fn(ref) -> ...)`
-            // across the ring boundary, never via a direct extern call.
+            // and cannot reach FFI at all: not by a direct extern call
+            // (this check), and not through an outer-ring wrapper, since
+            // no call crosses the ring boundary (R004) — a call made
+            // inside a `grant` body included, because the `grant`
+            // closure runs in the inner ring like its caller.
             //
             // Step 24 of the supremum loop (axis-6 second touch) made this
             // check real. Before, the ring_check pass was a no-op for
             // inner-ring modules ("forward-looking — no extern syntax
             // exists yet"), and an inner-ring module could declare AND
             // call `extern "C" fn foo() ! { FFI, Unsafe }` cleanly.
-            check_inner_body_for_externs(&function.body.statements, diagnostics);
+            walk_extern_calls_stmts(&function.body.statements, &mut |expr, name| {
+                diagnostics.push(Diagnostic::error(
+                    codes::R003,
+                    format!(
+                        "inner-ring code cannot call extern function `{name}` — FFI is reachable only from `#[ring(outer)] #[trusted]` modules, and no call crosses the ring boundary, not even one made inside a `grant` body"
+                    ),
+                    Some(expr.span),
+                ));
+            });
+        }
+        // R008, call half. Generic code reaches an `extern` through the scope that resolved
+        // its names (SR-019), so an extern call inside an instance, or inside a closure lifted
+        // while one was re-checked, is held to the same meet as `handle Unsafe` (E002): it is
+        // allowed only when EVERY governing module is trusted. Where inner-ring rules apply,
+        // R003 above already rejects every extern call; a non-instance can call only its own
+        // module's externs, which the declaration half (`check_extern_trust`) holds to that
+        // module's trust. FAIL DIRECTION: closed. The message names the definer and every
+        // untrusted governing module, since the module to fix is often not the one whose text
+        // holds the call (a trusted generic instantiated by an untrusted caller).
+        if let Some(home) = program.instance_homes.get(&function.name)
+            && governing.outer_rules
+            && !governing.inner_rules
+            && !governing.trusted
+        {
+            let untrusted = untrusted_governing_subject(program, home);
+            walk_extern_calls_stmts(&function.body.statements, &mut |expr, name| {
+                diagnostics.push(Diagnostic::error(
+                    codes::R008,
+                    format!(
+                        "generic code defined in module `{}` calls extern function `{name}`, but {untrusted} not `#[trusted]`: binding a host function requires every module governing this instance to be `#[ring(outer)] #[trusted]`",
+                        home.definer
+                    ),
+                    Some(expr.span),
+                ));
+            });
         }
     }
 }
 
-fn check_inner_body_for_externs(stmts: &[TypedStmt], diagnostics: &mut Vec<Diagnostic>) {
+/// The modules governing `home` that are not `#[trusted]`, as the subject of R008's call-half
+/// message: "governing module `tool` is", or "governing modules `lib` and `tool` are". The
+/// definer comes first, then the other scopes in name order, each once. The call half runs only
+/// when `governing_context` found the meet over these same modules untrusted, so the list is never
+/// empty, and every name resolves: that walk raised the ICE for a name that does not.
+fn untrusted_governing_subject(program: &TypedProgram, home: &InstanceHome) -> String {
+    let mut untrusted: Vec<String> = Vec::new();
+    for name in std::iter::once(&home.definer).chain(&home.scopes) {
+        let module = program
+            .modules
+            .iter()
+            .find(|module| module.name == *name)
+            .expect("`governing_context` resolved every module of this home before the call half");
+        let quoted = format!("`{name}`");
+        if !module.trusted && !untrusted.contains(&quoted) {
+            untrusted.push(quoted);
+        }
+    }
+    match untrusted.split_last() {
+        Some((only, [])) => format!("governing module {only} is"),
+        Some((last, rest)) => format!("governing modules {} and {last} are", rest.join(", ")),
+        None => unreachable!(
+            "R008's call half runs only on an untrusted meet, so a governing module is untrusted"
+        ),
+    }
+}
+
+/// Visit every `extern` call in `stmts`, in source order, with the call expression and the
+/// extern's name. Shared by R003 and R008's call half; the match below is total (no `_` arm),
+/// so a new statement or expression kind cannot be skipped silently.
+fn walk_extern_calls_stmts(stmts: &[TypedStmt], visit: &mut dyn FnMut(&TypedExpr, &str)) {
     for stmt in stmts {
         match stmt {
-            TypedStmt::Let(s) => check_expr_for_externs(&s.value, diagnostics),
-            TypedStmt::Assign(s) => check_expr_for_externs(&s.value, diagnostics),
-            TypedStmt::Expr(s) => check_expr_for_externs(&s.expr, diagnostics),
+            TypedStmt::Let(s) => walk_extern_calls_expr(&s.value, visit),
+            TypedStmt::Assign(s) => walk_extern_calls_expr(&s.value, visit),
+            TypedStmt::Expr(s) => walk_extern_calls_expr(&s.expr, visit),
             TypedStmt::Return(s) => {
                 if let Some(value) = &s.value {
-                    check_expr_for_externs(value, diagnostics);
+                    walk_extern_calls_expr(value, visit);
                 }
             }
             // break/continue call no externs.
             TypedStmt::Break(_) | TypedStmt::Continue(_) => {}
             TypedStmt::If(s) => {
-                check_expr_for_externs(&s.condition, diagnostics);
-                check_inner_body_for_externs(&s.then_branch.statements, diagnostics);
-                check_inner_body_for_externs(&s.else_branch.statements, diagnostics);
+                walk_extern_calls_expr(&s.condition, visit);
+                walk_extern_calls_stmts(&s.then_branch.statements, visit);
+                walk_extern_calls_stmts(&s.else_branch.statements, visit);
             }
             TypedStmt::While(s) => {
-                check_expr_for_externs(&s.condition, diagnostics);
-                check_inner_body_for_externs(&s.body.statements, diagnostics);
+                walk_extern_calls_expr(&s.condition, visit);
+                walk_extern_calls_stmts(&s.body.statements, visit);
             }
             TypedStmt::ForIn(s) => {
-                check_expr_for_externs(&s.iterable, diagnostics);
-                check_inner_body_for_externs(&s.body, diagnostics);
+                walk_extern_calls_expr(&s.iterable, visit);
+                walk_extern_calls_stmts(&s.body, visit);
             }
             TypedStmt::ForRange(s) => {
-                check_expr_for_externs(&s.start, diagnostics);
-                check_expr_for_externs(&s.end, diagnostics);
-                check_inner_body_for_externs(&s.body, diagnostics);
+                walk_extern_calls_expr(&s.start, visit);
+                walk_extern_calls_expr(&s.end, visit);
+                walk_extern_calls_stmts(&s.body, visit);
             }
             TypedStmt::Match(s) => {
-                check_expr_for_externs(&s.scrutinee, diagnostics);
+                walk_extern_calls_expr(&s.scrutinee, visit);
                 for arm in &s.arms {
                     if let Some(guard) = &arm.guard {
-                        check_expr_for_externs(guard, diagnostics);
+                        walk_extern_calls_expr(guard, visit);
                     }
-                    check_inner_body_for_externs(&arm.body.statements, diagnostics);
+                    walk_extern_calls_stmts(&arm.body.statements, visit);
                 }
             }
         }
     }
 }
 
-fn check_expr_for_externs(expr: &TypedExpr, diagnostics: &mut Vec<Diagnostic>) {
+fn walk_extern_calls_expr(expr: &TypedExpr, visit: &mut dyn FnMut(&TypedExpr, &str)) {
     if let TypedExprKind::ExternCall(call) = &expr.kind {
-        diagnostics.push(Diagnostic::error(
-            codes::R003,
-            format!(
-                "inner-ring code cannot call extern function `{}` directly — FFI is reachable only from `#[ring(outer)] #[trusted]` modules, or via `grant(&cap, fn(ref) -> ...)` across the ring boundary",
-                call.extern_name
-            ),
-            Some(expr.span),
-        ));
+        visit(expr, &call.extern_name);
     }
 
     // Recurse into sub-expressions. We only need to find ExternCall;
@@ -262,7 +410,7 @@ fn check_expr_for_externs(expr: &TypedExpr, diagnostics: &mut Vec<Diagnostic>) {
     match &expr.kind {
         TypedExprKind::Call(c) => {
             for arg in &c.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         // HOF / N9-HOF: explicit IndirectCall arm. Closure calls
@@ -272,137 +420,137 @@ fn check_expr_for_externs(expr: &TypedExpr, diagnostics: &mut Vec<Diagnostic>) {
         // args to catch any extern calls nested in the args.
         TypedExprKind::IndirectCall(c) => {
             for arg in &c.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::ExternCall(c) => {
             for arg in &c.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::Intrinsic(i) => {
             for arg in &i.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::ResultCtor(r) => {
-            check_expr_for_externs(&r.value, diagnostics);
+            walk_extern_calls_expr(&r.value, visit);
         }
         TypedExprKind::EnumConstruct(e) => {
             for f in &e.fields {
-                check_expr_for_externs(f, diagnostics);
+                walk_extern_calls_expr(f, visit);
             }
         }
         TypedExprKind::Try(t) => {
-            check_expr_for_externs(&t.value, diagnostics);
+            walk_extern_calls_expr(&t.value, visit);
         }
         TypedExprKind::Send(s) => {
             for arg in &s.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::Ask(a) => {
             for arg in &a.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
-            check_expr_for_externs(&a.timeout, diagnostics);
+            walk_extern_calls_expr(&a.timeout, visit);
         }
         TypedExprKind::Spawn(s) => {
             for arg in &s.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::Binary(b) => {
-            check_expr_for_externs(&b.lhs, diagnostics);
-            check_expr_for_externs(&b.rhs, diagnostics);
+            walk_extern_calls_expr(&b.lhs, visit);
+            walk_extern_calls_expr(&b.rhs, visit);
         }
         TypedExprKind::RecordConstruct(r) => {
             for (_, value) in &r.fields {
-                check_expr_for_externs(value, diagnostics);
+                walk_extern_calls_expr(value, visit);
             }
         }
         TypedExprKind::FieldAccess(f) => {
-            check_expr_for_externs(&f.object, diagnostics);
+            walk_extern_calls_expr(&f.object, visit);
         }
         TypedExprKind::CapRestrict(_) => {
             // `cap.restrict(authority)` references a state field by name;
             // no sub-expressions to recurse into.
         }
         TypedExprKind::CapSplit(c) => {
-            check_expr_for_externs(&c.amount, diagnostics);
+            walk_extern_calls_expr(&c.amount, visit);
         }
         TypedExprKind::CapDraw(c) => {
-            check_expr_for_externs(&c.amount, diagnostics);
+            walk_extern_calls_expr(&c.amount, visit);
         }
         TypedExprKind::Mint(m) => {
-            check_expr_for_externs(&m.target, diagnostics);
+            walk_extern_calls_expr(&m.target, visit);
         }
         TypedExprKind::ArrayLit(a) => {
             for elem in &a.elements {
-                check_expr_for_externs(elem, diagnostics);
+                walk_extern_calls_expr(elem, visit);
             }
         }
         // PR-E3: recurse into f-string interpolation holes.
         TypedExprKind::FString(fs) => {
             for part in &fs.parts {
                 if let crate::typed_ast::TypedFStringPart::Hole(h) = part {
-                    check_expr_for_externs(h, diagnostics);
+                    walk_extern_calls_expr(h, visit);
                 }
             }
         }
         TypedExprKind::Index(i) => {
-            check_expr_for_externs(&i.array, diagnostics);
-            check_expr_for_externs(&i.index, diagnostics);
+            walk_extern_calls_expr(&i.array, visit);
+            walk_extern_calls_expr(&i.index, visit);
         }
         // PR AF / N20-AF: slice operator inherits receiver's ring;
         // recursively walk children for extern-call discovery.
         TypedExprKind::Slice(s) => {
-            check_expr_for_externs(&s.array, diagnostics);
+            walk_extern_calls_expr(&s.array, visit);
             if let Some(start) = &s.start {
-                check_expr_for_externs(start, diagnostics);
+                walk_extern_calls_expr(start, visit);
             }
             if let Some(end) = &s.end {
-                check_expr_for_externs(end, diagnostics);
+                walk_extern_calls_expr(end, visit);
             }
         }
         TypedExprKind::ClosureConstruct(_) => {
             // Closure bodies are typed independently; ring checks fire on
             // the closure's own function. No recursion needed here.
         }
-        TypedExprKind::Borrow(b) => check_expr_for_externs(&b.inner, diagnostics),
+        TypedExprKind::Borrow(b) => walk_extern_calls_expr(&b.inner, visit),
         TypedExprKind::Grant(g) => {
-            check_expr_for_externs(&g.cap, diagnostics);
-            check_expr_for_externs(&g.body, diagnostics);
+            walk_extern_calls_expr(&g.cap, visit);
+            walk_extern_calls_expr(&g.body, visit);
         }
         TypedExprKind::Handle(h) => {
-            check_inner_body_for_externs(&h.body.statements, diagnostics);
+            walk_extern_calls_stmts(&h.body.statements, visit);
         }
         // Effect Handlers (EH3, C-VIS): traverse the new nodes for completeness.
         TypedExprKind::Perform(p) => {
             for arg in &p.args {
-                check_expr_for_externs(arg, diagnostics);
+                walk_extern_calls_expr(arg, visit);
             }
         }
         TypedExprKind::ClauseHandle(c) => {
-            check_expr_for_externs(&c.scrutinee, diagnostics);
+            walk_extern_calls_expr(&c.scrutinee, visit);
             for clause in &c.clauses {
-                check_inner_body_for_externs(&clause.body.statements, diagnostics);
+                walk_extern_calls_stmts(&clause.body.statements, visit);
             }
         }
         TypedExprKind::Resume(r) => {
-            check_expr_for_externs(&r.value, diagnostics);
+            walk_extern_calls_expr(&r.value, visit);
         }
         TypedExprKind::Declassify(d) => {
-            check_expr_for_externs(&d.value, diagnostics);
-            check_expr_for_externs(&d.cap, diagnostics);
+            walk_extern_calls_expr(&d.value, visit);
+            walk_extern_calls_expr(&d.cap, visit);
         }
         TypedExprKind::DeclassifyCt(d) => {
-            check_expr_for_externs(&d.value, diagnostics);
-            check_expr_for_externs(&d.cap, diagnostics);
+            walk_extern_calls_expr(&d.value, visit);
+            walk_extern_calls_expr(&d.cap, visit);
         }
         TypedExprKind::Region(r) => {
-            check_expr_for_externs(&r.limit, diagnostics);
-            check_inner_body_for_externs(&r.body.statements, diagnostics);
+            walk_extern_calls_expr(&r.limit, visit);
+            walk_extern_calls_stmts(&r.body.statements, visit);
         }
         TypedExprKind::Literal(_) | TypedExprKind::Local(_) | TypedExprKind::StateField(_) => {}
     }

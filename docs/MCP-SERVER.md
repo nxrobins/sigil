@@ -258,7 +258,7 @@ Look up a stable diagnostic code in the central registry.
   "data": {
     "code": "R001",
     "title": "Outer-ring code cannot own capabilities",
-    "default_hint": "Capabilities live in the inner ring. Pass a borrowed capability via `grant(&cap, ...)` ...",
+    "default_hint": "Outer-ring code cannot own a capability. Keep the code that owns and uses the capability in an inner-ring module. ...",
     "category": "Ring",
     "doc_url": "sigil://errors/R001"
   }

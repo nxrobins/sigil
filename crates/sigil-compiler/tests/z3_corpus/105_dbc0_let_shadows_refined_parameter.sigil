@@ -1,0 +1,34 @@
+// expect-error: T211
+// Z3 corpus #105: axis-1 — DBC-0a: a `let` that shadows a refined parameter starts with no fact.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `relay`'s parameter `x` carries `x > 0`; the body's `let x: i64 = 0` is a new binding of the
+// same name with no fact (DBC0-1), so `need_positive(x)` is refused with T211, in both build
+// configurations. Before DBC-0a the parameter's fact reached the shadowing binding (SR-037,
+// probe P13).
+//
+// MUTATION CONTRACT
+//
+// Deleting the inner `let` leaves the refined parameter as the argument, and the call is
+// discharged: the program compiles cleanly.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+fn relay(x: i64) where x > 0 -> i64 {
+    let x: i64 = 0;  // MUTATION_SITE
+    return need_positive(x);
+}
+
+fn probe() -> i64 {
+    return relay(5);
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return probe();
+    }
+}

@@ -2,9 +2,9 @@
 //! i64, so string code lives in one width with the rest of the language).
 //!
 //! Proves: the values round-trip; the negative-index trap is PRESERVED (ST-2 —
-//! `byte_at`'s bounds check stays unsigned, so a negative index wraps huge and
-//! traps); and `string_helpers` (`.contains` / `.starts_with`) still behaves
-//! correctly in i64 (ST-3).
+//! `byte_at`'s bounds check is unsigned at every index width, so a negative index
+//! reads as huge and traps); and `string_helpers` (`.contains` / `.starts_with`)
+//! still behaves correctly in i64 (ST-3).
 
 mod common;
 
@@ -13,7 +13,7 @@ use sigil_runtime::ephemeral::ToolError;
 use sigil_runtime::execute_ephemeral;
 use sigil_runtime::grants::IoGrants;
 
-use common::run_returning_negative;
+use common::{decode_negative_sentinel, run_returning_negative};
 
 fn tool(body: &str) -> String {
     format!(
@@ -47,9 +47,11 @@ fn len_returns_i64() {
 
 #[test]
 fn byte_at_negative_index_traps() {
-    // ST-2 (security): `byte_at(-1)` MUST still trap — the bounds check stays
-    // unsigned (idx wraps to u32, `-1` → 0xFFFFFFFF >= len). The in-bounds
-    // control validates + returns Ok, so the OOB `Trapped` is a runtime trap.
+    // ST-2 (security): `byte_at(-1)` with an `i64` index MUST still trap — the
+    // bounds check stays unsigned (an 8-byte index wraps to u32, `-1` →
+    // 0xFFFFFFFF >= len). `byte_at_traps_out_of_bounds_at_every_index_width`
+    // pins the other widths. The in-bounds control validates + returns Ok, so
+    // the OOB `Trapped` is a runtime trap.
     let control = compile_tool(&tool(
         "    let s: str = \"hi\";\n    let b: i64 = s.byte_at(0);\n    return b - b;",
     ))
@@ -69,6 +71,53 @@ fn byte_at_negative_index_traps() {
         matches!(ores, Err(ToolError::Trapped { .. })),
         "byte_at(-1) must trap (unsigned bounds check), got: {ores:?}"
     );
+}
+
+/// Every index width the type checker admits for `byte_at`, with the out-of-bounds indices that
+/// must trap on the 5-byte `"hello"`: its length, a negative index for a signed width, and an
+/// index with the top bit set.
+const BYTE_AT_WIDTHS: &[(&str, &[&str])] = &[
+    ("i32", &["5", "0 - 1", "0 - 2147483647"]),
+    ("u32", &["5", "4294967295"]),
+    ("i64", &["5", "0 - 1"]),
+    ("u64", &["5"]),
+];
+
+#[test]
+fn byte_at_traps_out_of_bounds_at_every_index_width() {
+    // ST-2 at every width. A 4-byte signed index used to reach the bounds check as an i32, which
+    // the emitter compared with the signed `i32.ge_s`: a negative index passed it, and the load
+    // read the byte before the string. AIR now reinterprets that index as u32, as it already
+    // wrapped an 8-byte one, so the compare is unsigned at every width.
+    for (ty, out_of_bounds) in BYTE_AT_WIDTHS {
+        let in_bounds = tool(&format!(
+            "    let s: str = \"hello\";\n    let i: {ty} = 1;\n    return 0 - s.byte_at(i);"
+        ));
+        assert_eq!(
+            run_returning_negative(&in_bounds),
+            101,
+            "an in-bounds `{ty}` index must read the byte"
+        );
+        for index in *out_of_bounds {
+            // The read's result is discarded and the tool returns 0, so a read that does not trap
+            // comes back `Ok`; and the negative-return sentinel, `Trapped` too, is rejected.
+            let src = tool(&format!(
+                "    let s: str = \"hello\";\n    let i: {ty} = {index};\n    let b: i64 = s.byte_at(i);\n    return b - b;"
+            ));
+            let compiled = compile_tool(&src)
+                .unwrap_or_else(|e| panic!("a `{ty}` index of {index} should compile: {e:?}"));
+            let result =
+                execute_ephemeral(&compiled.wasm, b"", compiled.fuel_budget, &IoGrants::none());
+            let trapped = matches!(
+                &result,
+                Err(ToolError::Trapped { message }) if decode_negative_sentinel(message).is_err()
+            );
+            assert!(
+                trapped,
+                "a `{ty}` index of {index} must trap, got {result:?}"
+            );
+        }
+    }
 }
 
 #[test]

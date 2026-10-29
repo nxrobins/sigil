@@ -1,0 +1,111 @@
+// Experimental Public u32 byte access; caller owns the borrowed region.
+module bytes;
+
+pub fn read_u32_le(ptr: i64, len: i64, offset: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    // Subtract only after checking offset: an overflowing end must not wrap.
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    let start = ptr + offset;
+    let b0 = load8(start);
+    let b1 = load8(start + 1);
+    let b2 = load8(start + 2);
+    let b3 = load8(start + 3);
+    return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216;
+}
+
+pub fn read_u32_be(ptr: i64, len: i64, offset: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    // Logical bounds fail closed before pointer arithmetic or any load.
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    let start = ptr + offset;
+    let b0 = load8(start);
+    let b1 = load8(start + 1);
+    let b2 = load8(start + 2);
+    let b3 = load8(start + 3);
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3;
+}
+
+pub fn write_u32_le(ptr: i64, len: i64, offset: i64, value: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    // Scalar validity, logical bounds, then value range; no stores before this.
+    if value < 0 || value > 4294967295 {
+        return -422;
+    } else {
+    }
+    let start = ptr + offset;
+    store8(start, value % 256);
+    store8(start + 1, value / 256 % 256);
+    store8(start + 2, value / 65536 % 256);
+    store8(start + 3, value / 16777216);
+    return offset + 4;
+}
+
+pub fn copy_into(dst_ptr: i64, dst_len: i64, dst_offset: i64, src_ptr: i64, src_len: i64, src_offset: i64, count: i64) -> i64 {
+    if dst_len < 0 || dst_offset < 0 || src_len < 0 || src_offset < 0 || count < 0 {
+        return -400;
+    } else {
+    }
+    // Subtraction follows the offset check, so a wrapping end cannot pass.
+    if dst_offset > dst_len || src_offset > src_len {
+        return -413;
+    } else {
+    }
+    if count > dst_len - dst_offset || count > src_len - src_offset {
+        return -413;
+    } else {
+    }
+    // No pointer arithmetic or access is needed for an empty copy.
+    if count == 0 {
+        return dst_offset;
+    } else {
+    }
+    let dst = dst_ptr + dst_offset;
+    let src = src_ptr + src_offset;
+    // Copy backwards only when a later destination overlaps unread source.
+    // Valid borrowed Wasm32 regions make these pointer differences representable.
+    if dst > src && dst - src < count {
+        let mut i = count;
+        while i > 0 {
+            i = i - 1;
+            store8(dst + i, load8(src + i));
+        }
+    } else {
+        let mut i = 0;
+        while i < count {
+            store8(dst + i, load8(src + i));
+            i = i + 1;
+        }
+    }
+    return dst_offset + count;
+}

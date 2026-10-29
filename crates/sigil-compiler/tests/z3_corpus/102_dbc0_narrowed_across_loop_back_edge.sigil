@@ -1,0 +1,36 @@
+// expect-error: T211
+// Z3 corpus #102: axis-1 — DBC-0a: a narrowing does not carry a `mut` binding around a loop.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `if y > 0` records nothing for the `mut` binding `y` (DBC0-2), so inside the loop each
+// `need_positive(y)` — the first with `input`, the later ones with the decremented value, down
+// to -4 — meets no fact and is refused with T211, in both build configurations. Before DBC-0a
+// the narrowing's fact reached every iteration (SR-037, probe P8).
+//
+// MUTATION CONTRACT
+//
+// Deleting the call leaves a loop with no refined sink, and the program compiles cleanly.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+fn probe(input: i64) -> i64 {
+    let mut y: i64 = input;
+    let mut acc: i64 = 0;
+    if y > 0 {
+        while y > 0 - 5 {
+            acc = acc + need_positive(y);  // MUTATION_SITE
+            y = y - 1;
+        }
+    }
+    return acc;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return probe(5);
+    }
+}

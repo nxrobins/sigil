@@ -1,0 +1,8 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/autodiff.sigil": "sha256:2a0021432e770ecf21458c1d2c646933989304ffdf2da1e7e04607021aa4cfe5"
+  },
+  "package": "sigil/autodiff",
+  "previous_version": "0.1.0-dogfood.1"
+}

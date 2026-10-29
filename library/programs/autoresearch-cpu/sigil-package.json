@@ -1,0 +1,57 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:30538666e65979510ea22ebd4f4171fd6364846aeeb336930d9e99f89f103a0b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/autodiff",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source bounded autoresearch CPU candidate evaluator; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:717a3e6b680e43a9e779c98f6bf0d7664b48090d17c512eebab9f1ef6e3c16e8",
+    "api_contract_hash": "sha256:0fabf186744ce945628caf6f884b2c4468ce9038a79aceab7431594893b82052",
+    "charter_hash": "sha256:3a4e95455ed9bdd7e1cf907d4009488b413651e18f41c7e489fb5a9d85bee534",
+    "evidence_manifest_hash": "sha256:171b76d3942de24260154c109f767cc713b75fa4ae6260a739114f126a75f2fc"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "autoresearch-cpu",
+  "version": "0.1.0-public.1"
+}

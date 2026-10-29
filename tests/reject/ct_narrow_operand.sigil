@@ -1,0 +1,16 @@
+// A 4-byte `i32` operand to `ct_eq`, `ct_lt` and `ct_select`, whose fixed i64 instruction sequences cannot take it: widen it with `.as_i64()` first.
+// expect-error: T075
+// The marked line rebinds `a` as an `i32`; deleting it leaves the `i64` parameter, the accept twin.
+module tool;
+
+fn ct_min_unless_equal(a: i64, b: i64) -> i64 {
+    let a: i32 = 3; // MUTATION_SITE
+    let same: bool = ct_eq(a, b);
+    let lt: bool = ct_lt(a, b);
+    let m: i64 = ct_select(lt, a, b);
+    return ct_select(same, 0, m);
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    return ct_min_unless_equal(input_ptr, input_len);
+}

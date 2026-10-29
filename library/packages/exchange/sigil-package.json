@@ -1,0 +1,77 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-403",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-500"
+    ],
+    "taint_contracts": [
+      "exchange::open_request(ptr:Flow,len:Flow)->Flow",
+      "exchange::open_response(expected_ptr:Flow,expected_len:Flow,ptr:Flow,len:Flow)->Flow",
+      "exchange::request(profile:Flow,profile_len:Flow,context:Flow,context_len:Flow,sequence:Flow,payload:Flow,payload_len:Flow)->Flow",
+      "exchange::respond(request_ptr:Flow,request_len:Flow,status:Flow,payload:Flow,payload_len:Flow)->Flow"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:45b1dd08fe75e4ad93f1276786bd0d29700f5b66e8f14de2c1e4bd8e037a05df",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/json",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:fb1499b9682383f51d7c63850aabb2f80d2e5f793d9326c228b701dea507a2cc",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/records",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source exchange package; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:0a3be7d0b515340bd8ec184349ebb77b46dd10c2999fb0474ad17fcd0f243b23",
+    "api_contract_hash": "sha256:a150fea231ccf87e634ceb27c4b0e76896ebd2d356e28a8e2b63ae1421fdaead",
+    "charter_hash": "sha256:452cbdd64a745ae4aeffa12f5883dc290a222bb9086eacaa447b6d94144495b3",
+    "evidence_manifest_hash": "sha256:6299f32ec273c5f9713ad723196da239ccf008f75629a02dcc021a4f558a2ae9"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "exchange"
+  ],
+  "name": "exchange",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

@@ -1,0 +1,11 @@
+{
+  "files": {
+    "API.md": "sha256:5f95ca177d4f3fae7ce56fefbc96252cbfe51b9e989995156afff98839d5a776",
+    "PROVENANCE.md": "sha256:b40bb24466ae839173fe953a646b48d60ee2181813254cfa7b9f61db7ed35718",
+    "README.md": "sha256:3f335b1e2c4cdd2f59004eb980d5e7c116f8d850929b9cad7511ae40968a57d3",
+    "api-card.json": "sha256:511575b70223e264b96aed1647f73a502d032727fd5f7a0f8e6ffa0b7e12484c",
+    "run.py": "sha256:70d29e6f71ee84ae65c3ed72000855b4b0ccb3a838a946dbb8234f73b5286ce7",
+    "src/tool.sigil": "sha256:2788f66e8106c1d749482ae9717556e719419a3c318ac4c953db50a71155f1b8"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

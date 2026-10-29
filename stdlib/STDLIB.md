@@ -21,10 +21,13 @@ Phase 5a-1, #18).
 | `json` | inner | pure-Sigil; no FFI |
 | `abi`  | inner | pure-Sigil; no FFI (packed-i64 helpers) |
 
-A user tool calling any FFI-backed module above MUST itself declare
-`#[ring(outer)] #[trusted]` on its module — `compile_tool` selects ONE
-wasm by `tool_main`'s ring, and cross-ring calls don't exist at the
-wasm level. Calling `json::*` from inner-ring tools works fine.
+A user tool calling any FFI-backed module above MUST itself be in the
+outer ring (`#[ring(outer)]`) — `compile_tool` selects ONE wasm by
+`tool_main`'s ring, and cross-ring calls don't exist at the wasm level.
+The usual header is `#[ring(outer)] #[trusted]`; `#[trusted]` is required
+only to declare your own `extern` functions (R008) or to handle `Unsafe`. The rule holds in both directions: `json::*` and `abi::*` are
+callable only from inner-ring tools, and an outer-ring tool calling them
+gets R004.
 
 ## Per-module reference
 
@@ -212,8 +215,10 @@ helpers wrap the shifts and masks (`packed >> 32`, `packed & 0xFFFFFFFF`,
 boundary. Inlining the operators at the call site is fine too — these
 exist as ergonomics, not abstraction.
 
-Pure compute — inner-ring, no FFI, no grants, deterministic. Outer-ring
-tools can `use sigil::abi;` freely.
+Pure compute — inner-ring, no FFI, no grants, deterministic. Because no
+call crosses the ring boundary, only inner-ring code can call these
+helpers: an outer-ring tool calling `abi::*` gets R004, so code that calls
+FFI inlines the shifts and masks instead.
 
 ## Determinism summary (per I3)
 

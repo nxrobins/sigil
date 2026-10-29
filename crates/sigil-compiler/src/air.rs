@@ -600,12 +600,18 @@ pub enum AirStmt {
         then_val: VarId,
         else_val: VarId,
     },
-    /// Phase 2H §3.5: branch-free signed less-than.
-    /// Emits `((a - b) >> 63) & 1`. Constant shift amount; data-independent.
+    /// Phase 2H §3.5: branch-free less-than, unsigned when `unsigned` is set
+    /// (two `u64` operands) and signed otherwise (two `i64`). Emits the sign
+    /// bit (`>> 63`, a constant shift) of an overflow-safe word, so the order
+    /// is exact on all 64 bits (`wasm.rs`). `unsigned` comes from the checked
+    /// operand types, not the operand locals': a use of an un-annotated
+    /// literal binding (`let n = 5;`) checks as `u64` beside a `u64`, while
+    /// the binding's local stays `i64`.
     IntrinsicCtLt {
         dst: VarId,
         lhs: VarId,
         rhs: VarId,
+        unsigned: bool,
     },
     LoadDynamic {
         dst: VarId,
@@ -1808,10 +1814,11 @@ fn lower_function(
         // `StoreField` — see the `StateField` arms.
     } else {
         // A closure's captures live in its heap `__env` struct (param 0), packed
-        // after the 4-byte table index in declaration order — the exact layout
-        // `lower_closure_construct` writes. Bind each capture to a body local AND
-        // emit the `LoadField` that reads it out of `__env` as the entry-block
-        // prologue; otherwise the local is never initialized and reads as 0.
+        // after the 4-byte table index in `function.captures` order (name order,
+        // fixed at type check) — the exact layout `lower_closure_construct`
+        // writes. Bind each capture to a body local AND emit the `LoadField` that
+        // reads it out of `__env` as the entry-block prologue; otherwise the local
+        // is never initialized and reads as 0.
         let env_ptr = VarId(0);
         let mut capture_offset = CLOSURE_TABLE_IDX_OFFSET + AirType::I32.width();
         for capture in &function.captures {
@@ -3818,6 +3825,47 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
+    /// The U32 form of an index for a bounds check (`byte_at`, an array or
+    /// slice element, a slice range). The emitter picks a compare's signedness
+    /// from its left operand, and only an unsigned compare traps a negative
+    /// index, so every width reaches the check as U32: a 64-bit index is
+    /// wrapped (`wrap_label`); a 32-bit SIGNED one is reinterpreted, a typed
+    /// copy with its bits unchanged (`copy_label`, the `.as_u32()` lowering),
+    /// so a negative index is >= 2^31 and fails the check. Compared as I32 it
+    /// was the signed `i32.ge_s` / `i32.gt_s`, which a negative index passed:
+    /// the access then read or wrote before the buffer. Every other type is
+    /// used as it is: `u32` is already unsigned, and an index of any other type
+    /// exists only in a program whose type check failed, which never reaches
+    /// emission.
+    fn index_for_bounds_check(
+        &mut self,
+        index: VarId,
+        index_ty: AirType,
+        wrap_label: &str,
+        copy_label: &str,
+        stmts: &mut StatementBuffer,
+    ) -> VarId {
+        match index_ty {
+            AirType::I64 | AirType::U64 => {
+                let wrapped = self.fresh_local(AirType::U32, AirValueKind::Copy, wrap_label);
+                stmts.push(AirStmt::WrapI64 {
+                    dst: wrapped,
+                    src: index,
+                });
+                wrapped
+            }
+            AirType::I32 => {
+                let copied = self.fresh_local(AirType::U32, AirValueKind::Copy, copy_label);
+                stmts.push(AirStmt::Assign {
+                    dst: copied,
+                    val: AirValue::Var(index),
+                });
+                copied
+            }
+            _ => index,
+        }
+    }
+
     /// NC1/CM1 — bounds trap for the `Vec<T>` element intrinsics: wrap
     /// `index` and `bound` to u32 and `TrapIf(index >= bound)`. A negative
     /// `index` wraps to a huge u32 and trips the same trap, so no separate
@@ -4382,18 +4430,15 @@ impl<'a> FunctionLowerer<'a> {
                 let idx_raw = args[1];
                 // Index width is the type-check stamp `idx_air_type` — no locals
                 // scan, no params-miss; type info flows DOWN from type-check.
-                // Wrap a 64-bit index down to U32 for arithmetic +
-                // bounds-check parity with U32 len.
-                let idx = if matches!(idx_air_type, AirType::I64 | AirType::U64) {
-                    let w = self.fresh_local(AirType::U32, AirValueKind::Copy, "__byte_at_idx32");
-                    stmts.push(AirStmt::WrapI64 {
-                        dst: w,
-                        src: idx_raw,
-                    });
-                    w
-                } else {
-                    idx_raw
-                };
+                // The index reaches the bounds check as U32 at every width
+                // (`index_for_bounds_check`), so the compare is unsigned.
+                let idx = self.index_for_bounds_check(
+                    idx_raw,
+                    *idx_air_type,
+                    "__byte_at_idx32",
+                    "__byte_at_idx_u32",
+                    stmts,
+                );
                 // Load `len` from header (offset 4).
                 let len = self.fresh_local(AirType::U32, AirValueKind::Copy, "__byte_at_len");
                 stmts.push(AirStmt::LoadField {
@@ -4436,8 +4481,9 @@ impl<'a> FunctionLowerer<'a> {
                 });
                 // `byte_at` now yields i64; the byte is 0-255 (high bits zero),
                 // so `IntrinsicLoad8` (which produces i64) writes straight into
-                // the i64 `dst` — no wrap. The bounds check above stays u32, so a
-                // negative index still wraps to a huge value and traps (ST-2).
+                // the i64 `dst` — no wrap. The bounds check above is u32 for every
+                // index width, so a negative index reads as a huge value and
+                // traps (ST-2).
                 stmts.push(AirStmt::IntrinsicLoad8 {
                     dst,
                     ptr: byte_addr,
@@ -4795,7 +4841,25 @@ impl<'a> FunctionLowerer<'a> {
             TypedIntrinsicKind::CtLt => {
                 let lhs = *args.first().expect("ICE: ct_lt missing lhs");
                 let rhs = *args.get(1).expect("ICE: ct_lt missing rhs");
-                stmts.push(AirStmt::IntrinsicCtLt { dst, lhs, rhs });
+                // The order comes from the checked operand types (see
+                // `AirStmt::IntrinsicCtLt`). The type checker gives both
+                // operands one signedness (`unify_ct_lt_operands`), so any
+                // other pair is a broken pass contract: an ICE, never a
+                // guessed order.
+                let unsigned = match (&intrinsic.args[0].ty, &intrinsic.args[1].ty) {
+                    (Type::I64, Type::I64) => false,
+                    (Type::U64, Type::U64) => true,
+                    (lhs_ty, rhs_ty) => panic!(
+                        "ICE: ct_lt operands reached AIR as {lhs_ty:?} and {rhs_ty:?}; the type \
+                         checker gives both one signedness (unify_ct_lt_operands)"
+                    ),
+                };
+                stmts.push(AirStmt::IntrinsicCtLt {
+                    dst,
+                    lhs,
+                    rhs,
+                    unsigned,
+                });
             }
         }
     }
@@ -5557,20 +5621,13 @@ impl<'a> FunctionLowerer<'a> {
             }
         };
 
-        // If index is 64-bit, wrap to U32 for the bounds comparison.
-        // (Inherits PR AF's bounds-check shape; identical wasm output
-        // for Array fixtures pre-PR-P16.)
+        // The index reaches the bounds comparison as U32 at every width
+        // (`index_for_bounds_check`): a 64-bit index wraps, a 32-bit signed
+        // one is reinterpreted. (Inherits PR AF's bounds-check shape;
+        // identical wasm output for Array fixtures pre-PR-P16.)
         let index_air_type = lower_type(&index_expr.index.ty);
-        let bounds_index = if matches!(index_air_type, AirType::I64 | AirType::U64) {
-            let wrapped = self.fresh_local(AirType::U32, AirValueKind::Copy, "__idx32");
-            stmts.push(AirStmt::WrapI64 {
-                dst: wrapped,
-                src: index,
-            });
-            wrapped
-        } else {
-            index
-        };
+        let bounds_index =
+            self.index_for_bounds_check(index, index_air_type, "__idx32", "__idx_u32", stmts);
         let oob_cond = self.fresh_local(AirType::Bool, AirValueKind::Copy, "__oob");
         stmts.push(AirStmt::Assign {
             dst: oob_cond,
@@ -5728,18 +5785,15 @@ impl<'a> FunctionLowerer<'a> {
         // Materialize start. Default to 0 if omitted.
         let start = if let Some(start_expr) = &slice.start {
             let raw = self.lower_expr_to_var(start_expr, env, stmts);
-            // Coerce 64-bit indices to U32 for the bounds-check
-            // comparison. Same pattern as `lower_index_expr`.
-            if matches!(lower_type(&start_expr.ty), AirType::I64 | AirType::U64) {
-                let wrapped = self.fresh_local(AirType::U32, AirValueKind::Copy, "__slice_start32");
-                stmts.push(AirStmt::WrapI64 {
-                    dst: wrapped,
-                    src: raw,
-                });
-                wrapped
-            } else {
-                raw
-            }
+            // Coerce to U32 for the bounds-check comparisons, at every
+            // width. Same pattern as `lower_index_expr`.
+            self.index_for_bounds_check(
+                raw,
+                lower_type(&start_expr.ty),
+                "__slice_start32",
+                "__slice_start_u32",
+                stmts,
+            )
         } else {
             let z = self.fresh_local(AirType::U32, AirValueKind::Copy, "__slice_start_default");
             stmts.push(AirStmt::Assign {
@@ -5776,16 +5830,13 @@ impl<'a> FunctionLowerer<'a> {
         // Materialize end. Default to receiver_len if omitted.
         let end = if let Some(end_expr) = &slice.end {
             let raw = self.lower_expr_to_var(end_expr, env, stmts);
-            if matches!(lower_type(&end_expr.ty), AirType::I64 | AirType::U64) {
-                let wrapped = self.fresh_local(AirType::U32, AirValueKind::Copy, "__slice_end32");
-                stmts.push(AirStmt::WrapI64 {
-                    dst: wrapped,
-                    src: raw,
-                });
-                wrapped
-            } else {
-                raw
-            }
+            self.index_for_bounds_check(
+                raw,
+                lower_type(&end_expr.ty),
+                "__slice_end32",
+                "__slice_end_u32",
+                stmts,
+            )
         } else {
             receiver_len
         };

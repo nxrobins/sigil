@@ -33,6 +33,11 @@ const ALLOWED: &[&str] = &[
     // type_check's builtin recognition plays) so cloned Vec method bodies type-check in the
     // composed gate chain — string literals in tc_build_sigs' seed block; it never calls them.
     "selfhost/typecheck.sigil",
+    // SHP-5c-2: the self-hosted taint checker CLASSIFIES the intrinsic names when it scans the
+    // stdlib's own method bodies for their call summaries (a `vec_load` is a raw read, a
+    // `vec_store` a raw write — production's `intrinsic_memory`); string literals in
+    // tt_is_intrinsic_call and tt_sc_call. It never calls them.
+    "selfhost/taint_check.sigil",
 ];
 
 /// Forbidden intrinsic tokens.

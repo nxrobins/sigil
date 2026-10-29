@@ -1,0 +1,74 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc",
+      "FFI",
+      "KvIO",
+      "Unsafe"
+    ],
+    "grant_categories": [
+      "ffi"
+    ],
+    "host_imports": [
+      "C::kv_delete",
+      "C::kv_get",
+      "C::kv_put"
+    ],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "trusted_outer"
+    ],
+    "stable_errors": [
+      "-400",
+      "-403",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-500"
+    ],
+    "taint_contracts": [
+      "kv::delete(ns_ptr:Internal,ns_len:Internal,key_ptr:Internal,key_len:Internal)->Internal",
+      "kv::get(ns_ptr:Internal,ns_len:Internal,key_ptr:Internal,key_len:Internal)->Internal",
+      "kv::kv_delete(ns:Public,ns_len:Public,key:Public,key_len:Public)->Public",
+      "kv::kv_get(ns:Public,ns_len:Public,key:Public,key_len:Public)->Public",
+      "kv::kv_put(ns:Public,ns_len:Public,key:Public,key_len:Public,val:Public,val_len:Public)->Public",
+      "kv::put(ns_ptr:Internal,ns_len:Internal,key_ptr:Internal,key_len:Internal,val_ptr:Internal,val_len:Internal)->Internal"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": [
+      "extern:kv::kv_delete",
+      "extern:kv::kv_get",
+      "extern:kv::kv_put",
+      "module:kv"
+    ]
+  },
+  "dependencies": [],
+  "description": "Experimental public source kv package; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:5dd04449a0a05ffbbf75b97fb33c3fc40cdb0196f7afd4ea6dd73ac413b04136",
+    "api_contract_hash": "sha256:b67e81a97c0ffc527d830c1ea0f3adb6e0db3128ed6b44f4dfff4ff629767789",
+    "charter_hash": "sha256:fd2c7a8392e8e9b442496db0cd44280a6713a3576e3a3c701ce7f1428e4603d3",
+    "evidence_manifest_hash": "sha256:e57c9ce55806794ec6517d494aef22a9ebb72cbcd8fd0559333efa0b0c30ecc5"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "kv"
+  ],
+  "name": "kv",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

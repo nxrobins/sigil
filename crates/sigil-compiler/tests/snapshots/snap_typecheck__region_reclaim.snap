@@ -229,6 +229,7 @@ TypedProgram {
                     },
                 },
             ],
+            externs: [],
         },
     ],
     records: {},

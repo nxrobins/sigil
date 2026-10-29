@@ -48,11 +48,17 @@ fn fixture() -> PathBuf {
         .join("../sigil-compiler/tests/fixtures/packages/neutral-boundaries")
 }
 
+// Gated like its callers: the solver lane's test on any host, and the solver-off tests that run
+// only where package traversal is supported (unix). Ungated, a Windows build without `solver`
+// has no caller and `-D warnings` fails on dead code that Linux CI never compiles.
+#[cfg(any(unix, feature = "solver"))]
 fn solver_negative_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../sigil-compiler/tests/fixtures/packages/solver-refinement-negative")
 }
 
+// Every caller is a unix-only test (package traversal refuses on other hosts), so this is too.
+#[cfg(unix)]
 fn write_fresh_package_certificate(path: &std::path::Path) {
     let package = sigil_compiler::package::compile_local_package_structural(
         &fixture(),

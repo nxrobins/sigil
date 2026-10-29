@@ -1,0 +1,29 @@
+// expect-error: T210
+// Z3 corpus #109: axis-1 — DBC-0b: a store through an `@Mut` parameter is the same sink.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// The sink is keyed on the place's record TYPE, not on how the place was
+// reached: `clobber` receives an `Index` as an `@Mut` parameter and stores
+// `i.value = 5`, which `where value > 100` refutes. T210 at the store,
+// inside `clobber`, exactly as #106's store into a local.
+//
+// MUTATION CONTRACT
+//
+// Deleting the mutation site leaves `clobber` returning its argument's
+// field; compiles cleanly.
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+fn clobber(i: Index @Mut) -> i64 {
+    i.value = 5;  // MUTATION_SITE
+    return i.value;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut idx: Index = Index { value: 200 };
+        return clobber(idx);
+    }
+}

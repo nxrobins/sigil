@@ -539,8 +539,8 @@ fn agent_loop_iterates_from_diagnostic_to_forge() {
 }
 
 /// Ring-violation loop: agent gets R001, looks up the code for context,
-/// rewrites with `grant`-shaped scaffolding (here just dropping ownership),
-/// and verifies the rewrite passes.
+/// rewrites by dropping the owned capability, and verifies the rewrite
+/// passes.
 ///
 /// This exercises the path an agent takes when it doesn't know what a code
 /// means: call `sigil_lookup_error` for the title + canonical fix recipe,
@@ -565,12 +565,13 @@ fn agent_loop_uses_lookup_error_for_context() {
         lookup["data"]["default_hint"]
             .as_str()
             .unwrap()
-            .contains("inner ring")
+            .contains("in an inner-ring module")
     );
 
     // Agent rewrites: drop the cap parameter entirely (simplest fix that
     // resolves R001 in this synthetic example — a real agent would more
-    // likely insert a `grant` block).
+    // likely move the code that owns the capability into an inner-ring
+    // module, since a `grant` cannot carry it across the ring boundary).
     let attempt2 = server.call_tool(
         "sigil_check",
         json!({

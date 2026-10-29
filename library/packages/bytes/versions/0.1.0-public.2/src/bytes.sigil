@@ -1,0 +1,72 @@
+// Experimental Public u32 byte access; caller owns the borrowed region.
+module bytes;
+
+pub fn read_u32_le(ptr: i64, len: i64, offset: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    // Subtract only after checking offset: an overflowing end must not wrap.
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    let start = ptr + offset;
+    let b0 = load8(start);
+    let b1 = load8(start + 1);
+    let b2 = load8(start + 2);
+    let b3 = load8(start + 3);
+    return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216;
+}
+
+pub fn read_u32_be(ptr: i64, len: i64, offset: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    // Logical bounds fail closed before pointer arithmetic or any load.
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    let start = ptr + offset;
+    let b0 = load8(start);
+    let b1 = load8(start + 1);
+    let b2 = load8(start + 2);
+    let b3 = load8(start + 3);
+    return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3;
+}
+
+pub fn write_u32_le(ptr: i64, len: i64, offset: i64, value: i64) -> i64 {
+    if len < 0 || offset < 0 {
+        return -400;
+    } else {
+    }
+    if offset > len {
+        return -413;
+    } else {
+    }
+    if len - offset < 4 {
+        return -413;
+    } else {
+    }
+    // Scalar validity, logical bounds, then value range; no stores before this.
+    if value < 0 || value > 4294967295 {
+        return -422;
+    } else {
+    }
+    let start = ptr + offset;
+    store8(start, value % 256);
+    store8(start + 1, value / 256 % 256);
+    store8(start + 2, value / 65536 % 256);
+    store8(start + 3, value / 16777216);
+    return offset + 4;
+}

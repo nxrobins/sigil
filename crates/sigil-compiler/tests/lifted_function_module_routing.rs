@@ -33,6 +33,7 @@ fn codes(sources: Vec<SourceFile>) -> Vec<String> {
 
 /// An OUTER-ring module whose closure body calls an effectful `logs()` while the
 /// enclosing function declares no effect row — an E001 leak inside a closure.
+/// Its entry point is a `tool_main`: an outer-ring module cannot declare an actor.
 fn leaky_app() -> SourceFile {
     sf(
         "app.sigil",
@@ -40,9 +41,7 @@ fn leaky_app() -> SourceFile {
          effect Log;\n\
          pub fn logs() -> i64 ! { Log } { return 0; }\n\
          pub fn leak() -> i64 { let f = fn(x: i64) -> i64 { return logs(); }; return f(1); }\n\
-         entry actor Main {\n\
-           on Tick() -> i64 { return leak(); }\n\
-         }\n",
+         pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return leak(); }\n",
     )
 }
 
@@ -88,9 +87,7 @@ fn closure_in_multi_module_project_emits_without_ice() {
         "app.sigil",
         "#[ring(outer)]\nmodule app;\n\
          pub fn apply() -> i64 { let f = fn(x: i64) -> i64 { return x + 1; }; return f(41); }\n\
-         entry actor Main {\n\
-           on Tick() -> i64 { return apply(); }\n\
-         }\n",
+         pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return apply(); }\n",
     );
     let result = compile_project(vec![inner, app], None, CompileOptions::default());
     let compilation = result.expect("multi-module project with a closure must compile");

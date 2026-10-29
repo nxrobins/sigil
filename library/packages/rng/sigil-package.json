@@ -1,0 +1,59 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-429"
+    ],
+    "taint_contracts": [
+      "rng::below(rng:Public,bound:Public)->Public",
+      "rng::new(seed:Public,stream:Public)->Public",
+      "rng::new_float()->Public",
+      "rng::new_int()->Public",
+      "rng::new_snapshot()->Public",
+      "rng::next(rng:Public)->Public",
+      "rng::restore(rng:Public,snapshot:Public)->Public",
+      "rng::signed_into(rng:Public,radius:Public,out:Public)->Public",
+      "rng::snapshot_into(rng:Public,out:Public)->Public",
+      "rng::unit_into(rng:Public,out:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source seeded PCG32 with bounded sampling and checked snapshots; not secure entropy or admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:b24bc184337a54bf4558ec93a5ac0c2f5d26c9f8781a96ab7b1a9fe3de6f246d",
+    "api_contract_hash": "sha256:540cb1fd0877bfde00b29e8c59d1db092fc4fc05bba29f7069ee74cbfb1f193c",
+    "charter_hash": "sha256:80ecc4085ff7c934693e3c539392d99a9fbea3f1a2563324716d454af356e1c5",
+    "evidence_manifest_hash": "sha256:577841d9a8c9797287994e9e4a74a977d98a69b697a1d86ea7b4a71d6a4cbcbb"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "rng"
+  ],
+  "name": "rng",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

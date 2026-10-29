@@ -1,0 +1,51 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "bytes::read_u32_be(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::read_u32_le(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::write_u32_le(ptr:Public,len:Public,offset:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid borrowed linear-memory region"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source Public u32 reads in both byte orders and little-endian writes; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:4dd559a69b8a5d834fd9764971f90bfd0dad70f560ac5fe64f992d6f1708ece2",
+    "api_contract_hash": "sha256:5a5c39503bb229dd796bb99f41f2ac8e1d18b92de9ed71caf558770671cc68ed",
+    "charter_hash": "sha256:2d23bb250ece299067a3c84fce4d617dbc6278d28e131a02c0277b86545ab5d3",
+    "evidence_manifest_hash": "sha256:fdfef846d36db9be139f75f065792b08e3bcd51c930dfcb39457b2cb2477d07b"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "bytes"
+  ],
+  "name": "bytes",
+  "namespace": "sigil",
+  "version": "0.1.0-public.2"
+}

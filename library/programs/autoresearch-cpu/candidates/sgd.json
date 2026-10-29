@@ -1,0 +1,9 @@
+{
+  "format": "sigil-autoresearch-cpu-v1",
+  "numeric": "q16-import-f64-v1",
+  "ops": [4, 0],
+  "dst": [14, 15],
+  "a": [0, 1],
+  "b": [0, 3],
+  "w": [-3277, 0, 0, 0, 0, 0, 0, 0]
+}

@@ -1,0 +1,1582 @@
+{
+  "format": "sigil-numeric-torch-reference-v1",
+  "operations": [
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "add_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "sub_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.0
+      ],
+      "operation": "mul_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        -0.5625
+      ],
+      "operation": "scale_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "relu_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "sum_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "mean_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.0
+      ],
+      "operation": "dot_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.5625
+      ],
+      "operation": "mse_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        1.5
+      ],
+      "operation": "mse_grad_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          0.0
+        ]
+      },
+      "expected": [
+        0.75
+      ],
+      "operation": "transpose_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        -1.75,
+        -0.5,
+        -0.25
+      ],
+      "operation": "add_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        2.75,
+        2.0,
+        3.25
+      ],
+      "operation": "sub_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        -1.125,
+        -0.9375,
+        -2.625
+      ],
+      "operation": "mul_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        -0.375,
+        -0.5625,
+        -1.125
+      ],
+      "operation": "scale_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        0.5,
+        0.75,
+        1.5
+      ],
+      "operation": "relu_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        2.75
+      ],
+      "operation": "sum_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        0.9166666666666666
+      ],
+      "operation": "mean_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        -4.6875
+      ],
+      "operation": "dot_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        7.375
+      ],
+      "operation": "mse_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        1.8333333333333333,
+        1.3333333333333333,
+        2.1666666666666665
+      ],
+      "operation": "mse_grad_into",
+      "out_cols": 3,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          0.5,
+          0.75,
+          1.5
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 1,
+        "values": [
+          -2.25,
+          -1.25,
+          -1.75
+        ]
+      },
+      "expected": [
+        0.5,
+        0.75,
+        1.5
+      ],
+      "operation": "transpose_into",
+      "out_cols": 1,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -3.75,
+        0.5,
+        1.0,
+        -3.5
+      ],
+      "operation": "add_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -1.75,
+        -3.0,
+        1.0,
+        0.0
+      ],
+      "operation": "sub_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        2.75,
+        -2.1875,
+        0.0,
+        3.0625
+      ],
+      "operation": "mul_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        2.0625,
+        0.9375,
+        -0.75,
+        1.3125
+      ],
+      "operation": "scale_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "operation": "relu_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -4.75
+      ],
+      "operation": "sum_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -1.1875
+      ],
+      "operation": "mean_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        3.625
+      ],
+      "operation": "dot_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        3.265625
+      ],
+      "operation": "mse_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -0.875,
+        -1.5,
+        0.5,
+        0.0
+      ],
+      "operation": "mse_grad_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -2.75,
+          -1.25,
+          1.0,
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -1.0,
+          1.75,
+          0.0,
+          -1.75
+        ]
+      },
+      "expected": [
+        -2.75,
+        1.0,
+        -1.25,
+        -1.75
+      ],
+      "operation": "transpose_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -1.25,
+        0.25,
+        0.0,
+        1.0,
+        3.75,
+        1.5
+      ],
+      "operation": "add_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -4.25,
+        3.75,
+        -3.5,
+        4.0,
+        -0.25,
+        -4.5
+      ],
+      "operation": "sub_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -4.125,
+        -3.5,
+        -3.0625,
+        -3.75,
+        3.5,
+        -4.5
+      ],
+      "operation": "mul_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        2.0625,
+        -1.5,
+        1.3125,
+        -1.875,
+        -1.3125,
+        1.125
+      ],
+      "operation": "scale_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        0.0,
+        2.0,
+        0.0,
+        2.5,
+        1.75,
+        0.0
+      ],
+      "operation": "relu_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        0.25
+      ],
+      "operation": "sum_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        0.041666666666666664
+      ],
+      "operation": "mean_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -15.4375
+      ],
+      "operation": "dot_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        13.447916666666666
+      ],
+      "operation": "mse_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": true
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -1.4166666666666665,
+        1.25,
+        -1.1666666666666665,
+        1.3333333333333333,
+        -0.08333333333333333,
+        -1.5
+      ],
+      "operation": "mse_grad_into",
+      "out_cols": 2,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.75,
+          2.0,
+          -1.75,
+          2.5,
+          1.75,
+          -1.5
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          1.5,
+          -1.75,
+          1.75,
+          -1.5,
+          2.0,
+          3.0
+        ]
+      },
+      "expected": [
+        -2.75,
+        -1.75,
+        1.75,
+        2.0,
+        2.5,
+        -1.5
+      ],
+      "operation": "transpose_into",
+      "out_cols": 3,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          -1.75
+        ]
+      },
+      "b": {
+        "cols": 1,
+        "rows": 1,
+        "values": [
+          -1.25
+        ]
+      },
+      "expected": [
+        2.1875
+      ],
+      "operation": "matmul_into",
+      "out_cols": 1,
+      "out_rows": 1,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 2,
+        "values": [
+          -0.75,
+          1.75,
+          2.25,
+          -1.25,
+          2.5,
+          3.0
+        ]
+      },
+      "b": {
+        "cols": 2,
+        "rows": 3,
+        "values": [
+          -2.25,
+          2.0,
+          0.75,
+          -1.75,
+          1.0,
+          -1.0
+        ]
+      },
+      "expected": [
+        5.25,
+        -6.8125,
+        7.6875,
+        -9.875
+      ],
+      "operation": "matmul_into",
+      "out_cols": 2,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 1,
+        "rows": 3,
+        "values": [
+          0.0,
+          2.75,
+          2.5
+        ]
+      },
+      "b": {
+        "cols": 4,
+        "rows": 1,
+        "values": [
+          -1.5,
+          2.25,
+          -1.25,
+          2.5
+        ]
+      },
+      "expected": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -4.125,
+        6.1875,
+        -3.4375,
+        6.875,
+        -3.75,
+        5.625,
+        -3.125,
+        6.25
+      ],
+      "operation": "matmul_into",
+      "out_cols": 4,
+      "out_rows": 3,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 2,
+        "rows": 2,
+        "values": [
+          -0.75,
+          2.25,
+          -1.75,
+          -0.75
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 2,
+        "values": [
+          -0.5,
+          -1.75,
+          -3.0,
+          2.25,
+          0.75,
+          0.75
+        ]
+      },
+      "expected": [
+        5.4375,
+        3.0,
+        3.9375,
+        -0.8125,
+        2.5,
+        4.6875
+      ],
+      "operation": "matmul_into",
+      "out_cols": 3,
+      "out_rows": 2,
+      "scalar": false
+    },
+    {
+      "a": {
+        "cols": 3,
+        "rows": 3,
+        "values": [
+          0.75,
+          -3.0,
+          2.75,
+          0.75,
+          2.5,
+          1.75,
+          -0.25,
+          0.75,
+          -1.25
+        ]
+      },
+      "b": {
+        "cols": 3,
+        "rows": 3,
+        "values": [
+          -0.75,
+          1.25,
+          3.0,
+          1.75,
+          0.75,
+          -1.25,
+          0.5,
+          2.25,
+          2.25
+        ]
+      },
+      "expected": [
+        -4.4375,
+        4.875,
+        12.1875,
+        4.6875,
+        6.75,
+        3.0625,
+        0.875,
+        -2.5625,
+        -4.5
+      ],
+      "operation": "matmul_into",
+      "out_cols": 3,
+      "out_rows": 3,
+      "scalar": false
+    }
+  ],
+  "reference": {
+    "atol": 1e-12,
+    "device": "cpu",
+    "dtype": "float64",
+    "rtol": 1e-11,
+    "seed": 1701,
+    "torch": "2.14.1"
+  },
+  "training": [
+    {
+      "epochs": 0,
+      "expected": [
+        21.0,
+        21.0,
+        0.0,
+        0.0,
+        -8.0,
+        -17.0,
+        -8.0,
+        -17.0,
+        101.0
+      ]
+    },
+    {
+      "epochs": 1,
+      "expected": [
+        21.0,
+        7.05875,
+        0.4,
+        0.8500000000000001,
+        -8.0,
+        -17.0,
+        -4.65,
+        -9.85,
+        33.68124999999999
+      ]
+    },
+    {
+      "epochs": 2,
+      "expected": [
+        21.0,
+        2.373021875,
+        0.6325000000000001,
+        1.3425,
+        -8.0,
+        -17.0,
+        -2.7075,
+        -5.705,
+        11.172015624999997
+      ]
+    },
+    {
+      "epochs": 10,
+      "expected": [
+        21.0,
+        0.0009197664353937523,
+        0.9575813953269532,
+        2.009280835294629,
+        -8.0,
+        -17.0,
+        -0.056994703462206475,
+        -0.062289966956737164,
+        2.196229902512313e-05
+      ]
+    },
+    {
+      "epochs": 100,
+      "expected": [
+        21.0,
+        2.326323638967003e-06,
+        0.9974673890090859,
+        2.001186211536069,
+        -8.0,
+        -17.0,
+        -0.0015065873736220814,
+        0.0007056477797382499,
+        8.221712137337098e-06
+      ]
+    },
+    {
+      "epochs": 200,
+      "expected": [
+        21.0,
+        5.545736142803583e-09,
+        0.9998763446184832,
+        2.0000579170826387,
+        -8.0,
+        -17.0,
+        -7.355951511750503e-05,
+        3.445343392050049e-05,
+        1.9599786286208047e-08
+      ]
+    }
+  ]
+}

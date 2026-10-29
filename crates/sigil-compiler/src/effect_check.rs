@@ -33,8 +33,9 @@
 //! exactly that in the outer ring). The defensible statement is narrower: no
 //! inner-ring primitive performs an effect that REACHES THE HOST. The host
 //! boundary is `extern`, and two fences carry that weight for non-generic code:
-//! R003 rejects an inner-ring `extern` call, and R004 rejects a direct
-//! inner→outer call (only `grant` crosses). E003 is NOT one of those fences: it
+//! R003 rejects an inner-ring `extern` call, and R004 rejects every call across
+//! the ring boundary, one made inside a `grant` body included (a `grant` closure
+//! runs in its caller's ring). E003 is NOT one of those fences: it
 //! only stops an inner-ring free fn from NAMING `FFI` / `Unsafe` in a declared
 //! row. It says nothing about a `handle Unsafe` block in a row-less inner-ring
 //! fn — which compiles clean — and its validator walks free `FnDef` items only,

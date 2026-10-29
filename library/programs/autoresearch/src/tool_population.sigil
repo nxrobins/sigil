@@ -1,0 +1,155 @@
+// Autoresearch policy: original seeds, six mutations, crossover and stable ranking.
+// RNG and exact byte transport are imported; this module does not evaluate fitness.
+module tool_population;
+use sigil::rng;
+use sigil::records;
+use sigil::vec;
+use sigil::bytes;
+
+fn copy(dst: i64, src: i64, len: i64) -> i64 {
+    // Call sites own validated, fixed-size spans; no application copy loop.
+    return bytes::copy_into(dst, len, 0, src, len, 0, len);
+}
+fn operand(generator: SeedRng @Mut, op: i64) -> i64 {
+    if op == 4 || op == 5 || op == 6 { return rng::below(generator, 8); } else {}
+    return rng::below(generator, 16);
+}
+fn clean_tail(body: i64) -> i64 {
+    let mut i = 72 + 4 * load8(body + 6);
+    while i < 120 { store8(body + i, 0); i = i + 1; }
+    i = 128; while i < 144 { store8(body + i, 0); i = i + 1; }
+    return 0;
+}
+
+pub fn seed(out: i64, which: i64, steps: i64) -> i64 ! { Alloc } {
+    let mut i = 0; while i < 144 { store8(out + i, 0); i = i + 1; }
+    store8(out, 65); store8(out + 1, 67); store8(out + 2, 80); store8(out + 3, 85);
+    store8(out + 4, 1); store8(out + 5, steps); store8(out + 7, 1); store8(out + 120, which);
+    let weights: Vec<f64> = Vec::with_capacity(8);
+    i = 0; while i < 8 { weights.push(0.0); i = i + 1; }
+    let mut instructions = "040e0000000f0103";
+    weights.set(0, 0.0 - 3277.0 / 65536.0);
+    if which == 1 {
+        weights.set(0, 0.0 - 1966.0 / 65536.0); weights.set(1, 58982.0 / 65536.0);
+        instructions = "04040101000f0400040e0f00";
+    } else {
+        if which == 2 {
+            weights.set(2, 0.0 - 0.5); weights.set(3, 8.0); weights.set(4, 0.0 - 0.5); weights.set(5, 1.0);
+            instructions = "0504020206050403040605040507060502080007040e0800000f0101";
+        } else {}
+    }
+    let text = instructions.as_output();
+    let decoded = records::unhex(text / 4294967296, instructions.len(), 48);
+    if decoded < 0 { return decoded; } else {}
+    store8(out + 6, decoded % 4294967296 / 4);
+    copy(out + 8, weights.buf, 64); copy(out + 72, decoded / 4294967296, decoded % 4294967296);
+    return 0;
+}
+
+pub fn valid(body: i64, steps: i64, scored: bool) -> i64 ! { Alloc } {
+    let count = load8(body + 6);
+    if load8(body) != 65 || load8(body + 1) != 67 || load8(body + 2) != 80 || load8(body + 3) != 85 || load8(body + 4) != 1 || load8(body + 5) != steps || load8(body + 7) != 1 || count < 1 || count > 12 || load8(body + 120) > 2 { return -422; } else {}
+    let mut i = 121; while i < 128 { if load8(body + i) != 0 { return -422; } else {} i = i + 1; }
+    let values: Vec<f64> = Vec::with_capacity(10);
+    i = 0; while i < 10 { values.push(0.0); i = i + 1; }
+    copy(values.buf, body + 8, 64); copy(values.buf + 64, body + 128, 16);
+    i = 0;
+    while i < 10 {
+        let value = values.get(i);
+        if value - value != 0.0 { return -422; } else {}
+        if i < 8 && (value < 0.0 - 4096.0 || value > 4096.0) { return -422; } else {}
+        i = i + 1;
+    }
+    if scored {
+        let mut complexity = 0.0; i = 0;
+        while i < count { complexity = complexity + 66.0 / 65536.0; i = i + 1; }
+        if values.get(8) < 0.0 || values.get(9) != values.get(8) + complexity { return -422; } else {}
+    } else {
+        i = 128; while i < 144 { if load8(body + i) != 0 { return -422; } else {} i = i + 1; }
+    }
+    i = 0;
+    while i < count {
+        let at = body + 72 + i * 4; let op = load8(at); let b = load8(at + 3);
+        if op > 7 || load8(at + 1) < 4 || load8(at + 1) > 15 || load8(at + 2) > 15 { return -422; } else {}
+        if op == 4 || op == 5 || op == 6 { if b > 7 { return -422; } else {} }
+        else { if b > 15 { return -422; } else {} }
+        i = i + 1;
+    }
+    i = 72 + count * 4;
+    while i < 120 { if load8(body + i) != 0 { return -422; } else {} i = i + 1; }
+    return 0;
+}
+
+pub fn mutate(body: i64, generator: SeedRng @Mut) -> i64 ! { Alloc } {
+    let mut count = load8(body + 6);
+    let kind = rng::below(generator, 6); if kind < 0 { return kind; } else {}
+    if kind <= 2 {
+        let index = rng::below(generator, count); if index < 0 { return index; } else {}
+        let at = body + 72 + index * 4;
+        if kind == 0 {
+            let op = rng::below(generator, 8); if op < 0 { return op; } else {}
+            let b = operand(generator, op); if b < 0 { return b; } else {}
+            store8(at, op); store8(at + 3, b);
+        } else {
+            if kind == 1 {
+                let a = rng::below(generator, 16); if a < 0 { return a; } else {} store8(at + 2, a);
+            } else {
+                let dst = rng::below(generator, 12); if dst < 0 { return dst; } else {} store8(at + 1, 4 + dst);
+            }
+        }
+    } else {
+        if kind == 3 && count < 12 {
+            let op = rng::below(generator, 8); if op < 0 { return op; } else {}
+            let dst = rng::below(generator, 12); if dst < 0 { return dst; } else {}
+            let a = rng::below(generator, 16); if a < 0 { return a; } else {}
+            let b = operand(generator, op); if b < 0 { return b; } else {}
+            let at = body + 72 + count * 4;
+            store8(at, op); store8(at + 1, 4 + dst); store8(at + 2, a); store8(at + 3, b); count = count + 1;
+        } else {
+            if kind == 4 && count > 1 {
+                let index = rng::below(generator, count); if index < 0 { return index; } else {}
+                let moved = bytes::copy_into(body, 144, 72 + index * 4, body, 144, 76 + index * 4, (count - index - 1) * 4);
+                if moved < 0 { return moved; } else {}
+                count = count - 1;
+            } else {
+                if kind == 5 {
+                    let index = rng::below(generator, 8); if index < 0 { return index; } else {}
+                    let unit = rng::new_float(); let status = rng::unit_into(generator, unit);
+                    if status < 0 { return status; } else {}
+                    let weight: Vec<f64> = Vec::with_capacity(1); weight.push(0.0); copy(weight.buf, body + 8 + index * 8, 8);
+                    let mut value = weight.get(0) + unit.value * 0.5 - 0.25;
+                    if value < 0.0 - 4096.0 { value = 0.0 - 4096.0; } else {}
+                    if value > 4096.0 { value = 4096.0; } else {}
+                    weight.set(0, value); copy(body + 8 + index * 8, weight.buf, 8);
+                } else {}
+            }
+        }
+    }
+    store8(body + 6, count); clean_tail(body); return 0;
+}
+
+pub fn crossover(out: i64, a: i64, b: i64, generator: SeedRng @Mut) -> i64 {
+    let na = load8(a + 6); let nb = load8(b + 6);
+    let cut = rng::below(generator, na); if cut < 0 { return cut; } else {}
+    let from = rng::below(generator, nb + 1); if from < 0 { return from; } else {}
+    copy(out, a, 144); let mut count = cut + 1; let mut j = from;
+    while j < nb && count < 12 { copy(out + 72 + count * 4, b + 72 + j * 4, 4); count = count + 1; j = j + 1; }
+    j = 1; while j < 8 { copy(out + 8 + j * 8, b + 8 + j * 8, 8); j = j + 2; }
+    store8(out + 6, count); clean_tail(out); return 0;
+}
+
+pub fn rank(pop: i64) -> i64 ! { Alloc } {
+    let ordered = alloc(1152);
+    let used: Vec<i64> = Vec::with_capacity(8); let fitness: Vec<f64> = Vec::with_capacity(8);
+    let mut i = 0; while i < 8 { used.push(0); fitness.push(0.0); copy(fitness.buf + i * 8, pop + i * 144 + 136, 8); i = i + 1; }
+    let mut picked = 0;
+    while picked < 8 {
+        let mut best = -1; i = 0;
+        while i < 8 {
+            if used.get(i) == 0 { if best < 0 { best = i; } else { if fitness.get(i) < fitness.get(best) { best = i; } else {} } } else {}
+            i = i + 1;
+        }
+        used.set(best, 1); copy(ordered + picked * 144, pop + best * 144, 144); picked = picked + 1;
+    }
+    copy(pop, ordered, 1152); return 0;
+}

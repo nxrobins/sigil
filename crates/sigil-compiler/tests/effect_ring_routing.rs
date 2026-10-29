@@ -388,8 +388,75 @@ fn trusted_generic_instantiated_from_untrusted_caller_is_e002() {
     );
 }
 
-/// The caller's own `helper` (which calls an extern) SHADOWS the trusted definer's
-/// `helper` inside the generic's `handle Unsafe { handle FFI { .. } }`, because the free-fn
+/// A TRUSTED module's generic METHOD that uses `handle Unsafe`.
+const TRUSTED_GENERIC_METHOD_HANDLE_UNSAFE: &str = "#[ring(outer)] #[trusted]\nmodule defs;\n\
+     record Box<T> { v: T }\n\
+     impl Box<T> {\n\
+     pub fn go(self: Box<T>) -> i64 ! {} { handle Unsafe { let _x: i64 = 1; }; return 0; }\n\
+     }\n";
+
+const UNTRUSTED_METHOD_CALLER: &str = "#[ring(outer)]\nmodule user;\n\
+     use sigil::defs;\n\
+     pub fn boot() -> i64 ! {} { let b: Box<i64> = Box { v: 1 }; return b.go(); }\n";
+
+const TRUSTED_METHOD_CALLER: &str = "#[ring(outer)] #[trusted]\nmodule good;\n\
+     use sigil::defs;\n\
+     pub fn a() -> i64 ! {} { let b: Box<i64> = Box { v: 2 }; return b.go(); }\n";
+
+/// The METHOD counterpart of the test above, and where it differs. A free fn's instance is named
+/// after its calling module, so each caller gets its own, checked under its own meet. A generic
+/// method's instance is named without its caller and checked once, under the module whose call
+/// creates it; a later call reuses it. So the trusted method's `handle Unsafe` is exactly E002
+/// when the untrusted module's call creates the instance, and accepted when a trusted module's
+/// call comes first: the untrusted call then reuses an instance that resolved no name in its
+/// scope, so the acceptance launders nothing. Both verdicts are SR-019's over-rejection showing or
+/// not: the non-generic method twin is accepted from the untrusted module alone.
+#[test]
+fn trusted_generic_method_handle_unsafe_follows_its_first_instantiator() {
+    let defs = TRUSTED_GENERIC_METHOD_HANDLE_UNSAFE;
+    assert_eq!(
+        codes("defs.sigil", &format!("{defs}{UNTRUSTED_METHOD_CALLER}")),
+        set(&["E002"]),
+        "untrusted caller only"
+    );
+    assert_eq!(
+        codes(
+            "defs.sigil",
+            &format!("{defs}{UNTRUSTED_METHOD_CALLER}{TRUSTED_METHOD_CALLER}")
+        ),
+        set(&["E002"]),
+        "the untrusted module's call creates the instance"
+    );
+    assert_eq!(
+        codes(
+            "defs.sigil",
+            &format!("{defs}{TRUSTED_METHOD_CALLER}{UNTRUSTED_METHOD_CALLER}")
+        ),
+        BTreeSet::new(),
+        "a trusted module's call creates the instance first"
+    );
+    let twin = format!("{defs}{UNTRUSTED_METHOD_CALLER}")
+        .replace("record Box<T> { v: T }", "record Box { v: i64 }")
+        .replace("impl Box<T>", "impl Box")
+        .replace("self: Box<T>", "self: Box")
+        .replace("let b: Box<i64>", "let b: Box");
+    assert_eq!(
+        codes("defs.sigil", &twin),
+        BTreeSet::new(),
+        "control: the non-generic method twin is accepted from the untrusted module"
+    );
+}
+
+/// The trusted FFI wrapper the attack programs below reach the host through. Since R008 an
+/// untrusted module cannot declare an `extern` itself, so each untrusted helper calls this
+/// instead; it still carries `{ FFI, Unsafe }` in its own row, and that row is what the
+/// trusted generics' `handle Unsafe` would discharge, so every attack keeps its shape.
+const TRUSTED_IO: &str = "#[ring(outer)] #[trusted]\nmodule io;\n\
+     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+     pub fn read_at(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n";
+
+/// The caller's own `helper` (which performs FFI through the trusted `io` wrapper) SHADOWS
+/// the trusted definer's `helper` inside the generic's `handle Unsafe { handle FFI { .. } }`, because the free-fn
 /// instance body resolves callee names in the CALLER's scope. With the definer's trust
 /// alone (round 2) this was accepted in both layouts and the emitted instance called the
 /// untrusted helper; on main the trusted-module-first layout was accepted too. Exactly
@@ -397,8 +464,8 @@ fn trusted_generic_instantiated_from_untrusted_caller_is_e002() {
 /// trusted is accepted, so E002 here is the trust meet.
 const SHADOWING_USER: &str = "#[ring(outer)]\nmodule user;\n\
      use sigil::defs;\n\
-     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
-     fn helper() -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(0, 0); return 777; }\n\
+     use sigil::io;\n\
+     fn helper() -> i64 ! { FFI, Unsafe } { let r: i64 = io::read_at(0, 0); return 777; }\n\
      pub fn boot() -> i64 ! {} { return danger(1); }\n";
 
 const SHADOWED_TRUSTED_DEFS: &str = "#[ring(outer)] #[trusted]\nmodule defs;\n\
@@ -410,7 +477,7 @@ fn caller_scope_helper_under_trusted_generic_handle_is_e002() {
     assert_eq!(
         codes(
             "user.sigil",
-            &format!("{SHADOWING_USER}{SHADOWED_TRUSTED_DEFS}")
+            &format!("{SHADOWING_USER}{SHADOWED_TRUSTED_DEFS}{TRUSTED_IO}")
         ),
         set(&["E002"]),
         "untrusted caller first (review repro `shadow-userfirst`; main: E002)"
@@ -418,7 +485,7 @@ fn caller_scope_helper_under_trusted_generic_handle_is_e002() {
     assert_eq!(
         codes(
             "defs.sigil",
-            &format!("{SHADOWED_TRUSTED_DEFS}{SHADOWING_USER}")
+            &format!("{SHADOWED_TRUSTED_DEFS}{SHADOWING_USER}{TRUSTED_IO}")
         ),
         set(&["E002"]),
         "trusted definer first (main: accepted)"
@@ -430,7 +497,7 @@ fn caller_scope_helper_under_trusted_generic_handle_is_e002() {
     assert_eq!(
         codes(
             "user.sigil",
-            &format!("{trusted_user}{SHADOWED_TRUSTED_DEFS}")
+            &format!("{trusted_user}{SHADOWED_TRUSTED_DEFS}{TRUSTED_IO}")
         ),
         BTreeSet::new(),
         "control: caller trusted too -> accepted"
@@ -439,14 +506,14 @@ fn caller_scope_helper_under_trusted_generic_handle_is_e002() {
 
 /// A generic IMPL METHOD takes its function sigs from its definer (CF-D9), but a name the
 /// definer lacks still resolves through the CHECKED module's `use` scope: here the trusted
-/// definer's `helper()` reaches the untrusted `evil::helper` (an FFI call) because the
+/// definer's `helper()` reaches the untrusted `evil::helper` (FFI through `io`) because the
 /// untrusted caller imports `evil`. Accepted on main (definer first) and by round 2 (both
 /// layouts); exactly E002 in both layouts under the meet. The NON-generic twin does not
 /// even resolve (exactly T062) — the caller's scope is reachable only through the
 /// monomorphized re-check.
 const EVIL_HELPER: &str = "#[ring(outer)]\nmodule evil;\n\
-     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
-     pub fn helper() -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(0, 0); return 777; }\n";
+     use sigil::io;\n\
+     pub fn helper() -> i64 ! { FFI, Unsafe } { let r: i64 = io::read_at(0, 0); return 777; }\n";
 
 const TRUSTED_GENERIC_METHOD_CALLS_HELPER: &str = "#[ring(outer)] #[trusted]\nmodule defs;\n\
      record Box<T> { v: T }\n\
@@ -464,7 +531,9 @@ fn impl_method_use_scope_fallback_is_governed_by_the_meet() {
     assert_eq!(
         codes(
             "defs.sigil",
-            &format!("{TRUSTED_GENERIC_METHOD_CALLS_HELPER}{UNTRUSTED_USER_OF_BOX}{EVIL_HELPER}")
+            &format!(
+                "{TRUSTED_GENERIC_METHOD_CALLS_HELPER}{UNTRUSTED_USER_OF_BOX}{EVIL_HELPER}{TRUSTED_IO}"
+            )
         ),
         set(&["E002"]),
         "trusted definer first (main: accepted)"
@@ -472,7 +541,9 @@ fn impl_method_use_scope_fallback_is_governed_by_the_meet() {
     assert_eq!(
         codes(
             "user.sigil",
-            &format!("{UNTRUSTED_USER_OF_BOX}{TRUSTED_GENERIC_METHOD_CALLS_HELPER}{EVIL_HELPER}")
+            &format!(
+                "{UNTRUSTED_USER_OF_BOX}{TRUSTED_GENERIC_METHOD_CALLS_HELPER}{EVIL_HELPER}{TRUSTED_IO}"
+            )
         ),
         set(&["E002"]),
         "untrusted caller first (main: E002)"
@@ -485,7 +556,7 @@ fn impl_method_use_scope_fallback_is_governed_by_the_meet() {
     assert_eq!(
         codes(
             "defs.sigil",
-            &format!("{nongeneric_defs}{nongeneric_user}{EVIL_HELPER}")
+            &format!("{nongeneric_defs}{nongeneric_user}{EVIL_HELPER}{TRUSTED_IO}")
         ),
         set(&["T062"]),
         "the non-generic twin resolves `helper` in its own module only"
@@ -688,8 +759,8 @@ const INNER_GENERIC_HANDLES_CALLER_FFI: &str = "module app;\n\
 
 /// The untrusted outer caller of `INNER_GENERIC_HANDLES_CALLER_FFI`.
 const UNTRUSTED_FFI_CALLER: &str = "#[ring(outer)]\nmodule first;\n\
-     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
-     fn rd(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+     use sigil::io;\n\
+     fn rd(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 = io::read_at(p, n); return 0; }\n\
      pub fn boot(p: i32, n: i32) -> i64 ! {} { return g(1, p, n); }\n";
 
 /// Round 3 (replaces round 2's unconditional accept): an inner-ring generic's `handle
@@ -731,7 +802,7 @@ fn inner_ring_generic_handle_unsafe_is_exempt_only_when_every_governing_module_i
     assert_eq!(
         codes(
             "first.sigil",
-            &format!("{UNTRUSTED_FFI_CALLER}{INNER_GENERIC_HANDLES_CALLER_FFI}")
+            &format!("{UNTRUSTED_FFI_CALLER}{INNER_GENERIC_HANDLES_CALLER_FFI}{TRUSTED_IO}")
         ),
         set(&["E002"]),
         "untrusted caller first"
@@ -739,7 +810,7 @@ fn inner_ring_generic_handle_unsafe_is_exempt_only_when_every_governing_module_i
     assert_eq!(
         codes(
             "app.sigil",
-            &format!("{INNER_GENERIC_HANDLES_CALLER_FFI}{UNTRUSTED_FFI_CALLER}")
+            &format!("{INNER_GENERIC_HANDLES_CALLER_FFI}{UNTRUSTED_FFI_CALLER}{TRUSTED_IO}")
         ),
         set(&["E002"]),
         "inner definer first (main: accepted)"
@@ -1276,5 +1347,478 @@ fn known_gap_generic_free_fn_call_bypasses_use_and_r004() {
         codes("defs.sigil", &format!("{nongeneric}{with_use}")),
         set(&["R004"]),
         "control: the non-generic twin with `use` is a cross-ring call"
+    );
+}
+
+// ── KNOWN GAP (not closed here): a generic body reaches its instantiator's PRIVATE fns ──
+//
+// The companion of the gap above, in the other direction. A generic FREE fn's body is
+// re-checked in the context of the module whose call creates the instance: that module's
+// function sigs, `use` scope and ring (SR-019). Its function sigs include its PRIVATE
+// functions, so a generic defined in `lib` can call a private function of any module that
+// instantiates it, by bare name, where the non-generic twin is exactly T062 (bare) or exactly
+// T155 (qualified). Trust does not matter, and the leak crosses rings: an inner-ring generic
+// reaches an outer-ring module's private function when that module sorts first (the instance
+// is filed in its ring); with the inner definer first the instance is filed in the inner ring
+// and the emission gate refuses the outer caller's call with R007, the filing by-product
+// described above. A generic IMPL METHOD does not leak: CF-D9 gives it its definer's sigs, and
+// the `use`-scope fallback admits only `pub` names (exactly T062). What bounds the leak is
+// everything but visibility: the instance's effect row (a private FFI wrapper's row must be
+// declared, or E001), the meet (R003 for an extern, E002 for `handle Unsafe`), E003 for a
+// privilege row on an inner-ring definer, and capability values. Recorded in
+// `tests/attack/KNOWN_GAPS.md` (second vector) and SR-019; SR-019's follow-up, re-checking a
+// free-fn instance in its DEFINER's scope, closes it. This pin measures the gap as it stands
+// and is expected to FAIL when it closes.
+
+/// A trusted outer-ring module with a private FFI wrapper and a private pure function, which
+/// instantiates `lib`'s generics with both in scope.
+const HOST_WITH_PRIVATES: &str = "#[ring(outer)] #[trusted]\nmodule host;\n\
+     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+     fn raw(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+     fn secret_helper(y: i64) -> i64 { return y * 2; }\n\
+     pub fn boot(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return g(1, p, n); }\n\
+     pub fn boot2(y: i64) -> i64 { return h(1, y); }\n";
+
+/// An untrusted outer-ring module whose generics name `host`'s private functions.
+const GENERICS_NAMING_HOST_PRIVATES: &str = "#[ring(outer)]\nmodule lib;\n\
+     pub fn g<T>(x: T, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return raw(p, n); }\n\
+     pub fn h<T>(x: T, y: i64) -> i64 { return secret_helper(y); }\n";
+
+#[test]
+fn known_gap_generic_body_reaches_the_instantiating_modules_private_fns() {
+    for (file, src) in [
+        (
+            "host.sigil",
+            format!("{HOST_WITH_PRIVATES}{GENERICS_NAMING_HOST_PRIVATES}"),
+        ),
+        (
+            "lib.sigil",
+            format!("{GENERICS_NAMING_HOST_PRIVATES}{HOST_WITH_PRIVATES}"),
+        ),
+    ] {
+        assert_eq!(
+            checker_codes(file, &src),
+            BTreeSet::new(),
+            "{file}: KNOWN GAP: no checker rejects the calls to `host`'s private functions"
+        );
+        assert_eq!(
+            codes(file, &src),
+            BTreeSet::new(),
+            "{file}: KNOWN GAP, end to end"
+        );
+    }
+
+    // The non-generic twins. `host` drops its calls (a `use` in both directions is a cyclic
+    // module dependency, refused) and `lib` gains `use sigil::host`, so only the privacy
+    // verdict remains.
+    let host_without_calls = HOST_WITH_PRIVATES
+        .replace(
+            "pub fn boot(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return g(1, p, n); }\n",
+            "",
+        )
+        .replace("pub fn boot2(y: i64) -> i64 { return h(1, y); }\n", "");
+    assert_ne!(
+        host_without_calls, HOST_WITH_PRIVATES,
+        "the rewrite must reach the calls"
+    );
+    let twin = GENERICS_NAMING_HOST_PRIVATES
+        .replace("g<T>(x: T, p: i32, n: i32)", "g(x: i64, p: i32, n: i32)")
+        .replace("h<T>(x: T, y: i64)", "h(x: i64, y: i64)")
+        .replace("module lib;\n", "module lib;\nuse sigil::host;\n");
+    assert_ne!(
+        twin, GENERICS_NAMING_HOST_PRIVATES,
+        "the rewrite must reach the generics"
+    );
+    assert_eq!(
+        codes("host.sigil", &format!("{host_without_calls}{twin}")),
+        set(&["T062"]),
+        "control: the non-generic twin's bare calls do not resolve a private function"
+    );
+    let qualified = twin
+        .replace("return raw(p, n);", "return host::raw(p, n);")
+        .replace("return secret_helper(y);", "return host::secret_helper(y);");
+    assert_ne!(qualified, twin, "the rewrite must reach the calls");
+    assert_eq!(
+        codes("host.sigil", &format!("{host_without_calls}{qualified}")),
+        set(&["T155"]),
+        "control: the qualified twin is refused by the privacy rule"
+    );
+
+    // A generic impl method takes its definer's sigs (CF-D9) and falls back to the checked
+    // module's `use` scope, which admits only `pub` names: no leak.
+    let method_lib = "#[ring(outer)]\nmodule lib;\n\
+         record Box<T> { v: T }\n\
+         impl Box<T> {\n\
+             pub fn go(self: Box<T>, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return raw(p, n); }\n\
+             pub fn go2(self: Box<T>, y: i64) -> i64 { return secret_helper(y); }\n\
+         }\n";
+    let host_calling_methods = HOST_WITH_PRIVATES
+        .replace(
+            "return g(1, p, n);",
+            "let b: Box<i64> = Box { v: 1 }; return b.go(p, n);",
+        )
+        .replace(
+            "return h(1, y);",
+            "let b: Box<i64> = Box { v: 1 }; return b.go2(y);",
+        );
+    assert_ne!(
+        host_calling_methods, HOST_WITH_PRIVATES,
+        "the rewrite must reach the calls"
+    );
+    assert_eq!(
+        codes("host.sigil", &format!("{host_calling_methods}{method_lib}")),
+        set(&["T062"]),
+        "control: a generic impl method does not reach the instantiator's private functions"
+    );
+
+    // What bounds the leak: the effect row and the ring rules, never visibility.
+    let empty_row = GENERICS_NAMING_HOST_PRIVATES.replace(
+        "g<T>(x: T, p: i32, n: i32) -> i64 ! { FFI, Unsafe }",
+        "g<T>(x: T, p: i32, n: i32) -> i64 ! {}",
+    );
+    assert_ne!(
+        empty_row, GENERICS_NAMING_HOST_PRIVATES,
+        "the rewrite must reach the row"
+    );
+    assert_eq!(
+        codes("host.sigil", &format!("{HOST_WITH_PRIVATES}{empty_row}")),
+        set(&["E001"]),
+        "bound: the private wrapper's effects must be declared on the generic"
+    );
+    let inner_lib =
+        GENERICS_NAMING_HOST_PRIVATES.replace("#[ring(outer)]\nmodule lib;", "module lib;");
+    assert_ne!(
+        inner_lib, GENERICS_NAMING_HOST_PRIVATES,
+        "the rewrite must reach the ring"
+    );
+    assert_eq!(
+        codes("host.sigil", &format!("{HOST_WITH_PRIVATES}{inner_lib}")),
+        set(&["E003"]),
+        "bound: an inner-ring definer cannot declare the privilege row"
+    );
+
+    // Across rings, with no row to bound it: an inner-ring generic reaches the outer module's
+    // private pure function when the outer module sorts first. With the inner definer first the
+    // instance is filed in the inner ring and the outer caller's call is R007 (filing, not a
+    // fence: it would lift with #768).
+    let host_pure = "#[ring(outer)] #[trusted]\nmodule host;\n\
+         fn secret_helper(y: i64) -> i64 { return y * 2; }\n\
+         pub fn boot2(y: i64) -> i64 { return h(1, y); }\n";
+    let inner_pure = "module lib;\n\
+         pub fn h<T>(x: T, y: i64) -> i64 { return secret_helper(y); }\n";
+    assert_eq!(
+        codes("host.sigil", &format!("{host_pure}{inner_pure}")),
+        BTreeSet::new(),
+        "KNOWN GAP, across rings: an inner-ring generic reaches the outer module's private function"
+    );
+    assert_eq!(
+        codes("lib.sigil", &format!("{inner_pure}{host_pure}")),
+        set(&["R007"]),
+        "with the inner definer first the instance is filed in the inner ring (filing, not a fence)"
+    );
+}
+
+// ── R004 inside a generic body follows the INSTANTIATING module ────
+//
+// The call resolver (`call_resolve.rs`) decides R004 against `tracker.current_module_ring`,
+// which `type_check/mod.rs` sets once per checked module. A generic FREE fn's body is re-checked
+// while the module being checked builds its instance, so a call inside the body is judged
+// against that module's ring, not against the ring of the module that defines the generic. That
+// module is the one whose own code reaches the instantiation, directly or through other generic
+// bodies. Where one module both defines and calls the generic the two coincide, which is the
+// only layout `ring_routing_r004_and_r006_do_not_escape_for_generics` (effect_ring_scope.rs)
+// covers. These pins separate them. R004 is a type-check verdict, so it is not part of the
+// governing meet above, which decides only the ring and effect passes that run after it.
+//
+// Every layout here that puts the definer and the instantiating module in different rings
+// reaches the generic through the open bare-name gap pinned by
+// `known_gap_generic_free_fn_call_bypasses_use_and_r004` (tests/attack/KNOWN_GAPS.md): a generic
+// free fn resolves program-wide by bare name, with no `use` and no ring filter. These pins record
+// the behavior as it stands and change when that gap closes. A generic METHOD is never split this
+// way: a method call resolves only among modules in the caller's ring.
+
+/// The inner-ring module every generic below calls.
+const R004_CORE: &str = "module core_lib;\npub fn twice(x: i64) -> i64 { return x * 2; }\n";
+/// An inner-ring generic calling inner-ring `core_lib`: a same-ring call for its definer.
+const R004_INNER_DEFINER: &str = "module lib;\nuse core_lib;\n\
+     pub fn g<T>(x: T) -> i64 { return core_lib::twice(21); }\n";
+/// An outer-ring generic calling inner-ring `core_lib`: a cross-ring call for its definer.
+const R004_OUTER_DEFINER: &str = "#[ring(outer)]\nmodule defs;\nuse core_lib;\n\
+     pub fn og<T>(x: T) -> i64 { return core_lib::twice(21); }\n";
+
+#[test]
+fn r004_in_a_generic_body_is_judged_against_the_instantiating_module() {
+    // Inner-ring definer, outer-ring instantiator: R004, reported at the call inside the
+    // definer's body, although for the definer that call stays in its own ring.
+    let outer_tool = "#[ring(outer)]\nmodule tool;\npub fn run() -> i64 { return g(1); }\n";
+    let src = format!("{R004_CORE}{R004_INNER_DEFINER}{outer_tool}");
+    assert_eq!(
+        checker_codes("core_lib.sigil", &src),
+        set(&["R004"]),
+        "an outer-ring instantiator makes the inner definer's same-ring call cross"
+    );
+    assert_eq!(codes("core_lib.sigil", &src), set(&["R004"]), "end to end");
+    // Control: the same definer instantiated from an inner-ring module compiles clean.
+    let inner_tool = outer_tool.replace("#[ring(outer)]\n", "");
+    assert_eq!(
+        codes(
+            "core_lib.sigil",
+            &format!("{R004_CORE}{R004_INNER_DEFINER}{inner_tool}")
+        ),
+        BTreeSet::new(),
+        "control: an inner-ring instantiator keeps the call in one ring"
+    );
+    // Through another generic: `h` is instantiated from inner-ring `g`'s body, but its instance
+    // is built while `tool` is being checked, so its call follows `tool`'s ring.
+    let chain = "module lib2;\nuse core_lib;\n\
+                 pub fn h<T>(x: T) -> i64 { return core_lib::twice(21); }\n\
+                 module lib;\npub fn g<T>(x: T) -> i64 { return h(x); }\n";
+    assert_eq!(
+        codes("core_lib.sigil", &format!("{R004_CORE}{chain}{outer_tool}")),
+        set(&["R004"]),
+        "through another generic: the module being checked is the outer-ring `tool`"
+    );
+    assert_eq!(
+        codes("core_lib.sigil", &format!("{R004_CORE}{chain}{inner_tool}")),
+        BTreeSet::new(),
+        "control: the same chain reached from an inner-ring module"
+    );
+
+    // Outer-ring definer, inner-ring instantiator: no R004, although for the definer the call
+    // crosses the ring boundary.
+    let inner_app = "module app;\npub fn boot() -> i64 { return og(1); }\n";
+    let src = format!("{inner_app}{R004_CORE}{R004_OUTER_DEFINER}");
+    assert_eq!(
+        checker_codes("app.sigil", &src),
+        BTreeSet::new(),
+        "an inner-ring instantiator makes the outer definer's cross-ring call stay in one ring"
+    );
+    assert_eq!(
+        codes("app.sigil", &src),
+        BTreeSet::new(),
+        "end to end, with the instance filed in the caller's ring (app sorts first)"
+    );
+    assert_eq!(
+        codes(
+            "defs.sigil",
+            &format!("{R004_OUTER_DEFINER}{R004_CORE}{inner_app}")
+        ),
+        set(&["R007"]),
+        "with the definer first the instance is filed in the outer ring and refused at emission (#768)"
+    );
+    // Control: the same generic instantiated from an outer-ring module is R004, so the empty
+    // sets above come from the instantiating module's ring, not from the generic.
+    let outer_app = "#[ring(outer)]\nmodule tool;\npub fn run() -> i64 { return og(1); }\n";
+    let src = format!("{R004_CORE}{R004_OUTER_DEFINER}{outer_app}");
+    assert_eq!(
+        checker_codes("core_lib.sigil", &src),
+        set(&["R004"]),
+        "control: an outer-ring instantiator keeps the definer's call crossing"
+    );
+    assert_eq!(
+        codes("core_lib.sigil", &src),
+        set(&["R004"]),
+        "control, end to end"
+    );
+    // Control: the definer's non-generic twin is checked in its own module, so the same call
+    // in the same body is R004.
+    let nongeneric = R004_OUTER_DEFINER.replace("og<T>(x: T)", "og(x: i64)");
+    assert_eq!(
+        codes("core_lib.sigil", &format!("{R004_CORE}{nongeneric}")),
+        set(&["R004"]),
+        "control: a non-generic body is judged against its own module's ring"
+    );
+
+    // A generic method is never split across rings: a method call resolves only among modules
+    // in the caller's ring, so another ring's generic method is exactly T132 from either side,
+    // while the same call within one ring compiles.
+    let method_lib = "{RING}module lib;\nrecord Box<T> { v: T }\n\
+                      impl Box<T> {\n\
+                      pub fn go(self: Box<T>) -> i64 { return 1; }\n\
+                      }\n";
+    let method_user = "{RING}module tool;\nuse lib;\n\
+                       pub fn run() -> i64 { let b: Box<i64> = Box { v: 1 }; return b.go(); }\n";
+    let outer = "#[ring(outer)]\n";
+    for (lib_ring, user_ring, expected) in [
+        ("", outer, set(&["T132"])),
+        (outer, "", set(&["T132"])),
+        ("", "", BTreeSet::new()),
+        (outer, outer, BTreeSet::new()),
+    ] {
+        let src = format!(
+            "{}{}",
+            method_lib.replace("{RING}", lib_ring),
+            method_user.replace("{RING}", user_ring)
+        );
+        assert_eq!(
+            codes("lib.sigil", &src),
+            expected,
+            "method defined under {lib_ring:?}, called from {user_ring:?}"
+        );
+    }
+}
+
+// ── R008's call half: an extern call in generic code needs every governing module trusted ──
+
+/// An untrusted outer-ring generic naming `fs_read`. It declares no extern, so the name can only
+/// resolve through the scope of a module that instantiates it.
+const UNTRUSTED_GENERIC_NAMES_FS_READ: &str = "#[ring(outer)]\nmodule lib;\n\
+     pub fn g<T>(x: T, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n";
+
+/// A trusted module that declares `fs_read` and instantiates the generic above.
+const TRUSTED_DECLARER_OF_FS_READ: &str = "#[ring(outer)] #[trusted]\nmodule host;\n\
+     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+     pub fn boot(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return g(1, p, n); }\n";
+
+/// The instance's `fs_read` resolves in the trusted instantiator's scope, so it IS that module's
+/// extern, and before R008's call half the untrusted generic compiled clean and emitted the host
+/// import. An extern call inside an instance is now held to the same meet as `handle Unsafe`
+/// (E002): exactly {R008} in both module orders, at the checker layer and end to end. Control:
+/// with the generic's own module trusted too, every governing module is trusted and both orders
+/// compile clean.
+#[test]
+fn generic_extern_call_needs_every_governing_module_trusted() {
+    for (file, src) in [
+        (
+            "host.sigil",
+            format!("{TRUSTED_DECLARER_OF_FS_READ}{UNTRUSTED_GENERIC_NAMES_FS_READ}"),
+        ),
+        (
+            "lib.sigil",
+            format!("{UNTRUSTED_GENERIC_NAMES_FS_READ}{TRUSTED_DECLARER_OF_FS_READ}"),
+        ),
+    ] {
+        assert_eq!(
+            checker_codes(file, &src),
+            set(&["R008"]),
+            "{file}: untrusted generic, trusted declarer (checker)"
+        );
+        assert_eq!(
+            codes(file, &src),
+            set(&["R008"]),
+            "{file}: untrusted generic, trusted declarer (pipeline)"
+        );
+    }
+    let trusted_lib = UNTRUSTED_GENERIC_NAMES_FS_READ.replace(
+        "#[ring(outer)]\nmodule lib;",
+        "#[ring(outer)] #[trusted]\nmodule lib;",
+    );
+    for (file, src) in [
+        (
+            "host.sigil",
+            format!("{TRUSTED_DECLARER_OF_FS_READ}{trusted_lib}"),
+        ),
+        (
+            "lib.sigil",
+            format!("{trusted_lib}{TRUSTED_DECLARER_OF_FS_READ}"),
+        ),
+    ] {
+        assert_eq!(
+            codes(file, &src),
+            BTreeSet::new(),
+            "{file}: control, every governing module trusted"
+        );
+    }
+}
+
+/// The same generic naming the extern qualified, `host::fs_read(p, n)`. `host`'s call creates
+/// the instance, so the body is re-checked in `host`'s scope, where the path names `host`'s own
+/// extern. The qualified spelling gets the bare spelling's verdicts in both module orders: exactly
+/// {R008} while `lib` is untrusted, and a clean compile once every governing module is trusted.
+/// The trusted layout failed with the internal-error code I013 while an extern call was named
+/// by its spelling instead of the extern's declared name.
+#[test]
+fn generic_qualified_extern_call_gets_the_bare_spellings_verdicts() {
+    let qualified =
+        UNTRUSTED_GENERIC_NAMES_FS_READ.replace("= fs_read(p, n)", "= host::fs_read(p, n)");
+    assert_ne!(
+        qualified, UNTRUSTED_GENERIC_NAMES_FS_READ,
+        "the rewrite must reach the call"
+    );
+    let trusted_lib = qualified.replace(
+        "#[ring(outer)]\nmodule lib;",
+        "#[ring(outer)] #[trusted]\nmodule lib;",
+    );
+    for (lib, expected) in [
+        (&qualified, set(&["R008"])),
+        (&trusted_lib, BTreeSet::new()),
+    ] {
+        for (file, src) in [
+            ("host.sigil", format!("{TRUSTED_DECLARER_OF_FS_READ}{lib}")),
+            ("lib.sigil", format!("{lib}{TRUSTED_DECLARER_OF_FS_READ}")),
+        ] {
+            assert_eq!(
+                codes(file, &src),
+                expected,
+                "{file}: qualified extern call in generic code"
+            );
+        }
+    }
+}
+
+/// A trusted module whose generic impl method wraps the module's own `extern`.
+const TRUSTED_GENERIC_WRAPPER: &str = "#[ring(outer)] #[trusted]\nmodule host;\n\
+     extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+     record Reader<T> { tag: T }\n\
+     impl Reader<T> {\n\
+         pub fn read(self: Reader<T>, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+     }\n";
+
+/// The same module calling its own wrapper, so that its call can create the instance.
+const TRUSTED_SELF_USE: &str = "pub fn own(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let b: Reader<i64> = Reader { tag: 2 }; return b.read(p, n); }\n";
+
+/// An untrusted outer-ring module calling the wrapper.
+const UNTRUSTED_WRAPPER_CALLER: &str = "#[ring(outer)]\nmodule tool;\n\
+     use sigil::host;\n\
+     pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let b: Reader<i64> = Reader { tag: 1 }; return b.read(p, n); }\n";
+
+/// OVER-REJECTION, pinned as it stands (SR-019). The wrapper's call can only reach `host`'s own
+/// extern: an extern is private, and the `use`-scope fallback admits only `pub` names. So the
+/// untrusted caller adds no host access, yet the meet counts the module whose call creates the
+/// instance, and the program is exactly {R008} when that module is `tool`. An impl-method instance
+/// is named without its caller and keeps its first instantiator's home, so the verdict depends on
+/// which call is checked first: with `host` first and calling the method itself, the same `tool`
+/// call is accepted. Control: a non-generic wrapper is accepted from `tool`, as R008's hint says.
+/// Collapsing the meet to the definer (SR-019's follow-up) would accept every layout here.
+#[test]
+fn trusted_generic_wrapper_is_r008_when_an_untrusted_module_instantiates_it_first() {
+    for (file, src) in [
+        (
+            "host.sigil",
+            format!("{TRUSTED_GENERIC_WRAPPER}{UNTRUSTED_WRAPPER_CALLER}"),
+        ),
+        (
+            "tool.sigil",
+            format!("{UNTRUSTED_WRAPPER_CALLER}{TRUSTED_GENERIC_WRAPPER}"),
+        ),
+        (
+            "tool.sigil",
+            format!("{UNTRUSTED_WRAPPER_CALLER}{TRUSTED_GENERIC_WRAPPER}{TRUSTED_SELF_USE}"),
+        ),
+    ] {
+        assert_eq!(
+            codes(file, &src),
+            set(&["R008"]),
+            "{file}: the untrusted module's call creates the instance"
+        );
+    }
+    assert_eq!(
+        codes(
+            "host.sigil",
+            &format!("{TRUSTED_GENERIC_WRAPPER}{TRUSTED_SELF_USE}{UNTRUSTED_WRAPPER_CALLER}")
+        ),
+        BTreeSet::new(),
+        "the trusted module's own call creates the instance first"
+    );
+    let nongeneric = "#[ring(outer)] #[trusted]\nmodule host;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+         pub fn read(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n";
+    let caller = "#[ring(outer)]\nmodule tool;\n\
+         use sigil::host;\n\
+         pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return read(p, n); }\n";
+    assert_eq!(
+        codes("host.sigil", &format!("{nongeneric}{caller}")),
+        BTreeSet::new(),
+        "control: the non-generic wrapper is accepted from the untrusted module"
     );
 }

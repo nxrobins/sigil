@@ -1,0 +1,18 @@
+{
+  "contract_hash": "sha256:2ebb0b4d65a537c7d4607579f65dbe70028b68c0f30cfdc7c086a688fe0db22c",
+  "effects": [
+    "Alloc",
+    "FFI",
+    "KvIO",
+    "Unsafe"
+  ],
+  "host_imports": [],
+  "package": "sigil/storage",
+  "scope": "opaque serialized publication through existing KV; not concurrent CAS",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "storage::load(ns:Internal,ns_len:Internal,key:Internal,key_len:Internal)->Internal",
+    "storage::publish(ns:Internal,ns_len:Internal,key:Internal,key_len:Internal,expected:Internal,expected_len:Internal,next:Internal,next_len:Internal)->Internal"
+  ],
+  "version": "0.1.0-public.1"
+}

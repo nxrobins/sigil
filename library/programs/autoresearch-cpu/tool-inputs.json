@@ -1,0 +1,14 @@
+{
+  "files": {
+    "API.md": "sha256:0fabf186744ce945628caf6f884b2c4468ce9038a79aceab7431594893b82052",
+    "PROVENANCE.md": "sha256:c1c8ff3185a5d4e5fdd9af159fbf13883f52701d3b0d2106663b4d473632f884",
+    "README.md": "sha256:3a4e95455ed9bdd7e1cf907d4009488b413651e18f41c7e489fb5a9d85bee534",
+    "api-card.json": "sha256:717a3e6b680e43a9e779c98f6bf0d7664b48090d17c512eebab9f1ef6e3c16e8",
+    "candidates/momentum.json": "sha256:84057ebe3588919f438b20d2d52178daabb2847d5316aea0f38826264fd8141f",
+    "candidates/sgd.json": "sha256:4d25de80c018380acefe35fdb94f337a60c583f84bb5c7e307fed41c35074302",
+    "candidates/step-decay.json": "sha256:954ecb9e084496895da23b95a8bdc41b7f0d5d254278aa9406a7d031341f2c55",
+    "run.py": "sha256:ec7ce9b691db5aba12071872c45c8dffc2159f7944d1dcad2cef04bb9249908d",
+    "src/tool.sigil": "sha256:dd8c95de98aa0d17f7101bcada6b0c2f1fae6d416012dc4823e008d06331a48c"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

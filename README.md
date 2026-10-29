@@ -6,6 +6,10 @@ A capability-oriented, agent-native language that compiles to WebAssembly, check
 
 ## What this is
 
+The [experimental library catalog](library/PUBLIC.md) covers reusable formatting,
+byte processing, bounded CPU numerics and autoresearch search/checkpoint tools.
+Source availability does not imply package admission or production maturity.
+
 SIGIL compiles a capability-oriented source language to WebAssembly and runs it in a sandboxed Wasmtime host. Its production pipeline applies type, ring, effect, information-flow, capability, ownership, memory, and fuel checks over documented subsets; host grants and certificate gates add runtime enforcement at selected boundaries. The toolchain ships a full ephemeral path (`sigil forge`) that compiles a one-shot tool, verifies it, runs it against input inside a fresh store, and discards the execution state. Capability and refinement obligations are checked by a Z3 prover confined to a guarded quantifier-free fragment. Independent SIGIL implementations differentially check curated lexer, parser, type-checker, and security-pass surfaces against the Rust oracle.
 
 The exact guarantee boundary is defined in [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md), with claim-level evidence in [`docs/SOUNDNESS_MATRIX.md`](docs/SOUNDNESS_MATRIX.md), the production Lean composition profile in [`docs/specs/production-lean-composition.md`](docs/specs/production-lean-composition.md), and residual risks in [`docs/RESIDUAL_RISKS.md`](docs/RESIDUAL_RISKS.md). [`docs/CLAIMS.md`](docs/CLAIMS.md) remains the machine-checked authority for what is proven.
@@ -246,13 +250,32 @@ cargo test -p sigil-runtime parser_differential      # 9 tests
 cargo test -p sigil-runtime typecheck_differential   # 107 tests
 ```
 
-### Z3 environment (Windows)
+### Z3 environment
+
+The default `solver` feature needs Z3 4.13.3 or newer (CI pins 4.16.0). z3-sys
+generates its bindings from the header you name, so a solver build fails without
+`Z3_SYS_Z3_HEADER`; point the header, linker, and loader at the same Z3 install,
+and name its version: z3-sys otherwise detects it through pkg-config or a `z3` on
+PATH, and with neither falls back to its 4.13.3 floor, which hides the
+version-gated API that clippy.toml's fence list names. On macOS with Homebrew:
+
+```bash
+export Z3_SYS_Z3_HEADER=/opt/homebrew/include/z3.h
+export Z3_SYS_Z3_VERSION=4.16.0   # what `z3 --version` prints
+export LIBRARY_PATH=/opt/homebrew/lib
+export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib
+```
+
+On Windows (`Z3_LIBRARY_PATH_OVERRIDE` is z3-sys's own link-search hook; a
+`RUSTFLAGS="-L native=..."` works too, but re-fingerprints every crate in the
+target directory):
 
 ```bash
 export Z3_SYS_Z3_HEADER="/path/to/z3/include/z3.h"
+export Z3_SYS_Z3_VERSION=4.16.0   # what `z3 --version` prints
+export Z3_LIBRARY_PATH_OVERRIDE="/path/to/z3/bin"
 export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
 export BINDGEN_EXTRA_CLANG_ARGS="-I/path/to/z3/include"
-export RUSTFLAGS="-L native=/path/to/z3/bin"
 ```
 
 ## Project status & maturity

@@ -1,0 +1,207 @@
+---
+source: crates/sigil-compiler/tests/workload_snapshots.rs
+expression: "&result"
+---
+WorkloadResult {
+    refine_diags: [],
+    refine_workload: RefinementWorkload {
+        obligations: [
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "@",
+                    op: Gt,
+                    rhs: Literal(
+                        100,
+                    ),
+                    span: Span {
+                        start: 591,
+                        end: 604,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    500,
+                ),
+                site: Span {
+                    start: 611,
+                    end: 622,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T225",
+                    ),
+                    severity: Error,
+                    message: "function body return statement violates declared return refinement: returned literal `500` against predicate `@ > 100`",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 611,
+                            end: 622,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T225",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging return refinement on literal `500`",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 611,
+                            end: 622,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "value",
+                    op: Gt,
+                    rhs: Literal(
+                        100,
+                    ),
+                    span: Span {
+                        start: 556,
+                        end: 573,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    200,
+                ),
+                site: Span {
+                    start: 697,
+                    end: 717,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "record construction violates refinement: field `value` supplied with literal `200`, but predicate `value > 100` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 697,
+                            end: 717,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging refinement on field `value` against literal `200`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 697,
+                            end: 717,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+            LiteralFits {
+                clause: RefinementClause {
+                    field: "value",
+                    op: Gt,
+                    rhs: Literal(
+                        100,
+                    ),
+                    span: Span {
+                        start: 556,
+                        end: 573,
+                        source: SourceId(
+                            4294967295,
+                        ),
+                    },
+                },
+                value: Narrow(
+                    500,
+                ),
+                site: Span {
+                    start: 727,
+                    end: 743,
+                    source: SourceId(
+                        4294967295,
+                    ),
+                },
+                on_violated: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "field store violates refinement: field `value` assigned literal `500`, but predicate `value > 100` is refutable",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 727,
+                            end: 743,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+                on_timeout: Diagnostic {
+                    code: DiagnosticCode(
+                        "T210",
+                    ),
+                    severity: Error,
+                    message: "Z3 timed out within rlimit budget while discharging refinement on field `value` against the stored literal `500`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+                    hint: None,
+                    span: Some(
+                        Span {
+                            start: 727,
+                            end: 743,
+                            source: SourceId(
+                                4294967295,
+                            ),
+                        },
+                    ),
+                    source_name: None,
+                    suggested_edits: None,
+                },
+            },
+        ],
+    },
+    cap_diags: [],
+    cap_workload: AirCapabilityWorkload {
+        obligations: [],
+    },
+}

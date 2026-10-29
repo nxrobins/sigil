@@ -1,0 +1,22 @@
+{
+  "contract_hash": "sha256:0fabf186744ce945628caf6f884b2c4468ce9038a79aceab7431594893b82052",
+  "dependencies": [
+    "sigil/autodiff"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "input": "lowercase hexadecimal ACPU v1 candidate record; 1..12 instructions, eight weights, 0..20 inner steps",
+  "output": "four i64, fourteen f64 and exact request echo as defined in API.md",
+  "package": "autoresearch-cpu/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "result": "i64@Public",
+  "runtime_backend": "native SIGIL/Wasm CPU; Python only validates and transports data",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

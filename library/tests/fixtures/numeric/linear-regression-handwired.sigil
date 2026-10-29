@@ -1,0 +1,118 @@
+// Native CPU full-batch linear regression; Python/Torch is not a runtime backend.
+module tool;
+use sigil::numeric;
+use sigil::vec;
+use sigil::string;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut epochs = 100;
+    if input_len > 3 { return -413; } else {}
+    if input_len > 0 {
+        let text = "".concat(string::str_from_bytes(input_ptr, input_len).unwrap_or(""));
+        epochs = text.parse_i64().unwrap_or(-1);
+        if epochs < 0 || epochs > 200 { return -422; } else {}
+    } else {}
+
+    let x = numeric::zeros(4, 2);
+    let target = numeric::zeros(4, 1);
+    let weights = numeric::zeros(2, 1);
+    let transposed = numeric::zeros(2, 4);
+    let prediction = numeric::zeros(4, 1);
+    let output_gradient = numeric::zeros(4, 1);
+    let gradient = numeric::zeros(2, 1);
+    let validation_x = numeric::zeros(2, 2);
+    let validation_target = numeric::zeros(2, 1);
+    let validation_prediction = numeric::zeros(2, 1);
+    let scalar = numeric::new_scalar();
+    let loss = numeric::new_scalar();
+    let result: Vec<f64> = Vec::with_capacity(9);
+    let mut i = 0;
+    while i < 9 { result.push(0.0); i = i + 1; }
+    let mut value = 0.0;
+    i = 0;
+    while i < 4 {
+        let a = numeric::set(x, i, 0, 1.0);
+        if a < 0 { return a; } else {}
+        let b = numeric::set(x, i, 1, value);
+        if b < 0 { return b; } else {}
+        let c = numeric::set(target, i, 0, 2.0 * value + 1.0);
+        if c < 0 { return c; } else {}
+        value = value + 1.0;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 2 {
+        let a = numeric::set(validation_x, i, 0, 1.0);
+        if a < 0 { return a; } else {}
+        let b = numeric::set(validation_x, i, 1, value);
+        if b < 0 { return b; } else {}
+        let c = numeric::set(validation_target, i, 0, 2.0 * value + 1.0);
+        if c < 0 { return c; } else {}
+        value = value + 1.0;
+        i = i + 1;
+    }
+
+    let transpose_status = numeric::transpose_into(x, transposed);
+    if transpose_status < 0 { return transpose_status; } else {}
+    let prediction_status = numeric::matmul_into(x, weights, prediction);
+    if prediction_status < 0 { return prediction_status; } else {}
+    let loss_status = numeric::mse_into(prediction, target, loss);
+    if loss_status < 0 { return loss_status; } else {}
+    result.set(0, loss.value);
+    let initial_output = numeric::mse_grad_into(prediction, target, output_gradient);
+    if initial_output < 0 { return initial_output; } else {}
+    let initial_gradient = numeric::matmul_into(transposed, output_gradient, gradient);
+    if initial_gradient < 0 { return initial_gradient; } else {}
+    let first_bias = numeric::get_into(gradient, 0, 0, scalar);
+    if first_bias < 0 { return first_bias; } else {}
+    result.set(4, scalar.value);
+    let first_slope = numeric::get_into(gradient, 1, 0, scalar);
+    if first_slope < 0 { return first_slope; } else {}
+    result.set(5, scalar.value);
+
+    let before = alloc(0);
+    let mut step = 0;
+    while step < epochs {
+        let forward = numeric::matmul_into(x, weights, prediction);
+        if forward < 0 { return forward; } else {}
+        let derivative = numeric::mse_grad_into(prediction, target, output_gradient);
+        if derivative < 0 { return derivative; } else {}
+        let backward = numeric::matmul_into(transposed, output_gradient, gradient);
+        if backward < 0 { return backward; } else {}
+        let update = numeric::sgd_step(weights, gradient, 0.05);
+        if update < 0 { return update; } else {}
+        step = step + 1;
+    }
+    // A real allocation-growth control in the runtime tests proves this fence fires.
+    if alloc(0) != before { return -500; } else {}
+
+    let final_forward = numeric::matmul_into(x, weights, prediction);
+    if final_forward < 0 { return final_forward; } else {}
+    let final_loss = numeric::mse_into(prediction, target, loss);
+    if final_loss < 0 { return final_loss; } else {}
+    result.set(1, loss.value);
+    let bias = numeric::get_into(weights, 0, 0, scalar);
+    if bias < 0 { return bias; } else {}
+    result.set(2, scalar.value);
+    let slope = numeric::get_into(weights, 1, 0, scalar);
+    if slope < 0 { return slope; } else {}
+    result.set(3, scalar.value);
+    let final_output = numeric::mse_grad_into(prediction, target, output_gradient);
+    if final_output < 0 { return final_output; } else {}
+    let final_gradient = numeric::matmul_into(transposed, output_gradient, gradient);
+    if final_gradient < 0 { return final_gradient; } else {}
+    let last_bias = numeric::get_into(gradient, 0, 0, scalar);
+    if last_bias < 0 { return last_bias; } else {}
+    result.set(6, scalar.value);
+    let last_slope = numeric::get_into(gradient, 1, 0, scalar);
+    if last_slope < 0 { return last_slope; } else {}
+    result.set(7, scalar.value);
+    let validation_forward = numeric::matmul_into(validation_x, weights, validation_prediction);
+    if validation_forward < 0 { return validation_forward; } else {}
+    let validation_loss = numeric::mse_into(validation_prediction, validation_target, loss);
+    if validation_loss < 0 { return validation_loss; } else {}
+    result.set(8, loss.value);
+
+    // Nine little-endian IEEE-754 f64 values. The host viewer only formats bytes.
+    return result.buf * 4294967296 + 72;
+}

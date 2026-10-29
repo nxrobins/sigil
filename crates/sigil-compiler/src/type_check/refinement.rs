@@ -379,38 +379,117 @@ pub(super) fn extract_narrowing_predicate(
 /// Cross-name visibility comes from `lookup_pattern_refinement` skipping frames
 /// that do not contain the requested name.
 pub(super) fn compose_narrowing_frame(
-    stack: &[std::collections::HashMap<String, Vec<crate::ast::RefinementClause>>],
+    stack: &[RefinementFrame],
     name: &str,
     new_clause: crate::ast::RefinementClause,
-) -> std::collections::HashMap<String, Vec<crate::ast::RefinementClause>> {
-    use std::collections::HashMap;
-    let mut frame: HashMap<String, Vec<crate::ast::RefinementClause>> = HashMap::new();
+) -> RefinementFrame {
+    let mut frame = RefinementFrame::new();
     let mut clauses: Vec<crate::ast::RefinementClause> = Vec::new();
 
-    // Intermediate frames may narrow another variable, so scan for this name.
+    // Intermediate frames may narrow another variable, so scan for this name. The innermost
+    // entry is the name's current binding (DBC0-1): its facts carry forward, and an empty entry
+    // carries nothing, so a shadowed binding's facts stay behind it.
     for existing in stack.iter().rev() {
         if let Some(prior) = existing.get(name) {
-            clauses.extend(prior.iter().cloned());
+            clauses.extend(prior.clauses.iter().cloned());
             break;
         }
     }
     clauses.push(new_clause);
-    frame.insert(name.to_string(), clauses);
+    frame.insert(
+        name.to_string(),
+        RefinementEntry {
+            clauses,
+            mutable: false,
+        },
+    );
     frame
+}
+
+/// DBC-0a: one binding's refinement facts, as a `pattern_refinement_stack` frame entry. Every
+/// binding site writes one for its name — the bound value's facts, or an empty entry when it
+/// has none — so a lookup stops at the innermost binding and an outer binding's facts never
+/// reach a name that shadows it (DBC0-1). A `mut` binding's entry is empty and says so, and a
+/// narrowing on such a name pushes nothing (DBC0-2): a fact may not outlive the value it
+/// describes, and a `mut` binding's value may change under it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct RefinementEntry {
+    pub(super) clauses: Vec<crate::ast::RefinementClause>,
+    pub(super) mutable: bool,
+}
+
+/// One scope's refinement entries, keyed by the bound name.
+pub(super) type RefinementFrame = std::collections::HashMap<String, RefinementEntry>;
+
+/// Write `name`'s entry into the innermost frame: `clauses` for an immutable binding, nothing
+/// for a `mut` one. A no-op with no frame on the stack (module level), as the let-binding
+/// push always was.
+pub(super) fn bind_refinement_entry(
+    tracker: &mut MonomorphTracker,
+    name: &str,
+    clauses: Vec<crate::ast::RefinementClause>,
+    mutable: bool,
+) {
+    if let Some(frame) = tracker.pattern_refinement_stack.last_mut() {
+        frame.insert(
+            name.to_string(),
+            RefinementEntry {
+                clauses: if mutable { Vec::new() } else { clauses },
+                mutable,
+            },
+        );
+    }
+}
+
+/// Whether `name`'s innermost binding is `mut` (DBC0-2). A name with no entry — a constant, or
+/// a name no binding site in this body introduced — reads as immutable, as before.
+pub(super) fn innermost_binding_is_mutable(tracker: &MonomorphTracker, name: &str) -> bool {
+    tracker
+        .pattern_refinement_stack
+        .iter()
+        .rev()
+        .find_map(|frame| frame.get(name))
+        .is_some_and(|entry| entry.mutable)
+}
+
+/// Whether an `if` narrowing on `name` may record a fact (DBC0-2): only where nothing in the
+/// arm can assign the name. That rules out a `mut` binding (its entry says so), any name T042's
+/// by-name `mutables` set still lets the scope assign (an immutable binding that reuses an outer
+/// `let mut`'s name; the set is the assignment gate's own authority, so it decides here too),
+/// and an actor state field the body may write: a `mut` field in a handler, or any field in
+/// `init`, the construction phase that writes every field. A state field never has an entry (a
+/// binding cannot shadow one, N006), so the first two tests cannot see it. Fails closed: a name
+/// this cannot vouch for gets no narrowing, and the call it would have discharged is T211.
+pub(super) fn narrowing_target_is_immutable(
+    tracker: &MonomorphTracker,
+    mutables: &std::collections::HashSet<String>,
+    name: &str,
+) -> bool {
+    if tracker.state_fields.contains_key(name) {
+        return !(tracker.mut_state_fields.contains(name)
+            || tracker.body_kind == super::BodyKind::Init);
+    }
+    !innermost_binding_is_mutable(tracker, name) && !mutables.contains(name)
 }
 
 /// Look up a pattern-bound refinement from inner to outer scope. Stored
 /// pattern clauses are literal-RHS only; cross-field shapes do not propagate.
+/// The innermost entry for the name decides (DBC0-1): an empty one is "no facts", never a
+/// fall-through to an outer binding of the same name.
 pub(super) fn lookup_pattern_refinement(
     tracker: &MonomorphTracker,
     name: &str,
 ) -> Option<Vec<crate::ast::RefinementClause>> {
-    for frame in tracker.pattern_refinement_stack.iter().rev() {
-        if let Some(clauses) = frame.get(name) {
-            return Some(clauses.clone());
-        }
+    let entry = tracker
+        .pattern_refinement_stack
+        .iter()
+        .rev()
+        .find_map(|frame| frame.get(name))?;
+    if entry.clauses.is_empty() {
+        None
+    } else {
+        Some(entry.clauses.clone())
     }
-    None
 }
 
 /// Extract the concrete value used by the production single-field discharge path.

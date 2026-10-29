@@ -1,0 +1,131 @@
+{
+  "alternatives": [
+    "Use the explicit package workflow; source availability is not package admission."
+  ],
+  "compiler_requires": "=0.1.0",
+  "contract_hash": "sha256:a6abbea753c312503e326c29eddb813d5f4cec8a37c64aea6b210dbb9caa7077",
+  "entry_points": [
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render a Public signed integer",
+      "resource_bound": "one allocation; 1..20 output bytes; <=512 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn decimal_i64(value: i64) -> i64 ! { Alloc }",
+      "symbol": "fmt::decimal_i64",
+      "taint_relation": "Public input produces Public packed result and bytes"
+    },
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render an Internal signed integer without declassification",
+      "resource_bound": "one allocation; 1..20 output bytes; <=512 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn decimal_i64(value: i64 @Internal) -> i64 @Internal ! { Alloc }",
+      "symbol": "fmt_internal::decimal_i64",
+      "taint_relation": "Internal input produces Internal packed result and bytes"
+    },
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render a Secret signed integer without declassification",
+      "resource_bound": "one allocation; 1..20 output bytes; <=512 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn decimal_i64(value: i64 @Secret) -> i64 @Secret ! { Alloc }",
+      "symbol": "fmt_secret::decimal_i64",
+      "taint_relation": "Secret input produces Secret packed result and bytes"
+    },
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render a Public boolean as true or false",
+      "resource_bound": "one allocation; 4..5 output bytes; <=128 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn boolean(value: bool) -> i64 ! { Alloc }",
+      "symbol": "fmt::boolean",
+      "taint_relation": "Public input produces Public packed result and bytes"
+    },
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render an Internal boolean without declassification",
+      "resource_bound": "one allocation; 4..5 output bytes; <=128 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn boolean(value: bool @Internal) -> i64 @Internal ! { Alloc }",
+      "symbol": "fmt_internal::boolean",
+      "taint_relation": "Internal input produces Internal packed result and bytes"
+    },
+    {
+      "determinism": "state-relative",
+      "effects": [
+        "Alloc"
+      ],
+      "failures": [
+        "runtime allocation trap"
+      ],
+      "grants": [],
+      "normal_use": "Render a Secret boolean without declassification",
+      "resource_bound": "one allocation; 4..5 output bytes; <=128 fuel",
+      "rings": [
+        "inner"
+      ],
+      "signature": "pub fn boolean(value: bool @Secret) -> i64 @Secret ! { Alloc }",
+      "symbol": "fmt_secret::boolean",
+      "taint_relation": "Secret input produces Secret packed result and bytes"
+    }
+  ],
+  "examples": [],
+  "intents": [
+    "Render a signed i64 as canonical decimal text",
+    "Render a boolean as lowercase text while preserving its label"
+  ],
+  "limitations": [
+    "experimental public source; unreviewed and not admitted",
+    "no hex, base-N, width, templates, locale, parsing, streaming, I/O, or declassification",
+    "the pinned compiler supports @Flow, but v0.1 retains label-specific modules because the certified self-host checker fails closed on @Flow, demand is label-specific, and package-boundary evidence is not yet mature",
+    "fresh allocation makes these operations state-relative under the package verifier even though output bytes are deterministic for the same input"
+  ],
+  "package": "sigil/fmt",
+  "schema_version": "1",
+  "version": "0.1.0-public.1"
+}

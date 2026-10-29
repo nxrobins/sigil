@@ -41,11 +41,12 @@ use super::resolve::{
 use super::types::RangeLoopFact;
 use super::{
     BodyKind, ExpectedTypeGuard, FunctionSig, MonomorphTracker, ParamRegion, RegionId, Type,
-    TypeCheckContext, TypeUniverse, compose_narrowing_frame, extract_narrowing_predicate,
-    infer_expr, negate_refinement_clause, type_contains_never,
+    TypeCheckContext, TypeUniverse, bind_refinement_entry, compose_narrowing_frame,
+    extract_narrowing_predicate, infer_expr, narrowing_target_is_immutable,
+    negate_refinement_clause, type_contains_never, type_is_concrete,
 };
 use crate::ast::{
-    Block, ExprStmt, LetStmt, LetTupleStmt, Literal, Pattern, RefinementClause, RefinementOp,
+    Block, Expr, ExprStmt, LetStmt, LetTupleStmt, Literal, Pattern, RefinementClause, RefinementOp,
     RefinementRhs, ReturnStmt, Stmt, TypeExpr,
 };
 use crate::diagnostics::{Diagnostic, codes};
@@ -295,6 +296,26 @@ pub(super) fn check_function_block(
         env.insert(param.name.clone(), param.ty.clone());
     }
 
+    // A function body is checked in a context of its own. The bounds facts,
+    // refinement frames, loop depth and immediate-borrow flag below describe
+    // positions in the body that was being checked when this one is entered,
+    // and an instance body (monomorph re-entry) is entered from its first call
+    // site, inside the caller's body. Inherited, they applied by name inside a
+    // different function: a `for i in 0..4` fact elided the bounds check of
+    // `a[i]` in a generic body first created in that loop, so a later call
+    // read and wrote out of bounds; an `if x > 0` frame discharged a refined
+    // callee's `x > 0` for the instance's own parameter `x`; a `break` outside
+    // any loop of the body passed T260 and stopped on I013 downstream; and a
+    // borrowed call admitted a bare slice in the body (T238). Each is saved and
+    // emptied here and restored below, like `region_locals`. A top-level body
+    // starts with all of them empty, so it is unchanged. Fails closed: an
+    // emptied context keeps every runtime bounds check and discharges only
+    // what the body proves itself.
+    let prev_range_facts = std::mem::take(&mut tracker.range_loop_facts);
+    let prev_refinement_frames = std::mem::take(&mut tracker.pattern_refinement_stack);
+    let prev_loop_depth = std::mem::replace(&mut tracker.loop_depth, 0);
+    let prev_immediate_borrow = std::mem::replace(&mut tracker.parent_is_immediate_borrow, false);
+
     // Wall 4 Step 7 / N9-S7: push a fresh frame onto
     // `tracker.pattern_refinement_stack` populated with each refined
     // param's clauses keyed by the param's declared name. Pop on
@@ -305,13 +326,21 @@ pub(super) fn check_function_block(
     // pollution at next-function entry. See N29-S7 in the spec for the
     // planned RAII drop-guard upgrade (a future cleanup, not load-
     // bearing for first-pass correctness).
-    let mut frame: HashMap<String, Vec<crate::ast::RefinementClause>> = HashMap::new();
+    // DBC0-1: every parameter gets an entry, a refined one its clauses and the rest an empty
+    // one, so no binding in the body reads a fact past its own name.
+    let mut frame = super::refinement::RefinementFrame::new();
     for (idx, param) in params.iter().enumerate() {
-        if let Some(Some(clauses)) = param_refinements.get(idx)
-            && !clauses.is_empty()
-        {
-            frame.insert(param.name.clone(), clauses.clone());
-        }
+        let clauses = match param_refinements.get(idx) {
+            Some(Some(clauses)) => clauses.clone(),
+            _ => Vec::new(),
+        };
+        frame.insert(
+            param.name.clone(),
+            super::refinement::RefinementEntry {
+                clauses,
+                mutable: false,
+            },
+        );
     }
     tracker.pattern_refinement_stack.push(frame);
 
@@ -434,6 +463,11 @@ pub(super) fn check_function_block(
 
     // Pop the frame on exit (N9-S7 push/pop pairing).
     tracker.pattern_refinement_stack.pop();
+    // Restore the context of the body that was being checked (saved at entry).
+    tracker.pattern_refinement_stack = prev_refinement_frames;
+    tracker.range_loop_facts = prev_range_facts;
+    tracker.loop_depth = prev_loop_depth;
+    tracker.parent_is_immediate_borrow = prev_immediate_borrow;
     result
 }
 
@@ -524,6 +558,12 @@ pub(super) fn check_block(
     // behavior — and thus byte-identity — is unchanged; the fix engages only when a nested
     // block shadowed an outer binding.
     let saved_alias_origin = tracker.alias_origin.clone();
+    // DBC0-1: a frame for this block's bindings. A `let` writes its entry here, so the facts
+    // (or the empty entry) of a block-local name end with the block, and an outer binding the
+    // block shadowed is visible again after it — the refinement analogue of the alias restore.
+    tracker
+        .pattern_refinement_stack
+        .push(super::refinement::RefinementFrame::new());
 
     for statement in &block.statements {
         let (typed_stmt, stmt_guaranteed_return) = match statement {
@@ -547,6 +587,15 @@ pub(super) fn check_block(
                 }
                 if typed.mutable {
                     mutables.insert(typed.name.clone());
+                } else if mutables.contains(&typed.name) {
+                    // T042's set is by name: an immutable `let` that reuses an outer `let mut`'s
+                    // name leaves the name assignable, so this binding's value may change under
+                    // any fact it carries. Its entry says so (DBC0-2 at its root): the refined
+                    // value it was bound to is dropped, and a narrowing on the name records
+                    // nothing. The over-refusal (the shadowing binding is never assigned, yet
+                    // carries no fact) is the Boring Limit the spec chose over flow-sensitive
+                    // invalidation; the second DBC-0a review found the stale fact this closes.
+                    bind_refinement_entry(tracker, &typed.name, Vec::new(), true);
                 }
                 // Mutation-as-capability (PR-1, NC-1): readonly PROPAGATION. A
                 // `let b = <value rooted in a @ReadOnly local>` makes `b` readonly
@@ -709,11 +758,32 @@ pub(super) fn check_block(
                         false,
                     );
                     statements.extend(typed.statements);
+                    // DBC0-1: the desugar's `let`s wrote their entries into the nested block's
+                    // frame, which `check_block` popped, while `env` and `mutables` keep the
+                    // names. Write each binding's entry into the live frame here: empty (a
+                    // tuple element carries no fact), and mutable wherever the name is
+                    // assignable (its own `mut`, or an outer `let mut` of the name that T042's
+                    // by-name set still honors). The second DBC-0a review found both rules
+                    // missing the tuple form.
+                    for (name, is_mut) in &stmt.bindings {
+                        bind_refinement_entry(
+                            tracker,
+                            name,
+                            Vec::new(),
+                            *is_mut || mutables.contains(name),
+                        );
+                    }
                 } else {
                     // ET-4: emit NO field-extraction desugar; bind each name to
                     // Error so a later use doesn't cascade into "unknown name".
-                    for (name, _) in &stmt.bindings {
+                    for (name, is_mut) in &stmt.bindings {
                         env.insert(name.clone(), Type::Error);
+                        bind_refinement_entry(
+                            tracker,
+                            name,
+                            Vec::new(),
+                            *is_mut || mutables.contains(name),
+                        );
                     }
                 }
                 continue;
@@ -884,8 +954,20 @@ pub(super) fn check_block(
                 let mut body_env = env.clone();
                 body_env.insert(stmt.var.clone(), elem_type.clone());
                 let mut body_mutables = mutables.clone();
+                // The element var shadows an enclosing `let mut` of its name inside the body,
+                // so it is pruned from the body's mutable set: assigning to it there is T042
+                // whatever the outer scope declared (the range loop below says why it matters).
+                body_mutables.remove(&stmt.var);
                 // break/continue: the array-path body is one loop level deeper. (The
                 // iterator path desugars to a `while`, which increments via check_while.)
+                // DBC0-1: the element var's entry, in a frame of its own for the body (empty:
+                // an element carries no fact), so the body's reads of the name stop here.
+                let mut var_frame = super::refinement::RefinementFrame::new();
+                var_frame.insert(
+                    stmt.var.clone(),
+                    super::refinement::RefinementEntry::default(),
+                );
+                tracker.pattern_refinement_stack.push(var_frame);
                 tracker.loop_depth += 1;
                 let body = check_block(
                     &stmt.body,
@@ -898,6 +980,7 @@ pub(super) fn check_block(
                     false,
                 );
                 tracker.loop_depth -= 1;
+                tracker.pattern_refinement_stack.pop();
                 (
                     TypedStmt::ForIn(TypedForInStmt {
                         var: stmt.var.clone(),
@@ -991,6 +1074,11 @@ pub(super) fn check_block(
                 let mut body_env = env.clone();
                 body_env.insert(stmt.var.clone(), Type::I64);
                 let mut body_mutables = mutables.clone();
+                // ...and PRUNED from the body's mutable set. `mutables` is inherited by name,
+                // so an enclosing `let mut v` left `v` assignable inside the body: `v = 6`
+                // passed T042, the fact `v in [0, K)` still elided the check on `arr[v]`, and
+                // the read went past the array (SR-035, third review). FAIL DIRECTION: closed.
+                body_mutables.remove(&stmt.var);
                 // RF-M2: the Z3-FREE bounds fact. Push `v in [0, K)` onto the
                 // mutation/shadow-proof channel IFF every gate holds:
                 //   * start is the surface literal `0` (v1.1 may widen to any
@@ -1011,33 +1099,41 @@ pub(super) fn check_block(
                     && range_k.is_some_and(|k| k >= 1)
                     && !body_rebinds_name(&stmt.body, &stmt.var);
                 let mut pushed_fact = false;
+                // DBC0-1: the loop var's entry, in a frame of its own for the body: the bounds
+                // fact when every gate holds, else an empty entry — either way the body's reads
+                // of the name stop here.
+                let mut var_clauses: Vec<RefinementClause> = Vec::new();
                 if fact_ok && let Some(k) = range_k {
                     tracker.range_loop_facts.push(RangeLoopFact {
                         var: stmt.var.clone(),
                         lo: 0,
                         hi_exclusive: k,
                     });
-                    let mut frame: HashMap<String, Vec<RefinementClause>> = HashMap::new();
-                    frame.insert(
-                        stmt.var.clone(),
-                        vec![
-                            RefinementClause {
-                                field: stmt.var.clone(),
-                                op: RefinementOp::Ge,
-                                rhs: RefinementRhs::Literal(0),
-                                span: stmt.span,
-                            },
-                            RefinementClause {
-                                field: stmt.var.clone(),
-                                op: RefinementOp::Lt,
-                                rhs: RefinementRhs::Literal(k),
-                                span: stmt.span,
-                            },
-                        ],
-                    );
-                    tracker.pattern_refinement_stack.push(frame);
+                    var_clauses = vec![
+                        RefinementClause {
+                            field: stmt.var.clone(),
+                            op: RefinementOp::Ge,
+                            rhs: RefinementRhs::Literal(0),
+                            span: stmt.span,
+                        },
+                        RefinementClause {
+                            field: stmt.var.clone(),
+                            op: RefinementOp::Lt,
+                            rhs: RefinementRhs::Literal(k),
+                            span: stmt.span,
+                        },
+                    ];
                     pushed_fact = true;
                 }
+                let mut var_frame = super::refinement::RefinementFrame::new();
+                var_frame.insert(
+                    stmt.var.clone(),
+                    super::refinement::RefinementEntry {
+                        clauses: var_clauses,
+                        mutable: false,
+                    },
+                );
+                tracker.pattern_refinement_stack.push(var_frame);
                 tracker.loop_depth += 1;
                 let body = check_block(
                     &stmt.body,
@@ -1050,9 +1146,9 @@ pub(super) fn check_block(
                     false,
                 );
                 tracker.loop_depth -= 1;
+                tracker.pattern_refinement_stack.pop();
                 if pushed_fact {
                     tracker.range_loop_facts.pop();
-                    tracker.pattern_refinement_stack.pop();
                 }
                 (
                     TypedStmt::ForRange(TypedForRangeStmt {
@@ -1089,6 +1185,7 @@ pub(super) fn check_block(
     // PR-3: restore the alias map to its pre-block state — block-local `let` aliases go
     // out of scope, and any outer binding this block shadowed is reinstated (NC-2c-4).
     tracker.alias_origin = saved_alias_origin;
+    tracker.pattern_refinement_stack.pop();
 
     TypedBlock {
         statements,
@@ -1234,11 +1331,15 @@ pub(super) fn check_let(
     // function body), the push is silently a no-op — Step 7 admits
     // refinement only inside fn bodies / actor handlers where the
     // stack has been initialized by `check_function_block`.
-    if let Some(ref refinement_clauses) = value.refinement
-        && let Some(frame) = tracker.pattern_refinement_stack.last_mut()
-    {
-        frame.insert(stmt.name.clone(), refinement_clauses.clone());
-    }
+    //
+    // DBC-0a: the entry is written for every `let`. An immutable binding carries its value's
+    // facts, or none; a `let mut` carries none, since its value may change under them (DBC0-2).
+    bind_refinement_entry(
+        tracker,
+        &stmt.name,
+        value.refinement.clone().unwrap_or_default(),
+        stmt.mutable,
+    );
 
     TypedLetStmt {
         name: stmt.name.clone(),
@@ -1466,14 +1567,35 @@ pub(super) fn check_assign(
         diagnostics.push(Diagnostic::error(codes::T043, message, Some(stmt.span)));
     }
 
-    let mut value = infer_expr(
-        &stmt.value,
-        env,
-        expected_return,
-        context,
-        tracker,
-        diagnostics,
-    );
+    // The place is the slot the value is written to, so its type is the value's
+    // expected type, as a `let` annotation is (CF-I1: only when fully concrete).
+    // A construct on the right then takes the place's instance: `g = G::V(3, 40)`
+    // for `g: G<i32>` builds `G<i32>`, and `t = (1, 40)` for `t: (i32, i64)` types
+    // its elements by the place. Without it both built the `i64` default and the
+    // place's readers took the wrong bytes. With no concrete place type the value
+    // infers under whatever expected type was already in effect, as before.
+    let place_slot = (place_ok && type_is_concrete(&place.ty)).then(|| place.ty.clone());
+    let mut value = match place_slot {
+        Some(slot) => {
+            let mut guard = ExpectedTypeGuard::push(tracker, Some(slot));
+            infer_expr(
+                &stmt.value,
+                env,
+                expected_return,
+                context,
+                guard.tracker_mut(),
+                diagnostics,
+            )
+        }
+        None => infer_expr(
+            &stmt.value,
+            env,
+            expected_return,
+            context,
+            tracker,
+            diagnostics,
+        ),
+    };
 
     // PIL: narrow IntLit leaves in the RHS to the place's type. check_assign
     // historically skipped this (unlike check_let), so a binary RHS to a
@@ -2064,15 +2186,18 @@ pub(super) fn check_if(
     // composition, the inner frame would HIDE the outer narrowing
     // under `lookup_pattern_refinement`'s first-match-wins discipline.
     //
-    // V4-W4S10 SOUNDNESS GAP: this narrowing does NOT track through
-    // reassignment. `if x > 0 { x = 0; need_positive(x); }` admits
-    // the call inside the if-body even though `x` is no longer
-    // positive — narrowing is per-arm, not per-statement-after-cond.
-    // Users should use let-bindings (`let y = x; if y > 0 { ... }`)
-    // when reassigning a narrowed variable. Future Step (TBD) will
-    // either invalidate the frame on assignment or thread a
-    // per-statement environment.
-    let narrowing = extract_narrowing_predicate(&stmt.condition);
+    // V4-W4S10 (closed by DBC-0a): this narrowing does not track through
+    // reassignment, so it is not offered to a name the arm may assign —
+    // `if x > 0 { x = 0; need_positive(x); }` refuses the call (T211),
+    // since `x` carries no fact inside the arm. That is a `mut` binding,
+    // any binding whose name T042's by-name set still lets the scope
+    // assign (an immutable binding reusing an outer `let mut`'s name), and
+    // an actor state field the body may write (a `mut` field in a handler,
+    // any field in `init`). A narrowed value that is then reassigned wants
+    // an immutable copy: `let y = x; if y > 0 { ... }`. Flow-sensitive
+    // invalidation is deferred (the design-by-contract spec, §9 Q1).
+    let narrowing = extract_narrowing_predicate(&stmt.condition)
+        .filter(|(name, _)| narrowing_target_is_immutable(tracker, mutables, name));
 
     let then_pushed = if let Some((name, clause)) = &narrowing {
         let frame =
@@ -2389,6 +2514,16 @@ pub(super) fn check_match(
                     // An unresolved identifier retains the existing binding-pattern
                     // meaning. A visible constant deliberately wins over a binding.
                     arm_env.insert(pattern.name.clone(), scrutinee.ty.clone());
+                    // DBC0-1: the binding's own entry, the scrutinee's facts or none. A
+                    // pattern binding is never `mut`, but T042's by-name set lets the arm
+                    // assign it under an outer `let mut` of its name, so the entry is mutable
+                    // there and the facts are dropped (DBC0-2).
+                    bind_refinement_entry(
+                        tracker,
+                        &pattern.name,
+                        scrutinee.refinement.clone().unwrap_or_default(),
+                        mutables.contains(&pattern.name),
+                    );
                     if arm.guard.is_none() {
                         has_unguarded_catchall = true;
                     }
@@ -2494,11 +2629,9 @@ pub(super) fn check_match(
                                 // attach (the `if binding_name != "_"`
                                 // guard is the wildcard-narrowing
                                 // boundary).
-                                if let Some(declared_field) =
-                                    variant_field_names.get(idx).and_then(|x| x.as_ref())
-                                {
-                                    let attached: Vec<crate::ast::RefinementClause> =
-                                        variant_refinements
+                                let attached: Vec<crate::ast::RefinementClause> =
+                                    match variant_field_names.get(idx).and_then(|x| x.as_ref()) {
+                                        Some(declared_field) => variant_refinements
                                             .iter()
                                             .filter(|c| {
                                                 c.field == *declared_field
@@ -2508,14 +2641,19 @@ pub(super) fn check_match(
                                                     )
                                             })
                                             .cloned()
-                                            .collect();
-                                    if !attached.is_empty()
-                                        && let Some(frame) =
-                                            tracker.pattern_refinement_stack.last_mut()
-                                    {
-                                        frame.insert(binding_name.clone(), attached);
-                                    }
-                                }
+                                            .collect(),
+                                        None => Vec::new(),
+                                    };
+                                // DBC0-1: written even when empty — a tuple-like payload
+                                // (`Some(x)`) has no declared field name and no clause — so
+                                // the binding shadows an outer name's facts. Mutable where
+                                // T042's by-name set lets the arm assign the name (DBC0-2).
+                                bind_refinement_entry(
+                                    tracker,
+                                    binding_name,
+                                    attached,
+                                    mutables.contains(binding_name),
+                                );
                             }
                             typed_bindings.push((binding_name.clone(), resolved_ty));
                         }
@@ -2587,6 +2725,12 @@ pub(super) fn check_match(
                     match el {
                         crate::ast::ArrayElem::Bind(name, _) => {
                             arm_env.insert(name.clone(), elem_ty.clone());
+                            bind_refinement_entry(
+                                tracker,
+                                name,
+                                Vec::new(),
+                                mutables.contains(name),
+                            );
                             elem_binds.push((Some(name.clone()), elem_ty.clone()));
                         }
                         crate::ast::ArrayElem::Wild(_) => {
@@ -2597,6 +2741,7 @@ pub(super) fn check_match(
                 let rest_typed = pattern.rest.as_ref().map(|r| {
                     if let Some(name) = &r.name {
                         arm_env.insert(name.clone(), Type::Slice(Box::new(elem_ty.clone())));
+                        bind_refinement_entry(tracker, name, Vec::new(), mutables.contains(name));
                     }
                     (r.name.clone(), elem_ty.clone())
                 });
@@ -2903,33 +3048,130 @@ fn resolve_range_fact_end(end: &TypedExpr) -> Option<i64> {
     }
 }
 
-/// RF-M2: the SHADOW-PROOF pre-scan - true iff ANY statement in the body
-/// rebinds `name` through any binder form. TOTAL matches over `Stmt` and
-/// `Pattern` (the F005 defense: a future binder variant fails to compile here
-/// and must be classified). Expressions need no descent: the only
-/// expression-level binders are closure params and handle-clause binders,
-/// and BOTH contexts are BARRIERED (the fact channel is emptied around their
-/// `check_block`). `Assign` is not a binder - assignment MUTATES an existing
-/// binding, and mutating the loop var is T042 (errors abort before AIR).
+/// RF-M2: the SHADOW-PROOF pre-scan - true iff ANYTHING in the body's subtree
+/// rebinds `name` through any binder form, statements and expressions alike: a
+/// `let` or tuple `let`, a match arm's pattern, a loop variable, a closure
+/// parameter, a handle clause's binder or a `region`'s name, in every block an
+/// expression holds (`region` and `handle` bodies, closure and clause bodies).
+/// TOTAL matches over `Stmt`, `Expr` and `Pattern` (the F005 defense: a future
+/// binder variant fails to compile here and must be classified). It looked into
+/// no expression, on the premise that the only binders there were closure and
+/// clause binders, whose bodies are BARRIERED; but a `region` or bare `handle`
+/// body is inline in the same function, and the barrier empties only the
+/// bounds-fact channel, not the refinement frame the same gate pushes. So a
+/// `let i` in a `region` or `handle` body kept the loop's fact, and `a[i]` on the
+/// inner `i` read and wrote out of bounds; and a closure parameter `i` kept the
+/// loop's frame, which discharged `i < 4` for it. Any rebinding refuses the whole
+/// loop's fact and frame (fail-closed: the trap floor stays). `Assign` binds
+/// nothing - assignment MUTATES an existing binding, and mutating the loop var
+/// is T042 (errors abort before AIR) - but its target and value are scanned.
 fn body_rebinds_name(block: &Block, name: &str) -> bool {
     block.statements.iter().any(|s| stmt_rebinds_name(s, name))
 }
 
 fn stmt_rebinds_name(s: &Stmt, name: &str) -> bool {
     match s {
-        Stmt::Let(l) => l.name == name,
-        Stmt::LetTuple(lt) => lt.bindings.iter().any(|(n, _)| n == name),
-        Stmt::Assign(_) | Stmt::Expr(_) => false,
-        Stmt::If(i) => {
-            body_rebinds_name(&i.then_branch, name) || body_rebinds_name(&i.else_branch, name)
+        Stmt::Let(l) => l.name == name || expr_rebinds_name(&l.value, name),
+        Stmt::LetTuple(lt) => {
+            lt.bindings.iter().any(|(n, _)| n == name) || expr_rebinds_name(&lt.value, name)
         }
-        Stmt::Match(m) => m.arms.iter().any(|arm| {
-            pattern_binds_name(&arm.pattern, name) || body_rebinds_name(&arm.body, name)
+        Stmt::Assign(a) => expr_rebinds_name(&a.target, name) || expr_rebinds_name(&a.value, name),
+        Stmt::Expr(e) => expr_rebinds_name(&e.expr, name),
+        Stmt::If(i) => {
+            expr_rebinds_name(&i.condition, name)
+                || body_rebinds_name(&i.then_branch, name)
+                || body_rebinds_name(&i.else_branch, name)
+        }
+        Stmt::Match(m) => {
+            expr_rebinds_name(&m.scrutinee, name)
+                || m.arms.iter().any(|arm| {
+                    pattern_binds_name(&arm.pattern, name)
+                        || arm
+                            .guard
+                            .as_ref()
+                            .is_some_and(|g| expr_rebinds_name(g, name))
+                        || body_rebinds_name(&arm.body, name)
+                })
+        }
+        Stmt::While(w) => expr_rebinds_name(&w.condition, name) || body_rebinds_name(&w.body, name),
+        Stmt::ForIn(f) => {
+            f.var == name
+                || expr_rebinds_name(&f.iterable, name)
+                || body_rebinds_name(&f.body, name)
+        }
+        Stmt::ForRange(f) => {
+            f.var == name
+                || expr_rebinds_name(&f.start, name)
+                || expr_rebinds_name(&f.end, name)
+                || body_rebinds_name(&f.body, name)
+        }
+        Stmt::Return(r) => r.value.as_ref().is_some_and(|v| expr_rebinds_name(v, name)),
+        Stmt::Break(_) | Stmt::Continue(_) => false,
+    }
+}
+
+fn expr_rebinds_name(e: &Expr, name: &str) -> bool {
+    let any = |es: &[Expr]| es.iter().any(|x| expr_rebinds_name(x, name));
+    match e {
+        Expr::Literal(_) | Expr::Path(_) | Expr::CapRestrict(_) | Expr::CapRestrictDeadline(_) => {
+            false
+        }
+        Expr::Call(c) => any(&c.args),
+        Expr::ResultCtor(r) => expr_rebinds_name(&r.value, name),
+        Expr::Try(t) => expr_rebinds_name(&t.value, name),
+        Expr::Send(s) => expr_rebinds_name(&s.message, name),
+        Expr::Ask(a) => expr_rebinds_name(&a.message, name) || expr_rebinds_name(&a.timeout, name),
+        Expr::Spawn(s) => {
+            any(&s.args)
+                || s.supervision.as_ref().is_some_and(|sup| match sup {
+                    crate::ast::SupervisionExpr::Stop => false,
+                    crate::ast::SupervisionExpr::Restart { max_restarts } => {
+                        expr_rebinds_name(max_restarts, name)
+                    }
+                })
+        }
+        Expr::Binary(b) => expr_rebinds_name(&b.lhs, name) || expr_rebinds_name(&b.rhs, name),
+        Expr::EnumConstruct(c) => any(&c.fields),
+        Expr::RecordConstruct(r) => r.fields.iter().any(|(_, v)| expr_rebinds_name(v, name)),
+        Expr::FieldAccess(f) => expr_rebinds_name(&f.object, name),
+        Expr::CapSplit(c) => expr_rebinds_name(&c.amount, name),
+        Expr::CapDraw(c) => expr_rebinds_name(&c.amount, name),
+        Expr::Mint(m) => expr_rebinds_name(&m.target, name),
+        Expr::ArrayLit(a) => any(&a.elements),
+        Expr::Tuple(t) => any(&t.elements),
+        Expr::Index(i) => expr_rebinds_name(&i.array, name) || expr_rebinds_name(&i.index, name),
+        Expr::Slice(s) => {
+            expr_rebinds_name(&s.array, name)
+                || s.start.as_ref().is_some_and(|x| expr_rebinds_name(x, name))
+                || s.end.as_ref().is_some_and(|x| expr_rebinds_name(x, name))
+        }
+        Expr::MethodCall(m) => expr_rebinds_name(&m.receiver, name) || any(&m.args),
+        Expr::Closure(c) => {
+            c.params.iter().any(|p| p.name == name) || body_rebinds_name(&c.body, name)
+        }
+        Expr::Borrow(b) => expr_rebinds_name(&b.inner, name),
+        Expr::Grant(g) => expr_rebinds_name(&g.cap, name) || expr_rebinds_name(&g.body, name),
+        Expr::Handle(h) => body_rebinds_name(&h.body, name),
+        Expr::Perform(p) => any(&p.args),
+        Expr::ClauseHandle(c) => {
+            expr_rebinds_name(&c.scrutinee, name)
+                || c.clauses.iter().any(|clause| {
+                    clause.binders.iter().any(|b| b == name)
+                        || body_rebinds_name(&clause.body, name)
+                })
+        }
+        Expr::Resume(r) => expr_rebinds_name(&r.value, name),
+        Expr::Declassify(d) => expr_rebinds_name(&d.value, name) || expr_rebinds_name(&d.cap, name),
+        Expr::DeclassifyCt(d) => {
+            expr_rebinds_name(&d.value, name) || expr_rebinds_name(&d.cap, name)
+        }
+        Expr::Region(r) => {
+            r.name == name || expr_rebinds_name(&r.limit, name) || body_rebinds_name(&r.body, name)
+        }
+        Expr::FString(f) => f.parts.iter().any(|part| match part {
+            crate::ast::FStringPart::Hole(x) => expr_rebinds_name(x, name),
+            crate::ast::FStringPart::Literal(..) => false,
         }),
-        Stmt::While(w) => body_rebinds_name(&w.body, name),
-        Stmt::ForIn(f) => f.var == name || body_rebinds_name(&f.body, name),
-        Stmt::ForRange(f) => f.var == name || body_rebinds_name(&f.body, name),
-        Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
     }
 }
 

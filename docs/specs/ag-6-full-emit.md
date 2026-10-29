@@ -69,7 +69,7 @@ The current authorities are executable:
   `ag6_match_no_fail_open` cover match layout and execution.
 - `generic_unit_variant_layout_is_context_independent` covers production bare/qualified identity.
 - `ag6_6_narrow_variant_size_corpus` covers narrow/wide variants, four/eight-byte arguments,
-  returns, calls, and multiple type parameters.
+  returns, free-call and method arguments, and multiple type parameters.
 - `ag6_7_unresolved_generic_enum_contexts_fail_closed` pins unsupported contexts.
 - `pin_fence_registry_never_diverges` requires every known emit hole to reject, poison, or equal the
   oracle, never silently diverge.

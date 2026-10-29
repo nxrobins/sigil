@@ -40,7 +40,14 @@ const RETAINED_V8_PREFIX_VERSION: u32 = 8;
 const HEADER_BYTES: usize = 12;
 const NODE_BYTES: usize = 32;
 const MAX_WIRE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_NODES: usize = 1_000_000;
+// The node ceiling bounds the projection's memory and time on an untrusted input; it is not a
+// property of any program. It sits under the wire ceiling above (2,097,152 nodes of NODE_BYTES
+// fit in MAX_WIRE_BYTES) and under the v9 record ceiling (`formal_v9::MAX_RECORDS`, raised in
+// step with it). It was 1,000,000 until the self-hosted compiler's certified source reached
+// 994,634 nodes (2026-10-06; SHP-5a's taint shadow then took it to 1,025,810) and the whole
+// self-hosted roadmap would have stalled on it; the next raise must again stay under the wire
+// ceiling or raise that too, deliberately.
+const MAX_NODES: usize = 2_000_000;
 
 const CHECKER_KERNEL_SOURCE: &[u8] =
     include_bytes!("../../../proofs/lean/LambdaSigil/CombinedKernel.lean");
@@ -419,7 +426,100 @@ struct SemanticCounts {
     operands: u32,
 }
 
-type ReachingDefinitions = BTreeMap<VarId, BTreeSet<VarId>>;
+/// What the semantic SSA plan needs to know about the definitions of one tracked variable that
+/// reach a block: the single reaching version, or that two or more reach (the block takes a phi).
+///
+/// The fixpoint below used to carry the full SET of reaching versions. A set never collapses at a
+/// join (phis are placed only after the fixpoint), so a variable conditionally reassigned N times
+/// in sequence carried O(N) versions into every later block, and each round cloned and compared
+/// those sets at every block: O(N^2) per function. One function with 2000 sibling `if`s spent
+/// 6.8 s here in a debug build (2026-10-08), 90% of its 7.5 s formal gate. The plan reads a set only
+/// through "is there more than one?" and "which one?", and the summary `{One(v), Many}` answers
+/// both exactly: it commutes with union (`{v} U {v} = {v}`; every other union of nonempty sets has
+/// two or more elements) and with the block transfer (a definition overwrites with a singleton), so
+/// every round's summaries are the summaries of that round's sets. The fixpoint, phi placement and
+/// every value id are therefore unchanged, and each join is constant-time per variable. How many
+/// rounds the fixpoint takes is the visiting order's business (`semantic_reverse_postorder`).
+/// `ssa_plan_summary_matches_the_set_reference` (tests below) compares the plan with the set fact
+/// visited in block-id order, the algorithm before this change, on real AIR;
+/// `ssa_plan_comparator_sees_a_wrong_summary` plants a wrong summary it must catch; and
+/// `ssa_plan_reaching_work_is_linear_in_sibling_joins` pins the growth over sibling `if`s and
+/// `match`es, with the set fact and the block-id order as its planted quadratics.
+trait ReachingFact: Clone + PartialEq {
+    fn single(version: VarId) -> Self;
+    fn join(&mut self, other: &Self);
+    /// The one reaching version, or `None` when two or more reach.
+    fn only(&self) -> Option<VarId>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReachingVersion {
+    One(VarId),
+    Many,
+}
+
+impl ReachingFact for ReachingVersion {
+    fn single(version: VarId) -> Self {
+        Self::One(version)
+    }
+
+    fn join(&mut self, other: &Self) {
+        #[cfg(test)]
+        reaching_join_work::add(1);
+        if self != other {
+            *self = Self::Many;
+        }
+    }
+
+    fn only(&self) -> Option<VarId> {
+        match self {
+            Self::One(version) => Some(*version),
+            Self::Many => None,
+        }
+    }
+}
+
+/// The set fact, kept as the tests' oracle.
+#[cfg(test)]
+impl ReachingFact for BTreeSet<VarId> {
+    fn single(version: VarId) -> Self {
+        BTreeSet::from([version])
+    }
+
+    fn join(&mut self, other: &Self) {
+        reaching_join_work::add(other.len() as u64);
+        self.extend(other.iter().copied());
+    }
+
+    fn only(&self) -> Option<VarId> {
+        // A fact is a singleton or a union of facts, so never empty; the summary has no empty
+        // state either, and an empty set read here would place a phi the plan never placed.
+        assert!(!self.is_empty(), "a reaching-definition set is never empty");
+        if self.len() > 1 {
+            None
+        } else {
+            self.first().copied()
+        }
+    }
+}
+
+/// Per-thread count of reaching-fact elements joined, read by the growth test.
+#[cfg(test)]
+mod reaching_join_work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WORK: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn add(amount: u64) {
+        WORK.with(|work| work.set(work.get() + amount));
+    }
+
+    pub(super) fn take() -> u64 {
+        WORK.with(|work| work.replace(0))
+    }
+}
 
 /// Security-only SSA reconstruction for the semantic CSIR suffix.
 ///
@@ -429,7 +529,7 @@ type ReachingDefinitions = BTreeMap<VarId, BTreeSet<VarId>>;
 /// projection therefore gives parameters, assignments, and CFG join phis distinct value IDs. It
 /// contains only def-use and predecessor information; labels are still derived exclusively by
 /// Lean.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct SemanticSsaPlan {
     declarations: Vec<(VarId, VarId)>,
     initial_versions: BTreeMap<VarId, VarId>,
@@ -474,18 +574,77 @@ fn semantic_successors(terminator: &AirTerminator) -> Vec<BlockId> {
     }
 }
 
-fn union_reaching_definitions(target: &mut ReachingDefinitions, source: &ReachingDefinitions) {
-    for (variable, definitions) in source {
-        target
-            .entry(*variable)
-            .or_default()
-            .extend(definitions.iter().copied());
+fn join_reaching<F: ReachingFact>(target: &mut BTreeMap<VarId, F>, source: &BTreeMap<VarId, F>) {
+    for (variable, fact) in source {
+        match target.get_mut(variable) {
+            Some(current) => current.join(fact),
+            None => {
+                target.insert(*variable, fact.clone());
+            }
+        }
     }
 }
 
 fn build_semantic_ssa_plan(
     function: &crate::air::AirFunction,
     bases: &[VarId],
+) -> Result<SemanticSsaPlan, String> {
+    build_semantic_ssa_plan_with::<ReachingVersion>(function, bases, semantic_reverse_postorder)
+}
+
+/// Orders the blocks the reaching-definition fixpoint visits each round: (entry block, every block
+/// in id order, the semantic successors of each block) -> every block id exactly once.
+type SemanticVisitOrder =
+    fn(BlockId, &[&crate::air::AirBlock], &BTreeMap<BlockId, Vec<BlockId>>) -> Vec<BlockId>;
+
+/// The order the reaching-definition fixpoint visits blocks in: reverse postorder of the semantic
+/// CFG from the entry block, then every block it does not reach, in id order. The fixpoint's facts
+/// only grow and its transfer is monotone, so every visiting order reaches the same least fixpoint
+/// and the plan does not depend on this choice; it decides how many rounds that takes. In block-id
+/// order a fact crossed one `match` per round, because a match allocates its exit block before its
+/// arms, so N sibling matches took N+2 rounds; in reverse postorder every block comes after all of
+/// its predecessors except those reached over a back edge, and a chain of siblings settles in two.
+/// Iterative, so a long chain cannot overflow the native stack.
+fn semantic_reverse_postorder(
+    entry: BlockId,
+    blocks: &[&crate::air::AirBlock],
+    successors: &BTreeMap<BlockId, Vec<BlockId>>,
+) -> Vec<BlockId> {
+    let mut visited = BTreeSet::new();
+    let mut postorder = Vec::with_capacity(blocks.len());
+    let mut stack = Vec::<(BlockId, usize)>::new();
+    if blocks.iter().any(|block| block.id == entry) {
+        visited.insert(entry);
+        stack.push((entry, 0));
+    }
+    while let Some(&(block, next)) = stack.last() {
+        let targets = successors.get(&block).map_or(&[][..], Vec::as_slice);
+        if let Some(&target) = targets.get(next) {
+            if let Some(top) = stack.last_mut() {
+                top.1 += 1;
+            }
+            if visited.insert(target) {
+                stack.push((target, 0));
+            }
+        } else {
+            postorder.push(block);
+            stack.pop();
+        }
+    }
+    postorder.reverse();
+    postorder.extend(
+        blocks
+            .iter()
+            .map(|block| block.id)
+            .filter(|id| !visited.contains(id)),
+    );
+    postorder
+}
+
+fn build_semantic_ssa_plan_with<F: ReachingFact>(
+    function: &crate::air::AirFunction,
+    bases: &[VarId],
+    visit_order: SemanticVisitOrder,
 ) -> Result<SemanticSsaPlan, String> {
     let mut next_value = 0_u32;
     let mut declarations = Vec::new();
@@ -567,6 +726,7 @@ fn build_semantic_ssa_plan(
         .iter()
         .map(|block| (block.id, BTreeSet::new()))
         .collect::<BTreeMap<_, _>>();
+    let mut successors = BTreeMap::<BlockId, Vec<BlockId>>::new();
     for block in &blocks {
         if function
             .security
@@ -588,18 +748,20 @@ fn build_semantic_ssa_plan(
                 .contains(&successor)
             {
                 predecessors.entry(successor).or_default().insert(block.id);
+                successors.entry(block.id).or_default().push(successor);
             }
         }
     }
+    let visit = visit_order(function.entry_block, &blocks, &successors);
 
     let initial_reaching = initial_versions
         .iter()
         .filter(|(base, _)| tracked_bases.contains(base))
-        .map(|(base, version)| (*base, BTreeSet::from([*version])))
-        .collect::<ReachingDefinitions>();
+        .map(|(base, version)| (*base, F::single(*version)))
+        .collect::<BTreeMap<VarId, F>>();
     let mut inputs = blocks
         .iter()
-        .map(|block| (block.id, ReachingDefinitions::new()))
+        .map(|block| (block.id, BTreeMap::<VarId, F>::new()))
         .collect::<BTreeMap<_, _>>();
     let mut outputs = inputs.clone();
     let iteration_limit = blocks
@@ -615,26 +777,26 @@ fn build_semantic_ssa_plan(
     let mut converged = false;
     for _ in 0..iteration_limit {
         let mut changed = false;
-        for block in &blocks {
-            let mut input = ReachingDefinitions::new();
-            if block.id == function.entry_block {
-                union_reaching_definitions(&mut input, &initial_reaching);
+        for &block in &visit {
+            let mut input = BTreeMap::<VarId, F>::new();
+            if block == function.entry_block {
+                join_reaching(&mut input, &initial_reaching);
             }
-            for predecessor in predecessors.get(&block.id).into_iter().flatten() {
+            for predecessor in predecessors.get(&block).into_iter().flatten() {
                 if let Some(output) = outputs.get(predecessor) {
-                    union_reaching_definitions(&mut input, output);
+                    join_reaching(&mut input, output);
                 }
             }
             let mut output = input.clone();
-            if let Some(generators) = block_generators.get(&block.id) {
+            if let Some(generators) = block_generators.get(&block) {
                 for (base, version) in generators {
-                    output.insert(*base, BTreeSet::from([*version]));
+                    output.insert(*base, F::single(*version));
                 }
             }
-            changed |= inputs.get(&block.id) != Some(&input);
-            changed |= outputs.get(&block.id) != Some(&output);
-            inputs.insert(block.id, input);
-            outputs.insert(block.id, output);
+            changed |= inputs.get(&block) != Some(&input);
+            changed |= outputs.get(&block) != Some(&output);
+            inputs.insert(block, input);
+            outputs.insert(block, output);
         }
         if !changed {
             converged = true;
@@ -652,8 +814,8 @@ fn build_semantic_ssa_plan(
             let definitions = input
                 .get(base)
                 .cloned()
-                .unwrap_or_else(|| BTreeSet::from([initial_versions[base]]));
-            if definitions.len() > 1 {
+                .unwrap_or_else(|| F::single(initial_versions[base]));
+            if definitions.only().is_none() {
                 let phi = VarId(next_value);
                 next_value = next_value
                     .checked_add(1)
@@ -672,10 +834,10 @@ fn build_semantic_ssa_plan(
             let definitions = input
                 .get(base)
                 .cloned()
-                .unwrap_or_else(|| BTreeSet::from([initial_versions[base]]));
+                .unwrap_or_else(|| F::single(initial_versions[base]));
             let version = phi_ids.get(&(block.id, *base)).copied().unwrap_or_else(|| {
-                *definitions
-                    .first()
+                definitions
+                    .only()
                     .expect("one reaching definition when no phi was allocated")
             });
             entry.insert(*base, version);
@@ -1814,7 +1976,7 @@ impl Projector {
                     SemanticOperand::Value(*else_val),
                 ],
             ),
-            AirStmt::IntrinsicCtLt { dst, lhs, rhs } => (
+            AirStmt::IntrinsicCtLt { dst, lhs, rhs, .. } => (
                 SemanticInstrOp::CtLt,
                 Some(*dst),
                 vec![SemanticOperand::Value(*lhs), SemanticOperand::Value(*rhs)],
@@ -5251,6 +5413,247 @@ pub fn verify_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Source -> the AIR the formal gate receives: compile the source (ambient stdlib included)
+    /// and lower its typed program again, for feeding the semantic SSA plan real functions.
+    fn ssa_test_air(label: &str, source: &str) -> crate::air::AirProgram {
+        let compilation = crate::compiler::compile_module(source)
+            .unwrap_or_else(|error| panic!("{label}: compile failed: {error:?}"));
+        crate::air::lower(&compilation.typed)
+    }
+
+    fn ssa_plan_bases(function: &crate::air::AirFunction) -> Vec<VarId> {
+        function
+            .params
+            .iter()
+            .chain(function.locals.iter())
+            .map(|(variable, _)| *variable)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// `n` sibling `if`s each conditionally reassigning one variable: the shape whose set fact
+    /// grew linearly along the chain.
+    fn sibling_ifs(n: usize) -> String {
+        let body: String = (0..n)
+            .map(|i| format!("    if x > {i} {{ y = y + 1; }}\n"))
+            .collect();
+        format!(
+            "module ssa;\npub fn f(x: i64) -> i64 {{\n    let mut y: i64 = 0;\n{body}    return y;\n}}\n"
+        )
+    }
+
+    /// `n` sibling `match`es, one arm of each reassigning `y`, after `z` was reassigned once. A
+    /// match allocates its exit block before its arms, so in block-id order `z`'s fact crossed one
+    /// match per round: the shape that took N+2 rounds before the fixpoint visited in reverse
+    /// postorder.
+    fn sibling_matches(n: usize) -> String {
+        let body = "    match a {\n        0 => { y = 1; },\n        _ => { }\n    }\n".repeat(n);
+        format!(
+            "module ssa;\npub fn m(a: i64) -> i64 {{\n    let mut y: i64 = 0;\n    let mut z: i64 = 0;\n    z = 1;\n{body}    return y + z;\n}}\n"
+        )
+    }
+
+    /// The visiting order before reverse postorder: ascending block id.
+    fn semantic_block_id_order(
+        _entry: BlockId,
+        blocks: &[&crate::air::AirBlock],
+        _successors: &BTreeMap<BlockId, Vec<BlockId>>,
+    ) -> Vec<BlockId> {
+        blocks.iter().map(|block| block.id).collect()
+    }
+
+    /// The one function `name` of a program lowered from `ssa_test_air`.
+    fn ssa_test_function<'a>(
+        program: &'a crate::air::AirProgram,
+        name: &str,
+    ) -> &'a crate::air::AirFunction {
+        let export = format!("ssa__{name}");
+        program
+            .functions
+            .iter()
+            .find(|function| function.export_name == export)
+            .unwrap_or_else(|| panic!("`{export}` lowers"))
+    }
+
+    /// The plan the gate builds equals the plan the algorithm it replaced builds, the set fact
+    /// visited in block-id order: declarations, phi placement, phi sources, block entries and every
+    /// value id, for every function of the composed self-hosted compiler (its loops, matches,
+    /// nested branches and many mutable locals) and for the sibling, nested and loop shapes below.
+    #[test]
+    fn ssa_plan_summary_matches_the_set_reference() {
+        const SELFHOST: [(&str, &str); 11] = [
+            ("lexer", include_str!("../../../selfhost/lexer.sigil")),
+            ("parser", include_str!("../../../selfhost/parser.sigil")),
+            (
+                "name_resolution",
+                include_str!("../../../selfhost/name_resolution.sigil"),
+            ),
+            (
+                "typecheck",
+                include_str!("../../../selfhost/typecheck.sigil"),
+            ),
+            (
+                "ring_check",
+                include_str!("../../../selfhost/ring_check.sigil"),
+            ),
+            (
+                "effect_check",
+                include_str!("../../../selfhost/effect_check.sigil"),
+            ),
+            (
+                "taint_check",
+                include_str!("../../../selfhost/taint_check.sigil"),
+            ),
+            (
+                "cap_check",
+                include_str!("../../../selfhost/cap_check.sigil"),
+            ),
+            (
+                "own_check",
+                include_str!("../../../selfhost/own_check.sigil"),
+            ),
+            ("air", include_str!("../../../selfhost/air.sigil")),
+            ("pipeline", include_str!("../../../selfhost/pipeline.sigil")),
+        ];
+        let mut composed = String::from("module tool;\n");
+        for (name, source) in SELFHOST {
+            composed.push_str(&source.replace(&format!("\nmodule {name};\n"), "\n"));
+            composed.push('\n');
+        }
+        let shapes = [
+            ("selfhost".to_string(), composed),
+            ("sibling ifs".to_string(), sibling_ifs(64)),
+            ("sibling matches".to_string(), sibling_matches(64)),
+            (
+                "nested_and_loops".to_string(),
+                "module ssa;\npub fn g(x: i64) -> i64 {\n    let mut a: i64 = 0;\n    let mut b: i64 = 1;\n    let mut i: i64 = 0;\n    while i < x {\n        if i > 3 {\n            a = a + i;\n            if a > 10 { b = b * 2; } else { a = 0; }\n        } else {\n            b = b + 1;\n        }\n        i = i + 1;\n    }\n    return a + b;\n}\n"
+                    .to_string(),
+            ),
+        ];
+        let mut functions = 0;
+        let mut phis = 0;
+        for (label, source) in &shapes {
+            let program = ssa_test_air(label, source);
+            for function in &program.functions {
+                let bases = ssa_plan_bases(function);
+                let summary = build_semantic_ssa_plan(function, &bases);
+                let reference = build_semantic_ssa_plan_with::<BTreeSet<VarId>>(
+                    function,
+                    &bases,
+                    semantic_block_id_order,
+                );
+                assert_eq!(
+                    summary, reference,
+                    "{label}: the plan of `{}` differs from the set fact in block-id order",
+                    function.export_name
+                );
+                functions += 1;
+                phis += summary
+                    .map(|plan| plan.phis.values().map(Vec::len).sum::<usize>())
+                    .unwrap_or(0);
+            }
+        }
+        // Not vacuous: hundreds of real functions, and plans that do place phis.
+        assert!(functions > 300, "compared only {functions} functions");
+        assert!(phis > 100, "the compared plans placed only {phis} phis");
+    }
+
+    /// SC-P4 for the comparison above: a summary that keeps the first version when two meet (so
+    /// it never places a phi at a real join) must give a plan the comparison rejects. Without this,
+    /// an equality that held because neither side was looked at would look the same as one that
+    /// held because the plans agree.
+    #[test]
+    fn ssa_plan_comparator_sees_a_wrong_summary() {
+        #[derive(Clone, PartialEq)]
+        struct StickyOne(VarId);
+        impl ReachingFact for StickyOne {
+            fn single(version: VarId) -> Self {
+                Self(version)
+            }
+            fn join(&mut self, _other: &Self) {}
+            fn only(&self) -> Option<VarId> {
+                Some(self.0)
+            }
+        }
+        let program = ssa_test_air("sibling ifs", &sibling_ifs(64));
+        let function = ssa_test_function(&program, "f");
+        let bases = ssa_plan_bases(function);
+        let wrong =
+            build_semantic_ssa_plan_with::<StickyOne>(function, &bases, semantic_reverse_postorder);
+        let reference = build_semantic_ssa_plan_with::<BTreeSet<VarId>>(
+            function,
+            &bases,
+            semantic_block_id_order,
+        );
+        assert!(reference.is_ok(), "the reference plan builds");
+        assert_ne!(
+            wrong, reference,
+            "a summary that never joins produced the reference plan: the comparison sees nothing"
+        );
+    }
+
+    /// Reaching-fact work grows linearly with the number of sibling joins, over sibling `if`s and
+    /// sibling `match`es: doubling the chain about doubles it. SC-P4: the same measurement must see
+    /// the planted quadratics, the set fact (both shapes) and the block-id order (matches), grow at
+    /// least 3.5x.
+    #[test]
+    fn ssa_plan_reaching_work_is_linear_in_sibling_joins() {
+        fn work<F: ReachingFact>(
+            program: &crate::air::AirProgram,
+            name: &str,
+            order: SemanticVisitOrder,
+        ) -> u64 {
+            let function = ssa_test_function(program, name);
+            let bases = ssa_plan_bases(function);
+            reaching_join_work::take();
+            build_semantic_ssa_plan_with::<F>(function, &bases, order).expect("plan builds");
+            reaching_join_work::take()
+        }
+        fn growth<F: ReachingFact>(
+            small: &crate::air::AirProgram,
+            large: &crate::air::AirProgram,
+            name: &str,
+            order: SemanticVisitOrder,
+        ) -> f64 {
+            work::<F>(large, name, order) as f64 / work::<F>(small, name, order) as f64
+        }
+        let shapes = [
+            (
+                "sibling ifs",
+                "f",
+                ssa_test_air("ifs 200", &sibling_ifs(200)),
+                ssa_test_air("ifs 400", &sibling_ifs(400)),
+            ),
+            (
+                "sibling matches",
+                "m",
+                ssa_test_air("matches 100", &sibling_matches(100)),
+                ssa_test_air("matches 200", &sibling_matches(200)),
+            ),
+        ];
+        for (shape, name, small, large) in &shapes {
+            let summary = growth::<ReachingVersion>(small, large, name, semantic_reverse_postorder);
+            assert!(
+                (1.5..=2.5).contains(&summary),
+                "{shape}: the gate's work grew {summary:.2}x when the chain doubled; linear is about 2x"
+            );
+            let set = growth::<BTreeSet<VarId>>(small, large, name, semantic_block_id_order);
+            assert!(
+                set >= 3.5,
+                "{shape}: the planted quadratic (the set fact) grew only {set:.2}x; the detector \
+                 cannot see one"
+            );
+        }
+        let (_, name, small, large) = &shapes[1];
+        let by_id = growth::<ReachingVersion>(small, large, name, semantic_block_id_order);
+        assert!(
+            by_id >= 3.5,
+            "sibling matches: the planted quadratic (block-id order) grew only {by_id:.2}x; the \
+             detector cannot see the visiting order"
+        );
+    }
 
     const RUST_FORMAL_SOURCE: &str = include_str!("formal.rs");
     const LEAN_KERNEL_SOURCE: &str =

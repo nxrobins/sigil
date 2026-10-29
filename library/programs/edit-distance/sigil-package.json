@@ -1,0 +1,64 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:c91fcbd280c82ddcef4e0a09128d5800f1b1183fb29baabc538e188940f03b3e",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/bytes",
+      "requirement": "=0.1.0-public.5",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:1a0e00b9d448af0126d126d9503dcef7b4a16835a8fc47c841de30e076a3436b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/fmt",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source byte edit-distance tool using bytes and fmt; not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:4e2a0ff8024c1c40bcba0fd751a3330ede1524e3623e8c1334723f58130b3bfc",
+    "api_contract_hash": "sha256:c15ebf59172fd7d36f4dafbf74917d390170da6d82b02583caf569c9b3dc965a",
+    "charter_hash": "sha256:bf5311094a84db699ac82aee879b03abf64d710b5c2db03f135e77918b125004",
+    "evidence_manifest_hash": "sha256:bb202ae2946033c428150a43f868631accd5428495b72ed69408904057687141"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "edit-distance",
+  "version": "0.1.0-public.2"
+}

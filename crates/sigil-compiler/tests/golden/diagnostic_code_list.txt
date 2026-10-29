@@ -92,14 +92,17 @@ P031	Effect row after a `Fn`-typed return binds to the declaration
 R001	Outer-ring code cannot own capabilities
 R002	Capability reference returned from an outer-ring function
 R003	Inner-ring code cannot call `extern` functions
-R004	Direct cross-ring call requires a grant
+R004	Call across the ring boundary
 R005	Compatibility alias for T109 ring-error sanitization
 R006	`#[trusted]` requires `#[ring(outer)]`
 R007	Monomorphized generic instance is filed in the other ring
+R008	Outer-ring `extern` requires `#[trusted]`
+R009	Messaging, spawn or capability operation in outer-ring code
 R010	Non-capability spawn argument
 R011	Non-capability fuel argument
 R012	Non-cap source or destination at restrict/split
 R013	Minted capability has a non-matching destination
+R014	Actor declared in an outer-ring module
 R800	Runtime error
 R801	Fuel exhausted
 R802	Missing Wasm export

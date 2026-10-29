@@ -241,10 +241,17 @@ pub(super) fn infer_method_call_expr(
             // P6/P7, pinned by `mono_poison_rejected_in_both_orderings`):
             // (1) the speculation threads the REAL tracker, so a discarded
             // run still populates the mono cache — safe ONLY because the
-            // discard always leaves T156 in the main buffer; (2) a commit
-            // may cache-hit a mono instance whose body-check errored at an
-            // EARLIER unshadowed site — safe ONLY because that first
-            // instantiation left its Error in the main buffer. A refactor
+            // discard always leaves T156 in the buffer of the typing around
+            // it: the main buffer, or inside a method-argument speculation
+            // an instance's pending report, which counts once a real use
+            // claims it, while an instance the discarded run made there
+            // keeps its own report (SR-034, `begin_speculation`); (2) a
+            // commit may cache-hit a mono instance whose body-check errored
+            // at an EARLIER unshadowed site — safe ONLY because that first
+            // instantiation left its Error in the main buffer, or in a
+            // pending report that this hit claims into the scratch (which
+            // then fails, so T156 rejects the call) or records for the
+            // instance around it, whose own claim delivers it. A refactor
             // that reorders/parallelizes function checking or dedups
             // diagnostics must re-establish both.
             if is_module && is_shadowed {
@@ -1125,6 +1132,11 @@ fn infer_user_method_expr(
             if let Some(self_formal) = substituted_params.first() {
                 unify(self_formal, &receiver.ty, &mut method_bindings);
             }
+            // A speculation: work done once inside it would report into `sink` and
+            // never again, so it is kept: an instance's report until a real
+            // inference uses the instance, the work limit's until here
+            // (`begin_speculation`).
+            tracker.begin_speculation();
             let mut sink: Vec<Diagnostic> = Vec::new();
             for (i, arg) in expr.args.iter().enumerate() {
                 let formal = substituted_params.get(i + 1);
@@ -1141,6 +1153,7 @@ fn infer_user_method_expr(
                     unify(f, &typed.ty, &mut method_bindings);
                 }
             }
+            tracker.end_speculation(diagnostics);
             // Keep ONLY the method's own params — impl params were already
             // resolved, and a stray binding must not leak into the body.
             method_bindings.retain(|k, _| sig.method_type_params.iter().any(|p| p == k));
@@ -1268,6 +1281,15 @@ fn infer_user_method_expr(
             // `insert` returns true iff the value was NEW. On true:
             // build the mono body. On false: cache hit, skip.
             if tracker.reserve_specialization(&mangled_callee, expr.span, diagnostics) {
+                // The body is checked once: inside a speculation its report is kept until a
+                // real inference uses the instance (`begin_speculation`).
+                let attempt = tracker.begin_creation(&mangled_callee);
+                let mut own = Vec::new();
+                let diagnostics: &mut Vec<Diagnostic> = if attempt.is_some() {
+                    &mut own
+                } else {
+                    &mut *diagnostics
+                };
                 // Look up method AST (N10-PRD: never silently fall back).
                 if let Some((impl_type_params_decl, method_def, method_module)) = universe
                     .generic_impl_methods
@@ -1486,6 +1508,7 @@ fn infer_user_method_expr(
                     ));
                     tracker.cache.remove(&mangled_callee);
                 }
+                tracker.end_creation(attempt, &mangled_callee, own);
             }
             // Use the mangled name as the call's callee (whether we
             // just built it or hit cache).
@@ -1979,6 +2002,15 @@ fn infer_associated_fn_call(
             base_mangled
         };
         if tracker.reserve_specialization(&mangled_callee, expr.span, diagnostics) {
+            // The body is checked once: inside a speculation its report is kept until a
+            // real inference uses the instance (`begin_speculation`).
+            let attempt = tracker.begin_creation(&mangled_callee);
+            let mut own = Vec::new();
+            let diagnostics: &mut Vec<Diagnostic> = if attempt.is_some() {
+                &mut own
+            } else {
+                &mut *diagnostics
+            };
             if let Some((_decl, method_def, method_module)) = universe
                 .generic_impl_methods
                 .get(&qualified_method_key)
@@ -2122,6 +2154,7 @@ fn infer_associated_fn_call(
                 ));
                 tracker.cache.remove(&mangled_callee);
             }
+            tracker.end_creation(attempt, &mangled_callee, own);
         }
         mangled_callee
     } else {

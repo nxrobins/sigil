@@ -174,7 +174,7 @@ fn statement_shape(statement: &AirStmt) -> (Option<VarId>, Vec<VarId>) {
         AirStmt::IntrinsicAlloc { dst, size, .. } => (Some(*dst), vec![*size]),
         AirStmt::IntrinsicLoad8 { dst, ptr } => (Some(*dst), vec![*ptr]),
         AirStmt::IntrinsicStore8 { ptr, val } => (None, vec![*ptr, *val]),
-        AirStmt::IntrinsicCtEq { dst, lhs, rhs } | AirStmt::IntrinsicCtLt { dst, lhs, rhs } => {
+        AirStmt::IntrinsicCtEq { dst, lhs, rhs } | AirStmt::IntrinsicCtLt { dst, lhs, rhs, .. } => {
             (Some(*dst), vec![*lhs, *rhs])
         }
         AirStmt::IntrinsicCtSelect {

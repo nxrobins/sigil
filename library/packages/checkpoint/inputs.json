@@ -1,0 +1,10 @@
+{
+  "files": {
+    "API.md": "sha256:ba60753b64bef3354d9201010affb3c2f0167145cec76cfeb08aa13d48a6cf46",
+    "README.md": "sha256:1b1429f16c8be689c909d824df0cd71bd722758860d3e6f953105c89cc8dd738",
+    "api-card.json": "sha256:3aebf514f3a9c0634c9fe6470a130dec63edc21b2c909bc55c6c95a32979a74a",
+    "source-provenance.json": "sha256:422deca123b842fbb181d5358749c0ce70d4760ffddd0fb22bab7bc382a2c0a8",
+    "src/checkpoint.sigil": "sha256:119e530033729ec36f01485cd74bd51455b7d8ff41488c69ad3d6849a6e58a9c"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

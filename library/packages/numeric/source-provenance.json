@@ -1,0 +1,8 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/numeric.sigil": "sha256:c3a2c11063dfdec0b074402f82f933ca09d0e5236ba8810642974f998864dec9"
+  },
+  "package": "sigil/numeric",
+  "previous_version": "0.1.0-dogfood.1"
+}

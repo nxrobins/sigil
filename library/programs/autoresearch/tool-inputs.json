@@ -1,0 +1,20 @@
+{
+  "files": {
+    "API.md": "sha256:ad1243fa45d537c9a39e19f55f9c108347c25aca3f53dcb36d8331633cc67403",
+    "PROVENANCE.md": "sha256:a1a48c1a0f12b208a4b385d229b815e7821245f005723adf449f63e0acedb6ee",
+    "README.md": "sha256:a151624d9b2cb65fe30e139147b02bcd89ee14c39427749018e890cb2f8a982a",
+    "SEARCH_API.md": "sha256:52e78b1b9911320352668429c83c0656d702dd877150dd2ec37e5f2255ad075b",
+    "api-card.json": "sha256:d2f12dba10feea34d839c7a976586cb3ef22ddb9000acfc3cf91715c4f0d2233",
+    "run.py": "sha256:681f3810defcb2933f272a8d2e051ebcfdb45fc5ddccac88b9bae9ab059c5411",
+    "search.py": "sha256:ff6acca71cea5ccea2897c1d410c5499a045ff95231ca291ff077bd72c04982e",
+    "src/tool.sigil": "sha256:fd1938f4850924e6366624531c5756185f1d0562b881c315a6c00e386811d4da",
+    "src/tool_exchange.sigil": "sha256:3ac814b7b40611260729eaa204afac1ff0c41c2ce927ca24a4d7e33b124035a5",
+    "src/tool_fit.sigil": "sha256:4d7974e072836842b789d9f2de9ca9942510fc93624509de3c67cee8639798b2",
+    "src/tool_population.sigil": "sha256:0f3894af269d37b8b56c174896efde3d3409870c0c371d9bf5d6058b8c6034f8",
+    "src/tool_records.sigil": "sha256:a5154bd8bc56b5399d7b621a180608526595efa7590945c587e858549986c76a",
+    "src/tool_report.sigil": "sha256:326ea7f085b5cd50e2592282aca0d55c4b7b23637d12a2a250d027e17c64e33d",
+    "src/tool_search.sigil": "sha256:472cdb2b9a51133989b47fae6738e2db6747db0f4f8e7ef0ebc719e45b970bae",
+    "src/tool_state.sigil": "sha256:de46baa1766c075606e5a85ddc729be3a35a86c747f160427bbbe95499822ff8"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

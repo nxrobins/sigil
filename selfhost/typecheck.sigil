@@ -75,6 +75,14 @@ const TC_CAP_BASE: i64 = 500;
 // collides with a real Type tag (0..21) or a record code (>=1000). (A const
 // initializer must be a literal — `0 - 2` is an expression and does not parse.)
 const TC_T_SELF: i64 = 902;
+// SHP-5c-3: a slot bind (`Slot<C>`) — an INTERNAL code in the same reserved band, never
+// emitted: a slot value's record is production's Named tag (TC_T_NAMED) with the name `Slot`,
+// and the bind's `detail` is the slot's cap text as the parser wrote it (`Fuel`,
+// `Approval;2030`), rendered as production renders a cap wherever a record carries it.
+const TC_T_SLOT: i64 = 903;
+// SHP-5c-3: a region handle (`Region`) — production's tag 18, a concrete non-scalar code: it
+// flows only to a `Region` slot (a let annotation, a parameter), never to an integer.
+const TC_T_REGION: i64 = 18;
 // ASCII ':' — paths normalize `.`/`::` to "::" so a dotted member is two of these.
 const TC_BYTE_COLON: i64 = 58;
 // ASCII ';' — a record-construction node packs "Name;field1;field2;…" in its text.
@@ -82,6 +90,8 @@ const TC_BYTE_SEMI: i64 = 59;
 // ASCII ',' — a P_K_CAP_TYPE node packs its parametric param names comma-joined in
 // the 3rd ";"-segment (PR-C0 counts these to get a cap's parametric arity).
 const TC_BYTE_COMMA: i64 = 44;
+// ASCII '$' — the element separator in a composite type's mangle (`$tuple2__i64$u32`).
+const TC_BYTE_DOLLAR: i64 = 36;
 
 // The symbol table: a flat list of (name -> type code) bindings for ONE function
 // body, appended as `let`s are walked. Hand-written SIGIL has no generic Map, so
@@ -100,33 +110,106 @@ const TC_BYTE_COMMA: i64 = 44;
 // binding. A field access on the local substitutes the field's type-param to targs[idx].
 record TcBind { name: str, tag: i64, detail: str, targs: str }
 
-// Pop every binding added since `mark` by OVERWRITING it with a dead `name:""`
-// sentinel (SIGIL's Vec has no truncate/pop; `set` is the only shrink primitive).
-// An empty name never matches a real lookup, so the inner-scope shadows stop
-// leaking past their block. Called on exit from each nested block scope (PR-5g).
+// Pop every binding added since `mark` (SIGIL's Vec has no truncate/pop; `set` is the only shrink
+// primitive), so the inner-scope shadows stop leaking past their block. Called on exit from each
+// nested block scope (PR-5g). The table is read only through tc_bind_index, which reads from the
+// top down, so it is enough to overwrite the TOP slot with a dead-run marker covering
+// [mark, len): the scan jumps from it straight to `mark - 1` and never reads the slots under it.
+// Overwriting every slot with a dead entry instead left a function's table holding every local
+// it had ever declared, all scanned again by each later lookup.
 fn tc_scope_unwind(binds: Vec<TcBind> @Mut, mark: i64) -> i64 ! { Alloc } {
     let n: i64 = binds.len();
-    let mut i: i64 = mark;
-    while i < n {
-        let dead: i64 = binds.set(i, TcBind { name: "", tag: TC_UNHANDLED, detail: "", targs: "" });
-        i = i + 1;
+    if n > mark {
+        let dead: i64 = binds.set(n - 1, TcBind { name: "", tag: n - mark, detail: "", targs: tc_dead_run_mark() });
     }
     return 0;
 }
 
-// Look up a name's type code, scanning most-recent-first; TC_UNHANDLED if unbound.
-fn tc_bind_lookup(binds: Vec<TcBind>, name: str) -> i64 {
-    let n: i64 = binds.len();
-    let mut i: i64 = n - 1;
+// The `targs` text of a dead-run marker (tc_scope_unwind): a bind whose name is empty and whose
+// `tag` is the length of the run it ends, itself included. No live bind carries a `$` in its
+// targs (a generic-record local's are `;`-joined type codes), so neither marker can be mistaken
+// for one.
+fn tc_dead_run_mark() -> str {
+    return "$dead";
+}
+
+// The index of the most recent binding of `name`; every by-name read of the table goes through
+// here. -1 = unbound; -2 = the name is empty and the newest thing it meets is a dead run, which
+// the accessors read as the dead entry the run replaced (tag TC_UNHANDLED, detail and targs "").
+// A function's table is [params, `$ret`?, the module's consts SORTED by name, a const-run marker
+// (tc_seed_consts), the body's locals and dead-run markers...]. The scan walks the locals
+// newest-first and jumps over each dead run; at the const-run marker it binary-searches the run
+// for the LAST equal name, the latest-declared const, which is what a newest-first scan over the
+// consts in declaration order found before the run was sorted; then it walks on into the params.
+// Same precedence as one newest-first scan over every slot, without visiting every module const
+// and every popped local on each lookup. A table with no markers (monomorph's) is scanned slot by
+// slot.
+fn tc_bind_index(binds: Vec<TcBind>, name: str) -> i64 {
+    let nl: i64 = name.len();
+    let mut i: i64 = binds.len() - 1;
     while i >= 0 {
         let b: TcBind = binds.get(i);
-        if b.name.bytes_eq(name) {
-            return b.tag;
-        } else {
+        let bl: i64 = b.name.len();
+        // 0 = a binding, 1 = a dead run, 2 = the const run.
+        let mut kind: i64 = 0;
+        if bl == 0 {
+            if b.targs.len() > 0 {
+                if b.targs.bytes_eq(tc_dead_run_mark()) {
+                    kind = 1;
+                }
+                if b.targs.bytes_eq(tc_const_run_mark()) {
+                    kind = 2;
+                }
+            }
         }
-        i = i - 1;
+        if kind == 1 {
+            if nl == 0 {
+                return 0 - 2;
+            }
+            i = i - b.tag;
+        } else {
+            if kind == 2 {
+                let first: i64 = i - b.tag;
+                let mut lo: i64 = first;
+                let mut hi: i64 = i;
+                while lo < hi {
+                    let mid: i64 = lo + (hi - lo) / 2;
+                    let mb: TcBind = binds.get(mid);
+                    if tc_str_lt(name, mb.name) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                if lo > first {
+                    let cb: TcBind = binds.get(lo - 1);
+                    if cb.name.bytes_eq(name) {
+                        return lo - 1;
+                    }
+                }
+                i = first - 1;
+            } else {
+                // bytes_eq compares lengths first; testing them here saves the call per miss.
+                if bl == nl {
+                    if b.name.bytes_eq(name) {
+                        return i;
+                    }
+                }
+                i = i - 1;
+            }
+        }
     }
-    return TC_UNHANDLED;
+    return 0 - 1;
+}
+
+// Look up a name's type code, scanning most-recent-first; TC_UNHANDLED if unbound.
+fn tc_bind_lookup(binds: Vec<TcBind>, name: str) -> i64 {
+    let i: i64 = tc_bind_index(binds, name);
+    if i < 0 {
+        return TC_UNHANDLED;
+    }
+    let b: TcBind = binds.get(i);
+    return b.tag;
 }
 
 // The module-level function-signature table: (name -> return code + ordered param
@@ -146,19 +229,35 @@ fn tc_bind_lookup(binds: Vec<TcBind>, name: str) -> i64 {
 // → 0), or -1 when the return is concrete or a composite generic (`-> Holder<T>`). A
 // call to a `rettp >= 0` callee SUBSTITUTES the return code from the concrete arg that
 // binds that type-param (ET-G3b), or fires T150 if no arg binds it.
-record TcSig { name: str, ret: i64, params: Vec<i64>, param_typeids: Vec<i64>, ret_detail: str, param_details: Vec<str>, tpbounds: Vec<str>, parmtp: Vec<i64>, rettp: i64 }
+// `inst` is non-zero for a monomorphized free-function instance (mn_clone_instance's flag
+// bit 2^20 on the fn node; zero for every source fn, intrinsic and method). The emitter reads it
+// to lower such a call's compound arguments against a hidden slot (cv_call_arg_tid).
+// `is_extern` (SHP-2b): the sig is an `extern "ABI" fn` declaration, so a call to it lowers to
+// the FFI call statement, never to a call by function index (an extern has no body or index).
+record TcSig { name: str, ret: i64, params: Vec<i64>, param_typeids: Vec<i64>, ret_detail: str, param_details: Vec<str>, tpbounds: Vec<str>, parmtp: Vec<i64>, rettp: i64, inst: i64, is_extern: bool }
 
-// Find the signature index for a function name, or 0-1 if not declared.
+// Find the signature index for a function name, or 0-1 if not declared. Every TcSig is pushed by
+// tc_build_sigs, which leaves the table sorted by name with equal names in push order
+// (tc_sort_sig_tail), so this binary-searches for the LEFTMOST equal name: the first one pushed,
+// the row the linear scan this replaced returned. Callers use the index only to `get` that row.
 fn tc_sig_find(sigs: Vec<TcSig>, name: str) -> i64 {
     let n: i64 = sigs.len();
-    let mut i: i64 = 0;
-    while i < n {
-        let s: TcSig = sigs.get(i);
-        if s.name.bytes_eq(name) {
-            return i;
+    let mut lo: i64 = 0;
+    let mut hi: i64 = n;
+    while lo < hi {
+        let mid: i64 = lo + (hi - lo) / 2;
+        let ms: TcSig = sigs.get(mid);
+        if tc_str_lt(ms.name, name) {
+            lo = mid + 1;
         } else {
+            hi = mid;
         }
-        i = i + 1;
+    }
+    if lo < n {
+        let s: TcSig = sigs.get(lo);
+        if s.name.bytes_eq(name) {
+            return lo;
+        }
     }
     return 0 - 1;
 }
@@ -220,9 +319,9 @@ fn tc_seg_count(text: str) -> i64 {
 // The module-level named-type table: the i-th entry has type code TC_REC_BASE + i
 // and a name. RECORDS carry parallel field-name / field-type-code lists (scalar
 // fields; a record-typed field is out-of-core). ENUMS (is_enum) carry no fields —
-// a value of enum type and every variant construction both type as Named(enum),
-// and a variant payload is typed without expectation (the oracle does not pin a
-// payload literal to the variant's field type), so the variant list is not needed.
+// a value of enum type and every variant construction both type as Named(enum).
+// A variant construction types each payload argument under its payload slot
+// (tc_payload_expected, SR-032), read from the variant tables below.
 // `vnames`/`vstarts`/`vcounts`/`vptags` (enums only) hold each variant's payload
 // type codes, flat: variant k's payloads are `vptags[vstarts[k] .. +vcounts[k]]`.
 // Used to bind enum-payload patterns (`Opt::Some(x)` => x : the variant's
@@ -232,7 +331,10 @@ fn tc_seg_count(text: str) -> i64 {
 // the type-param index its declared type bare-IS (`v: T` → 0), or -1 for a concrete
 // field. Together they let a field access on a generic-record local substitute the
 // field's type from the local's tracked concrete type-args (TcBind.targs).
-record TcRec { name: str, fnames: Vec<str>, ftags: Vec<i64>, is_enum: bool, vnames: Vec<str>, vstarts: Vec<i64>, vcounts: Vec<i64>, vptags: Vec<i64>, tpnames: Vec<str>, fparmtp: Vec<i64>, vptp: Vec<i64> }
+// `ftids` (SHP-0b): per field i (lockstep with fnames), the parse node of its declared type, or
+// -1 when it has none; empty for enums. The emitter types a compound value written to the field
+// (an array literal's elements, a nested construct's fields) by it, as the oracle does.
+record TcRec { name: str, fnames: Vec<str>, ftags: Vec<i64>, is_enum: bool, vnames: Vec<str>, vstarts: Vec<i64>, vcounts: Vec<i64>, vptags: Vec<i64>, tpnames: Vec<str>, fparmtp: Vec<i64>, vptp: Vec<i64>, ftids: Vec<i64> }
 
 // PR-C0 (caps-in-typecheck): one entry per `cap type` declaration, in source order
 // (so the i-th cap resolves to the deterministic logical code TC_CAP_BASE + i — no
@@ -342,26 +444,29 @@ fn tc_last_colons(text: str) -> i64 {
 // is the record name, segment i+1 is the i-th field's name (source order, so it
 // aligns with the i-th value child).
 fn tc_seg_at(text: str, n: i64) -> str {
+    return tc_seg_by(text, n, TC_BYTE_SEMI);
+}
+
+// Segment `n` of `text` split on the byte `sep`, or "" past the last segment. tc_seg_at (`;`),
+// the emitter's FFI keys (`|`, `,`) and the driver's protocol (`|`, bp_seg_pipe) all read with it.
+fn tc_seg_by(text: str, n: i64, sep: i64) -> str {
     let len: i64 = text.len();
     let mut seg: i64 = 0;
     let mut segstart: i64 = 0;
     let mut i: i64 = 0;
     while i < len {
         let b: i64 = text.byte_at(i);
-        if b == TC_BYTE_SEMI {
+        if b == sep {
             if seg == n {
                 return text.substr(segstart, i);
-            } else {
             }
             seg = seg + 1;
             segstart = i + 1;
-        } else {
         }
         i = i + 1;
     }
     if seg == n {
         return text.substr(segstart, len);
-    } else {
     }
     return "";
 }
@@ -567,33 +672,52 @@ fn tc_infer_targs(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, rdefs: Vec<T
 // TC_UNHANDLED if it is not a built-in scalar (it may still be a record name —
 // see tc_code_of_name).
 fn tc_scalar_tag(name: str) -> i64 {
-    if name.bytes_eq("bool") {
-        return TC_T_BOOL;
-    } else {
+    // Every scalar name is three bytes long but `bool`, and the three-byte ones differ in their
+    // first byte but for i32/i64 and u32/u64, so a name is decided with at most two compares:
+    // record and enum names reach here on every type resolution.
+    let nl: i64 = name.len();
+    if nl == 4 {
+        if name.bytes_eq("bool") {
+            return TC_T_BOOL;
+        }
+        return TC_UNHANDLED;
     }
-    if name.bytes_eq("i32") {
-        return TC_T_I32;
-    } else {
+    if nl != 3 {
+        return TC_UNHANDLED;
     }
-    if name.bytes_eq("u32") {
-        return TC_T_U32;
-    } else {
+    let b0: i64 = name.byte_at(0);
+    // 'i'
+    if b0 == 105 {
+        if name.bytes_eq("i32") {
+            return TC_T_I32;
+        }
+        if name.bytes_eq("i64") {
+            return TC_T_I64;
+        }
+        return TC_UNHANDLED;
     }
-    if name.bytes_eq("i64") {
-        return TC_T_I64;
-    } else {
+    // 'u'
+    if b0 == 117 {
+        if name.bytes_eq("u32") {
+            return TC_T_U32;
+        }
+        if name.bytes_eq("u64") {
+            return TC_T_U64;
+        }
+        return TC_UNHANDLED;
     }
-    if name.bytes_eq("u64") {
-        return TC_T_U64;
-    } else {
+    // 'f'
+    if b0 == 102 {
+        if name.bytes_eq("f64") {
+            return TC_T_F64;
+        }
+        return TC_UNHANDLED;
     }
-    if name.bytes_eq("f64") {
-        return TC_T_F64;
-    } else {
-    }
-    if name.bytes_eq("str") {
-        return TC_T_STR;
-    } else {
+    // 's'
+    if b0 == 115 {
+        if name.bytes_eq("str") {
+            return TC_T_STR;
+        }
     }
     return TC_UNHANDLED;
 }
@@ -606,6 +730,10 @@ fn tc_code_of_name(name: str, rdefs: Vec<TcRec>) -> i64 {
     if st != TC_UNHANDLED {
         return st;
     } else {
+    }
+    // SHP-5c-3: the built-in `Region` handle type (not a scalar: tc_is_scalar stays false).
+    if name.bytes_eq("Region") {
+        return TC_T_REGION;
     }
     let n: i64 = rdefs.len();
     let mut i: i64 = 0;
@@ -969,33 +1097,23 @@ fn tc_array_elem_code(detail: str, rdefs: Vec<TcRec>) -> i64 {
 // A bind's composite `detail` by name (most-recent-first), or "" if unbound or a
 // non-composite (scalar/record) bind.
 fn tc_bind_detail(binds: Vec<TcBind>, name: str) -> str {
-    let n: i64 = binds.len();
-    let mut i: i64 = n - 1;
-    while i >= 0 {
-        let b: TcBind = binds.get(i);
-        if b.name.bytes_eq(name) {
-            return b.detail;
-        } else {
-        }
-        i = i - 1;
+    let i: i64 = tc_bind_index(binds, name);
+    if i < 0 {
+        return "";
     }
-    return "";
+    let b: TcBind = binds.get(i);
+    return b.detail;
 }
 
 // PR-G2a: a bind's generic-record `targs` by name (most-recent-first), or "" if unbound
 // or not a generic-record local. A field access on the local substitutes via these codes.
 fn tc_bind_targs(binds: Vec<TcBind>, name: str) -> str {
-    let n: i64 = binds.len();
-    let mut i: i64 = n - 1;
-    while i >= 0 {
-        let b: TcBind = binds.get(i);
-        if b.name.bytes_eq(name) {
-            return b.targs;
-        } else {
-        }
-        i = i - 1;
+    let i: i64 = tc_bind_index(binds, name);
+    if i < 0 {
+        return "";
     }
-    return "";
+    let b: TcBind = binds.get(i);
+    return b.targs;
 }
 
 // PR-C1: the bare cap name a type node denotes, or "" if the node is not a plain
@@ -1027,11 +1145,741 @@ fn tc_cap_name_of_typenode(nodes: Arena<PNode>, tid: i64, rdefs: Vec<TcRec>, cde
     return "";
 }
 
+// SHP-5c-3: production's `validate_no_reserved_type_names` — a record, enum or cap type
+// declared under the built-in name `Slot` is T193, one per declaration.
+fn tc_reserved_names(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    let mut i: i64 = 0;
+    while i < rn.child_count {
+        let cn: PNode = nodes.get(kids.get(rn.child_start + i));
+        let mut isdecl: bool = cn.kind == P_K_RECORD_DEF;
+        if cn.kind == P_K_ENUM_DEF {
+            isdecl = true;
+        }
+        if cn.kind == P_K_CAP_TYPE {
+            isdecl = true;
+        }
+        if isdecl {
+            let dname: str = tc_seg_at(cn.text, 0);
+            if dname.bytes_eq("Slot") {
+                let d193: i64 = tc_push_diag(diags, "T193");
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// SHP-5c-3: the ownership and capability checkers' env entry for a slot binding, `Slot<C>` —
+// a slot is an i32 heap pointer, never linear (production's ownership walk moves the cap a
+// `slot_put` stores, never the slot) and never a capability obligation, so both checkers skip
+// these entries at every use and sink; `slot_take(s)` reads C back out of one.
+fn tc_slot_entry(capname: str) -> str ! { Alloc } {
+    let a: str = "Slot<";
+    let b: str = a.concat(capname);
+    return b.concat(">");
+}
+
+fn tc_is_slot_entry(ent: str) -> bool {
+    return tc_str_starts(ent, "Slot<");
+}
+
+fn tc_slot_entry_cap(ent: str) -> str {
+    let n: i64 = ent.len();
+    return ent.substr(5, n - 1);
+}
+
+// SHP-5c-3: the name of every `cap type` the arena holds, in byte order (`tc_sorted_order`):
+// the one arena walk a pass makes, at its entry beside its record table, in place of the walk
+// `tc_cap_declared` made per lookup. It reads the whole arena, attached nodes or not, as that walk
+// did, and the parser is the only allocator of a cap declaration (monomorph clones fn and record
+// subtrees, which hold none), so a list built at a pass's entry is complete for the pass
+// (`certified_source_keeps_the_indexed_lookup_invariants` refuses another allocator).
+fn tc_cap_names(nodes: Arena<PNode>) -> Vec<str> ! { Alloc } {
+    let total: i64 = nodes.len();
+    let mut keys: Vec<str> = Vec::new();
+    let mut i: i64 = 0;
+    while i < total {
+        let mn: PNode = nodes.get(i);
+        if mn.kind == P_K_CAP_TYPE {
+            let qk: i64 = keys.push(tc_seg_at(mn.text, 0));
+        }
+        i = i + 1;
+    }
+    let order: Vec<i64> = tc_sorted_order(keys);
+    let mut names: Vec<str> = Vec::new();
+    let n: i64 = order.len();
+    let mut j: i64 = 0;
+    while j < n {
+        let qn: i64 = names.push(keys.get(order.get(j)));
+        j = j + 1;
+    }
+    return names;
+}
+
+// SHP-5c-3: is `name` a declared `cap type` of the program? A binary search of the pass's
+// cap-name list (`tc_cap_names`), consulted at the slot and cap-text sites below.
+fn tc_cap_declared(capnames: Vec<str>, name: str) -> bool {
+    let n: i64 = capnames.len();
+    let mut lo: i64 = 0;
+    let mut hi: i64 = n;
+    while lo < hi {
+        let mid: i64 = lo + (hi - lo) / 2;
+        if tc_str_lt(capnames.get(mid), name) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < n {
+        let c: str = capnames.get(lo);
+        if c.bytes_eq(name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// SHP-5c-3: the cap TEXT a type node denotes as the parser wrote it — a plain declared cap
+// (`Fuel`) or a parametric usage (`Approval;2030`: the name, then each deadline literal,
+// `;`-joined) — or "" when the node is not a cap type. The plain form is what
+// tc_cap_name_of_typenode returns; this one also admits the parametric usage, which the cap
+// checkers leave out-of-core (they key their tables on the bare name).
+fn tc_cap_text_of_typenode(nodes: Arena<PNode>, tid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>) -> str {
+    let tn: PNode = nodes.get(tid);
+    if tn.kind == P_K_TYPE {
+        if tn.flags == 0 {
+            if tn.child_count == 0 {
+                let base: str = tc_seg_at(tn.text, 0);
+                let sc: i64 = tc_code_of_name(base, rdefs);
+                if sc == TC_UNHANDLED {
+                    if tc_cap_declared(capnames, base) {
+                        return tn.text;
+                    }
+                }
+            }
+        }
+    }
+    return "";
+}
+
+// SHP-5c-3: production's rendering of a cap type (`render_type(Type::Cap)`): the bare name,
+// or `Name(v0, v1)` for a parametric usage — the record detail a cap value carries.
+fn tc_cap_render(text: str) -> str ! { Alloc } {
+    let base: str = tc_seg_at(text, 0);
+    let n: i64 = tc_seg_count(text);
+    if n <= 1 {
+        return base;
+    }
+    let mut out: str = base.concat("(");
+    let mut i: i64 = 1;
+    while i < n {
+        if i > 1 {
+            out = out.concat(", ");
+        }
+        out = out.concat(tc_seg_at(text, i));
+        i = i + 1;
+    }
+    return out.concat(")");
+}
+
+// SHP-5c-3: a cap text's parametric arity (0 for a plain cap) and its k-th deadline value.
+fn tc_cap_arity(text: str) -> i64 {
+    return tc_seg_count(text) - 1;
+}
+
+fn tc_cap_deadline(text: str, k: i64) -> i64 {
+    return tc_atoi(tc_seg_at(text, k + 1));
+}
+
+// SHP-5c-3: the cap text of a `Slot<C>` annotation node, "" for any other node.
+fn tc_slot_cap_of_typenode(nodes: Arena<PNode>, kids: Vec<i64>, tid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>) -> str {
+    let tn: PNode = nodes.get(tid);
+    if tn.kind == P_K_TYPE {
+        if tn.flags == 0 {
+            if tn.child_count == 1 {
+                if tn.text.bytes_eq("Slot") {
+                    return tc_cap_text_of_typenode(nodes, kids.get(tn.child_start), rdefs, capnames);
+                }
+            }
+        }
+    }
+    return "";
+}
+
+// SHP-5c-3: the cap text of a slot-typed expression — a slot-bound local, or a
+// `slot_new::<C>()` call — or "" when this checker cannot name it (the slot intrinsics then
+// refuse rather than guess).
+fn tc_slot_cap_of_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> str {
+    let n: PNode = nodes.get(eid);
+    if n.kind == P_K_PATH {
+        if tc_last_colons(n.text) < 0 {
+            if tc_bind_lookup(binds, n.text) == TC_T_SLOT {
+                return tc_bind_detail(binds, n.text);
+            }
+        }
+        return "";
+    }
+    if n.kind == P_K_CALL {
+        if n.text.bytes_eq("slot_new") {
+            if n.flags >= 1 {
+                return tc_cap_text_of_typenode(nodes, kids.get(n.child_start), rdefs, capnames);
+            }
+        }
+    }
+    return "";
+}
+
+// SHP-5c-3: the cap text of a cap-typed expression — a cap-bound local, a `slot_take(s)`
+// call whose slot this checker can name, a capability operation on a named cap — or ""
+// otherwise.
+fn tc_cap_text_of_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> str {
+    let n: PNode = nodes.get(eid);
+    if n.kind == P_K_PATH {
+        if tc_last_colons(n.text) < 0 {
+            if tc_bind_lookup(binds, n.text) == TC_T_CAP {
+                return tc_bind_detail(binds, n.text);
+            }
+        }
+        return "";
+    }
+    if n.kind == P_K_CALL {
+        if n.text.bytes_eq("slot_take") {
+            if n.flags == 0 {
+                // Production types a `slot_take` as its slot's cap whatever its arity (a wrong
+                // arity is its own T074), so the first argument names the cap.
+                if n.child_count >= 1 {
+                    return tc_slot_cap_of_expr(nodes, kids, kids.get(n.child_start), binds, rdefs, capnames);
+                }
+            }
+        }
+    }
+    // SHP-5c-3 review: a restrict, split or draw of a named cap is that cap.
+    return tc_capop_text(nodes, eid, binds);
+}
+
+// SHP-5c-3 review: the cap type of a capability operation's result — `restrict`, `split` and
+// `draw` keep their receiver's (each node's text leads with the receiver's name), so a named
+// receiver names the result; `restrict_deadline(d)` on a single-parameter cap is that cap at
+// deadline `d` (the literal rides the node's flags), or at its own deadline where `d` would
+// extend it (production's T200 keeps the original), as production types it. A multi-parameter
+// or non-parametric receiver (production's T200 again) leaves the result unnamed.
+fn tc_capop_text(nodes: Arena<PNode>, eid: i64, binds: Vec<TcBind>) -> str {
+    let n: PNode = nodes.get(eid);
+    if n.kind == P_K_CAP_RESTRICT_DEADLINE {
+        if tc_bind_lookup(binds, n.text) != TC_T_CAP {
+            return "";
+        }
+        let dtext: str = tc_bind_detail(binds, n.text);
+        if tc_cap_arity(dtext) != 1 {
+            return "";
+        }
+        let dorig: i64 = tc_cap_deadline(dtext, 0);
+        let mut dnew: i64 = n.flags;
+        if dnew > dorig {
+            dnew = dorig;
+        }
+        let dbase: str = tc_seg_at(dtext, 0);
+        let dsemi: str = dbase.concat(";");
+        return dsemi.concat(dnew.itoa());
+    }
+    let mut keeps: bool = n.kind == P_K_CAP_RESTRICT;
+    if n.kind == P_K_CAP_SPLIT {
+        keeps = true;
+    }
+    if n.kind == P_K_CAP_DRAW {
+        keeps = true;
+    }
+    if !keeps {
+        return "";
+    }
+    let recv: str = tc_seg_at(n.text, 0);
+    if tc_bind_lookup(binds, recv) == TC_T_CAP {
+        return tc_bind_detail(binds, recv);
+    }
+    return "";
+}
+
+// SHP-5c-3 review: the capability-flow kind of a value whose type code is `at`: 1 a
+// capability, 2 a slot, 3 a region handle, 0 a value of another known type, 4 unknown. A
+// capability or slot whose cap type this checker cannot name is unknown, never another type.
+fn tc_capflow_kind(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, at: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> i64 {
+    if at == TC_T_REGION {
+        return 3;
+    }
+    let n: PNode = nodes.get(eid);
+    let mut bare: bool = n.kind == P_K_PATH;
+    if bare {
+        if tc_last_colons(n.text) >= 0 {
+            bare = false;
+        }
+    }
+    if bare {
+        let tag: i64 = tc_bind_lookup(binds, n.text);
+        if tag == TC_T_CAP {
+            return 1;
+        }
+        if tag == TC_T_SLOT {
+            return 2;
+        }
+        if tag == TC_T_REGION {
+            return 3;
+        }
+        if tc_is_concrete(at) {
+            return 0;
+        }
+        return 4;
+    }
+    let ctext: str = tc_cap_text_of_expr(nodes, kids, eid, binds, rdefs, capnames);
+    if ctext.len() > 0 {
+        return 1;
+    }
+    let stext: str = tc_slot_cap_of_expr(nodes, kids, eid, binds, rdefs, capnames);
+    if stext.len() > 0 {
+        return 2;
+    }
+    let mut capish: bool = at == TC_T_CAP;
+    if at == TC_T_SLOT {
+        capish = true;
+    }
+    if n.kind == P_K_CAP_RESTRICT {
+        capish = true;
+    }
+    if n.kind == P_K_CAP_RESTRICT_DEADLINE {
+        capish = true;
+    }
+    if n.kind == P_K_CAP_SPLIT {
+        capish = true;
+    }
+    if n.kind == P_K_CAP_DRAW {
+        capish = true;
+    }
+    if n.kind == P_K_MINT {
+        capish = true;
+    }
+    if capish {
+        return 4;
+    }
+    if tc_is_concrete(at) {
+        return 0;
+    }
+    return 4;
+}
+
+// SHP-5c-3 review: the declared return type node of the user function a plain call names, or
+// -1 when the call is not a plain call of exactly one declared function. An arena scan, paid
+// only where a capability, slot or region slot receives a call's value.
+fn tc_call_ret_typeid(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64) -> i64 {
+    let n: PNode = nodes.get(eid);
+    if n.kind != P_K_CALL {
+        return 0 - 1;
+    }
+    if n.flags != 0 {
+        return 0 - 1;
+    }
+    if tc_last_colons(n.text) >= 0 {
+        return 0 - 1;
+    }
+    let total: i64 = nodes.len();
+    let mut found: i64 = 0 - 1;
+    let mut i: i64 = 0;
+    while i < total {
+        let mn: PNode = nodes.get(i);
+        if mn.kind == P_K_FN {
+            let fname: str = tc_seg_at(mn.text, 0);
+            if fname.bytes_eq(n.text) {
+                if found >= 0 {
+                    return 0 - 1;
+                }
+                found = i;
+            }
+        }
+        i = i + 1;
+    }
+    if found < 0 {
+        return 0 - 1;
+    }
+    return tc_fn_ret_typeid(nodes, kids, found);
+}
+
+// SHP-5c-3 review: does a cap of text `have` fit a cap slot declared `want` (both in the
+// parser's form, `Name` or `Name;d0;d1`)? 0 it fits; 1 another cap type or parametric arity;
+// 2 the same cap type with a deadline below the declared one — production's covariance admits
+// `Cap(N, a)` where `Cap(N, e)` is declared iff every `a >= e`.
+fn tc_cap_text_fit(want: str, have: str) -> i64 {
+    let wname: str = tc_seg_at(want, 0);
+    let hname: str = tc_seg_at(have, 0);
+    if !wname.bytes_eq(hname) {
+        return 1;
+    }
+    let wa: i64 = tc_cap_arity(want);
+    let ha: i64 = tc_cap_arity(have);
+    if wa != ha {
+        return 1;
+    }
+    let mut k: i64 = 0;
+    while k < wa {
+        if tc_cap_deadline(have, k) < tc_cap_deadline(want, k) {
+            return 2;
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// SHP-5c-3 review: the capability-flow kind a declared slot's type code names (a parameter's
+// tag, an annotation's): 1 a capability, 2 a slot, 3 a region handle, 0 any other type.
+fn tc_capflow_slot_kind(code: i64) -> i64 {
+    if code == TC_T_CAP {
+        return 1;
+    }
+    if code == TC_T_SLOT {
+        return 2;
+    }
+    if code == TC_T_REGION {
+        return 3;
+    }
+    return 0;
+}
+
+// SHP-5c-3 review: does a value fit a declared slot — a parameter, an annotated let, a return —
+// as production's `type_compatible` admits it? The slot is of kind `pk` (tc_capflow_slot_kind)
+// with cap text `ptext`; the value is classified by tc_capflow_kind, and a plain call by its
+// callee's declared return where the slot needs one named. 0 it fits, or the value is no
+// capability, slot or region handle and the slot is of another type (the type checks own it);
+// 1 another kind, cap type or arity; 2 a deadline below the slot's; 3 an unknown value into a
+// capability, slot or region slot; 4 a region handle into a slot of another type.
+fn tc_capflow_fit(nodes: Arena<PNode>, kids: Vec<i64>, pk: i64, ptext: str, eid: i64, at: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> i64 {
+    if pk == 0 {
+        let mut known: bool = tc_is_concrete(at);
+        if at == TC_T_REGION {
+            known = false;
+        }
+        if at == TC_T_CAP {
+            known = false;
+        }
+        if at == TC_T_SLOT {
+            known = false;
+        }
+        if known {
+            return 0;
+        }
+    }
+    if tc_slot_call_failed(nodes, kids, eid, binds, rdefs, capnames) {
+        return 0;
+    }
+    let mut ak: i64 = tc_capflow_kind(nodes, kids, eid, at, binds, rdefs, capnames);
+    let mut atext: str = "";
+    if ak == 1 {
+        atext = tc_cap_text_of_expr(nodes, kids, eid, binds, rdefs, capnames);
+    }
+    if ak == 2 {
+        atext = tc_slot_cap_of_expr(nodes, kids, eid, binds, rdefs, capnames);
+    }
+    if pk != 0 {
+        if ak == 4 {
+            let rtid: i64 = tc_call_ret_typeid(nodes, kids, eid);
+            if rtid >= 0 {
+                let rcap: str = tc_cap_text_of_typenode(nodes, rtid, rdefs, capnames);
+                let rslot: str = tc_slot_cap_of_typenode(nodes, kids, rtid, rdefs, capnames);
+                if rcap.len() > 0 {
+                    ak = 1;
+                    atext = rcap;
+                }
+                if rslot.len() > 0 {
+                    ak = 2;
+                    atext = rslot;
+                }
+            }
+        }
+    }
+    if pk == 0 {
+        if ak == 3 {
+            return 4;
+        }
+        if ak == 1 {
+            return 1;
+        }
+        if ak == 2 {
+            return 1;
+        }
+        return 0;
+    }
+    if ak == 4 {
+        return 3;
+    }
+    if ak != pk {
+        return 1;
+    }
+    if pk == 3 {
+        return 0;
+    }
+    if atext.len() == 0 {
+        return 3;
+    }
+    return tc_cap_text_fit(ptext, atext);
+}
+
+// SHP-5c-3 review: is the value a slot intrinsic call its own checks already rejected — a
+// `slot_take` of another arity or of a slot it cannot name, a `slot_new` without a type
+// argument, with arguments, or of no declared cap type (T074, T075, T191, T192)? Production
+// types such a call as an error, which fits every slot, so no flow mismatch joins its code.
+fn tc_slot_call_failed(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> bool {
+    let n: PNode = nodes.get(eid);
+    if n.kind != P_K_CALL {
+        return false;
+    }
+    if n.text.bytes_eq("slot_take") {
+        if n.flags != 0 {
+            return false;
+        }
+        if n.child_count != 1 {
+            return true;
+        }
+        let st: str = tc_slot_cap_of_expr(nodes, kids, kids.get(n.child_start), binds, rdefs, capnames);
+        return st.len() == 0;
+    }
+    if n.text.bytes_eq("slot_new") {
+        if n.flags == 0 {
+            return true;
+        }
+        if n.child_count != n.flags {
+            return true;
+        }
+        let nt: str = tc_cap_text_of_typenode(nodes, kids.get(n.child_start), rdefs, capnames);
+        return nt.len() == 0;
+    }
+    return false;
+}
+
+// SHP-5c-3 review: the cap text of a slot value — a slot-bound local, a `slot_new::<C>()`
+// call, or a plain call of a function declared to return `Slot<C>` — or "".
+fn tc_value_slot_text(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> str {
+    let direct: str = tc_slot_cap_of_expr(nodes, kids, eid, binds, rdefs, capnames);
+    if direct.len() > 0 {
+        return direct;
+    }
+    let rtid: i64 = tc_call_ret_typeid(nodes, kids, eid);
+    if rtid < 0 {
+        return "";
+    }
+    return tc_slot_cap_of_typenode(nodes, kids, rtid, rdefs, capnames);
+}
+
+// SHP-5c-3 review: report a let whose value does not fit its annotation (tc_capflow_fit's
+// `fit` for an annotation of kind `pk`, the value of kind `ak`). A capability of another cap
+// type under a capability annotation is production's T041, and one whose deadline falls below
+// the annotation's its T195, both exact; under a `Slot<C>` annotation a slot of another cap
+// type or a concrete non-slot value is T046, which the composed pipeline drops (the
+// cross-module annotation artifact, see pipeline.sigil), so it carries the refusal marker; a
+// region handle under a scalar annotation, or a concrete non-region value under a `Region` one,
+// is the scalar check's T041 already; every other mismatch carries the marker alone.
+fn tc_capflow_let_diag(pk: i64, fit: i64, ak: i64, scalar_annot: bool, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    if pk == 1 {
+        if fit == 2 {
+            return tc_push_diag(diags, "T195");
+        }
+        if fit == 1 {
+            if ak == 1 {
+                return tc_push_diag(diags, "T041");
+            }
+        }
+    }
+    if pk == 2 {
+        if fit == 1 {
+            let mut t46: bool = ak == 2;
+            if ak == 0 {
+                t46 = true;
+            }
+            if t46 {
+                let d46: i64 = tc_push_diag(diags, "T046");
+            }
+        }
+    }
+    if fit == 4 {
+        if scalar_annot {
+            return 0;
+        }
+    }
+    if pk == 3 {
+        if fit == 1 {
+            if ak == 0 {
+                return 0;
+            }
+        }
+    }
+    return tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+}
+
+// SHP-5c-3 review: does a type node name `want` anywhere — itself, a type argument, a tuple or
+// array element, a function type's parameter or result?
+fn tc_type_mentions_name(nodes: Arena<PNode>, kids: Vec<i64>, tid: i64, want: str) -> bool {
+    let tn: PNode = nodes.get(tid);
+    if tn.kind == P_K_TYPE {
+        let base: str = tc_seg_at(tn.text, 0);
+        if base.bytes_eq(want) {
+            return true;
+        }
+    }
+    let mut inner: bool = tn.kind == P_K_TYPE;
+    if tn.kind == P_K_TYPE_ARRAY {
+        inner = true;
+    }
+    if tn.kind == P_K_TYPE_TUPLE {
+        inner = true;
+    }
+    if tn.kind == P_K_TYPE_FN {
+        inner = true;
+    }
+    if !inner {
+        return false;
+    }
+    let mut i: i64 = 0;
+    while i < tn.child_count {
+        if tc_type_mentions_name(nodes, kids, kids.get(tn.child_start + i), want) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// SHP-5c-3 review: does a type node carry an owned capability — production's
+// `type_contains_cap`: a declared cap type (plain or a parametric usage), or a type argument
+// (`Slot<C>` carries its C), a tuple or array element, a function type's parameter or result
+// that carries one; a borrow, a slice or a pointer (a flagged type node) carries none.
+fn tc_type_carries_cap(nodes: Arena<PNode>, kids: Vec<i64>, tid: i64, cdefs: Vec<TcCap>) -> bool {
+    let tn: PNode = nodes.get(tid);
+    if tn.kind == P_K_TYPE {
+        if tn.flags != 0 {
+            return false;
+        }
+        if tn.child_count == 0 {
+            let base: str = tc_seg_at(tn.text, 0);
+            let cc: i64 = tc_cap_code_of_name(base, cdefs);
+            return cc != TC_UNHANDLED;
+        }
+    }
+    let mut inner: bool = tn.kind == P_K_TYPE;
+    if tn.kind == P_K_TYPE_ARRAY {
+        inner = true;
+    }
+    if tn.kind == P_K_TYPE_TUPLE {
+        inner = true;
+    }
+    if tn.kind == P_K_TYPE_FN {
+        inner = true;
+    }
+    if !inner {
+        return false;
+    }
+    let mut i: i64 = 0;
+    while i < tn.child_count {
+        if tc_type_carries_cap(nodes, kids, kids.get(tn.child_start + i), cdefs) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// SHP-5c-3 review: production's T183 and T184 — a record field, or an enum variant's payload,
+// whose type carries a capability (tc_type_carries_cap), one per offending field. Run once
+// every module's cap types are known.
+fn tc_cap_aggregates(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, cdefs: Vec<TcCap>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(root);
+    let mut i: i64 = 0;
+    while i < rn.child_count {
+        let cn: PNode = nodes.get(kids.get(rn.child_start + i));
+        if cn.kind == P_K_RECORD_DEF {
+            let mut fi: i64 = 0;
+            while fi < cn.child_count {
+                let fcn: PNode = nodes.get(kids.get(cn.child_start + fi));
+                if fcn.kind == P_K_FIELD {
+                    if fcn.child_count >= 1 {
+                        if tc_type_carries_cap(nodes, kids, kids.get(fcn.child_start), cdefs) {
+                            let d183: i64 = tc_push_diag(diags, "T183");
+                        }
+                    }
+                }
+                fi = fi + 1;
+            }
+        }
+        if cn.kind == P_K_ENUM_DEF {
+            let mut vi: i64 = 0;
+            while vi < cn.child_count {
+                let vcn: PNode = nodes.get(kids.get(cn.child_start + vi));
+                if vcn.kind == P_K_ENUM_VARIANT {
+                    let mut pj: i64 = 0;
+                    while pj < vcn.child_count {
+                        let pcn: PNode = nodes.get(kids.get(vcn.child_start + pj));
+                        if pcn.kind == P_K_ENUM_FIELD {
+                            if pcn.child_count >= 1 {
+                                if tc_type_carries_cap(nodes, kids, kids.get(pcn.child_start), cdefs) {
+                                    let d184: i64 = tc_push_diag(diags, "T184");
+                                }
+                            }
+                        }
+                        pj = pj + 1;
+                    }
+                }
+                vi = vi + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// SHP-5c-3 review: does an expression's value carry an owned capability — a capability or a
+// slot (tc_capflow_kind 1 or 2), a capability operation, or a tuple or array literal holding
+// one?
+fn tc_expr_carries_cap(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, rdefs: Vec<TcRec>, capnames: Vec<str>) -> bool {
+    let n: PNode = nodes.get(eid);
+    let mut agg: bool = n.kind == P_K_TUPLE;
+    if n.kind == P_K_ARRAY {
+        agg = true;
+    }
+    if agg {
+        let mut i: i64 = 0;
+        while i < n.child_count {
+            if tc_expr_carries_cap(nodes, kids, kids.get(n.child_start + i), binds, rdefs, capnames) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+    let k: i64 = tc_capflow_kind(nodes, kids, eid, TC_UNHANDLED, binds, rdefs, capnames);
+    if k == 1 {
+        return true;
+    }
+    if k == 2 {
+        return true;
+    }
+    let mut capop: bool = n.kind == P_K_CAP_RESTRICT;
+    if n.kind == P_K_CAP_RESTRICT_DEADLINE {
+        capop = true;
+    }
+    if n.kind == P_K_CAP_SPLIT {
+        capop = true;
+    }
+    if n.kind == P_K_CAP_DRAW {
+        capop = true;
+    }
+    if n.kind == P_K_MINT {
+        capop = true;
+    }
+    return capop;
+}
+
 // The composite `detail` of a function parameter's declared type, or "" if the
 // param is scalar/record (non-composite). Mirrors tc_param_type_tag's child walk.
 // PR-C1: a cap-typed param carries its bare cap name as `detail` (the bind's tag is
 // TC_T_CAP) so the var-ref emission emits `tag 10, <cap name>` via tc_push_rec_detail.
-fn tc_param_detail(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> str ! { Alloc } {
+// SHP-5c-3: a parametric cap usage (`Approval(2030)`) carries its text (`Approval;2030`),
+// rendered at emission; a `Slot<C>` param carries C's text (the bind's tag is TC_T_SLOT).
+fn tc_param_detail(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>) -> str ! { Alloc } {
     let pn: PNode = nodes.get(paramid);
     if pn.child_count >= 1 {
         let tid: i64 = kids.get(pn.child_start);
@@ -1043,6 +1891,14 @@ fn tc_param_detail(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: Vec
         if capn.len() > 0 {
             return capn;
         } else {
+        }
+        let capt: str = tc_cap_text_of_typenode(nodes, tid, rdefs, capnames);
+        if capt.len() > 0 {
+            return capt;
+        }
+        let slott: str = tc_slot_cap_of_typenode(nodes, kids, tid, rdefs, capnames);
+        if slott.len() > 0 {
+            return slott;
         }
     } else {
     }
@@ -1077,15 +1933,19 @@ fn tc_push_rec(recs: Vec<str> @Mut, start: i64, end: i64, code: i64, rdefs: Vec<
         nm = rec.name;
     } else {
     }
-    let a1: str = start.itoa();
-    let a2: str = a1.concat(",");
-    let a3: str = a2.concat(end.itoa());
-    let a4: str = a3.concat(",");
-    let a5: str = a4.concat(etag.itoa());
-    let a6: str = a5.concat(",");
-    let a7: str = a6.concat(nm);
-    let a8: str = a7.concat(";");
-    let pushed: i64 = recs.push(a8);
+    // One join copies each byte once; the seven chained concats this replaced recopied the growing
+    // prefix at every step (tc_push_rec was most of the self-compile's concat time, 2026-10-08).
+    let mut parts: Vec<str> = Vec::new();
+    let p1: i64 = parts.push(start.itoa());
+    let p2: i64 = parts.push(",");
+    let p3: i64 = parts.push(end.itoa());
+    let p4: i64 = parts.push(",");
+    let p5: i64 = parts.push(etag.itoa());
+    let p6: i64 = parts.push(",");
+    let p7: i64 = parts.push(nm);
+    let p8: i64 = parts.push(";");
+    let glue: str = "";
+    let pushed: i64 = recs.push(glue.join(parts));
     return pushed;
 }
 
@@ -1405,14 +2265,11 @@ fn tc_last_rec_detail(recs: Vec<str>) -> str ! { Alloc } {
     let mut dstart: i64 = 0 - 1;
     let mut i: i64 = 0;
     while i < ll {
-        let ch: str = last.substr(i, i + 1);
-        if ch.bytes_eq(",") {
+        if last.byte_at(i) == TC_BYTE_COMMA {
             commas = commas + 1;
             if commas == 3 {
                 dstart = i + 1;
-            } else {
             }
-        } else {
         }
         i = i + 1;
     }
@@ -1548,17 +2405,11 @@ fn tc_check_binop(lt: i64, rt: i64, op: i64, diags: Vec<str> @Mut) -> i64 ! { Al
 // TC_UNHANDLED for BOTH an unbound name AND a bound-but-out-of-core type; the
 // undefined-local diagnostic (T060) needs the genuinely-unbound case only.
 fn tc_bind_has(binds: Vec<TcBind>, name: str) -> bool {
-    let n: i64 = binds.len();
-    let mut i: i64 = n - 1;
-    while i >= 0 {
-        let b: TcBind = binds.get(i);
-        if b.name.bytes_eq(name) {
-            return true;
-        } else {
-        }
-        i = i - 1;
+    let i: i64 = tc_bind_index(binds, name);
+    if i == 0 - 1 {
+        return false;
     }
-    return false;
+    return true;
 }
 
 // The CODE of the enum that declares a variant named `vname`, or -1. An UNqualified
@@ -1691,8 +2542,16 @@ fn tc_str_in_vec(v: Vec<str>, name: str) -> bool {
 // FIELD ACCESS in the K_PATH arm: a dotted path "base::field" whose base is a
 // record local emits the receiver record (Named base) AND the field record (the
 // field's type), both at the same node span.
-fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let en: PNode = nodes.get(exprid);
+    if en.kind == P_K_REGION {
+        // SHP-5c-3: a region as a VALUE (a let's initializer, an argument) is out of this
+        // slice — tc_emit_region_stmt types the statement form — so it is refused, never typed
+        // as a guess of its body's last expression.
+        let dre: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+        let pre: i64 = tc_push_rec(recs, en.start, en.end, TC_UNHANDLED, rdefs);
+        return TC_UNHANDLED;
+    }
     if en.kind == P_K_LIT_BOOL {
         let pb: i64 = tc_push_rec(recs, en.start, en.end, TC_T_BOOL, rdefs);
         return TC_T_BOOL;
@@ -1720,7 +2579,7 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         while hi < en.child_count {
             let hid: i64 = kids.get(en.child_start + hi);
             let pre: i64 = diags.len();
-            let ht: i64 = tc_emit_expr(nodes, kids, hid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+            let ht: i64 = tc_emit_expr(nodes, kids, hid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
             let post: i64 = diags.len();
             // PR-E3b: str / i64 / bool holes are stringifiable (i64 auto-converts via
             // str_itoa, bool via str_of_bool at the Rust pre-AIR pass). TC_UNHANDLED is
@@ -1843,9 +2702,17 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
             let vcap: i64 = tc_bind_lookup(binds, en.text);
             if vcap == TC_T_CAP {
                 let capd: str = tc_bind_detail(binds, en.text);
-                let pcv: i64 = tc_push_rec_detail(recs, en.start, en.end, TC_T_CAP, capd);
+                // SHP-5c-3: a parametric usage renders as production's `Name(v0, v1)`.
+                let pcv: i64 = tc_push_rec_detail(recs, en.start, en.end, TC_T_CAP, tc_cap_render(capd));
                 return TC_UNHANDLED;
             } else {
+            }
+            // SHP-5c-3: a slot-typed local emits production's `Named` record (tag 9, the name
+            // `Slot`); like a cap's, its value is out-of-core for the scalar checks (the slot
+            // intrinsics read the bind instead).
+            if vcap == TC_T_SLOT {
+                let psl: i64 = tc_push_rec_detail(recs, en.start, en.end, TC_T_NAMED, "Slot");
+                return TC_UNHANDLED;
             }
             // A reference to a COMPOSITE-typed local (PR-5e) emits the bind's
             // recursive mangle detail (e.g. `$tuple2__i64_u32`); the value's type
@@ -1885,17 +2752,17 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
     } else {
     }
     if en.kind == P_K_CALL {
-        let cr: i64 = tc_emit_call(nodes, kids, exprid, expected, binds, sigs, traits, rdefs, recs, diags);
+        let cr: i64 = tc_emit_call(nodes, kids, exprid, expected, "", binds, sigs, traits, rdefs, capnames, recs, diags);
         return cr;
     } else {
     }
     if en.kind == P_K_RECORD_CONSTRUCT {
-        let rcr: i64 = tc_emit_construct(nodes, kids, exprid, "", binds, sigs, traits, rdefs, recs, diags);
+        let rcr: i64 = tc_emit_construct(nodes, kids, exprid, "", binds, sigs, traits, rdefs, capnames, recs, diags);
         return rcr;
     } else {
     }
     if en.kind == P_K_METHOD {
-        let mr: i64 = tc_emit_method(nodes, kids, exprid, binds, sigs, traits, rdefs, recs, diags);
+        let mr: i64 = tc_emit_method(nodes, kids, exprid, expected, "", binds, sigs, traits, rdefs, capnames, recs, diags);
         return mr;
     } else {
     }
@@ -1903,11 +2770,11 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         let lid: i64 = kids.get(en.child_start);
         let rid: i64 = kids.get(en.child_start + 1);
         if tc_binop_is_compare(en.value) {
-            let lc: i64 = tc_emit_binop_pair(nodes, kids, lid, rid, TC_NO_EXPECT, en.value, binds, sigs, traits, rdefs, recs, diags);
+            let lc: i64 = tc_emit_binop_pair(nodes, kids, lid, rid, TC_NO_EXPECT, en.value, binds, sigs, traits, rdefs, capnames, recs, diags);
             let pcmp: i64 = tc_push_rec(recs, en.start, en.end, TC_T_BOOL, rdefs);
             return TC_T_BOOL;
         } else {
-            let la: i64 = tc_emit_binop_pair(nodes, kids, lid, rid, expected, en.value, binds, sigs, traits, rdefs, recs, diags);
+            let la: i64 = tc_emit_binop_pair(nodes, kids, lid, rid, expected, en.value, binds, sigs, traits, rdefs, capnames, recs, diags);
             let parith: i64 = tc_push_rec(recs, en.start, en.end, la, rdefs);
             return la;
         }
@@ -1920,7 +2787,7 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         // Borrow of a non-nominal (a scalar rejects T133; an array decays to a
         // slice — both deferred) is out-of-core => the loud TC_UNHANDLED sentinel.
         let bid: i64 = kids.get(en.child_start);
-        let ic: i64 = tc_emit_expr(nodes, kids, bid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+        let ic: i64 = tc_emit_expr(nodes, kids, bid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
         if ic >= TC_REC_BASE {
             let brec: TcRec = rdefs.get(ic - TC_REC_BASE);
             let mut pre: str = "ref_";
@@ -1959,12 +2826,32 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         let mut ai: i64 = 0;
         while ai < en.child_count {
             let acid: i64 = kids.get(en.child_start + ai);
-            let aec: i64 = tc_emit_expr(nodes, kids, acid, expected, binds, sigs, traits, rdefs, recs, diags);
+            let aec: i64 = tc_emit_expr(nodes, kids, acid, expected, binds, sigs, traits, rdefs, capnames, recs, diags);
             if ai == 0 {
                 e0code = aec;
             } else {
             }
             ai = ai + 1;
+        }
+        // SHP-5c-3 review: production's T186 — an array literal whose element type (its
+        // element 0's) carries a capability: a capability, a slot, or a tuple or array holding
+        // one. A capability in a later element only is another of production's mismatches;
+        // refused.
+        let ae0: i64 = kids.get(en.child_start);
+        if tc_expr_carries_cap(nodes, kids, ae0, binds, rdefs, capnames) {
+            let d186: i64 = tc_push_diag(diags, "T186");
+        } else {
+            let mut alater: bool = false;
+            let mut aj: i64 = 1;
+            while aj < en.child_count {
+                if tc_expr_carries_cap(nodes, kids, kids.get(en.child_start + aj), binds, rdefs, capnames) {
+                    alater = true;
+                }
+                aj = aj + 1;
+            }
+            if alater {
+                let dal: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+            }
         }
         let amg: str = tc_code_mangle(e0code, rdefs);
         let apfx: str = "Array__";
@@ -1976,27 +2863,11 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
     } else {
     }
     if en.kind == P_K_TUPLE {
-        // `(e0, e1, …)` (PR-5f). Like the array literal, each element is typed
-        // independently (NO expectation); detail = `$tuple<n>__<m0>_<m1>…`, tag 19.
-        let tcnt: str = en.child_count.itoa();
-        let tword: str = "$tuple";
-        let tpfx: str = tword.concat(tcnt);
-        let mut tdetail: str = tpfx.concat("__");
-        let mut ti: i64 = 0;
-        while ti < en.child_count {
-            let tcid: i64 = kids.get(en.child_start + ti);
-            let tec: i64 = tc_emit_expr(nodes, kids, tcid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
-            let tmg: str = tc_code_mangle(tec, rdefs);
-            if ti == 0 {
-                tdetail = tdetail.concat(tmg);
-            } else {
-                let twithsep: str = tdetail.concat("$");
-                tdetail = twithsep.concat(tmg);
-            }
-            ti = ti + 1;
-        }
-        let ptr: i64 = tc_push_rec_detail(recs, en.start, en.end, TC_T_TUPLE, tdetail);
-        return TC_UNHANDLED;
+        // `(e0, e1, …)` (PR-5f) with no tuple slot in view: each element is typed
+        // independently (NO expectation). The let and return handlers call
+        // tc_emit_tuple directly with their slot (SR-032 mirror).
+        let tr: i64 = tc_emit_tuple(nodes, kids, exprid, "", binds, sigs, traits, rdefs, capnames, recs, diags);
+        return tr;
     } else {
     }
     if en.kind == P_K_INDEX {
@@ -2006,8 +2877,8 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         // detail for the common path-receiver case; otherwise out-of-core.
         let ixaid: i64 = kids.get(en.child_start);
         let ixiid: i64 = kids.get(en.child_start + 1);
-        let ixac: i64 = tc_emit_expr(nodes, kids, ixaid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
-        let ixic: i64 = tc_emit_expr(nodes, kids, ixiid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+        let ixac: i64 = tc_emit_expr(nodes, kids, ixaid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+        let ixic: i64 = tc_emit_expr(nodes, kids, ixiid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
         let ixan: PNode = nodes.get(ixaid);
         let mut elemc: i64 = TC_UNHANDLED;
         if ixan.kind == P_K_PATH {
@@ -2018,6 +2889,26 @@ fn tc_emit_expr(nodes: Arena<PNode>, kids: Vec<i64>, exprid: i64, expected: i64,
         let pix: i64 = tc_push_rec(recs, en.start, en.end, elemc, rdefs);
         return elemc;
     } else {
+    }
+    if en.kind == P_K_CAP_RESTRICT_DEADLINE {
+        // SHP-5c-3 review: production's T200 (capability_tc.rs) — a `restrict_deadline` on a
+        // non-parametric or a multi-parameter cap, or one that would extend the cap's own
+        // deadline. The receiver's bind names the cap; a receiver it does not name is left to
+        // the emitter, which poisons a receiver whose cap type the function does not fix. The
+        // node keeps its out-of-core record below.
+        if tc_bind_lookup(binds, en.text) == TC_T_CAP {
+            let rdt: str = tc_bind_detail(binds, en.text);
+            let rda: i64 = tc_cap_arity(rdt);
+            let mut t200: bool = rda != 1;
+            if rda == 1 {
+                if en.flags > tc_cap_deadline(rdt, 0) {
+                    t200 = true;
+                }
+            }
+            if t200 {
+                let d200: i64 = tc_push_diag(diags, "T200");
+            }
+        }
     }
     let pu: i64 = tc_push_rec(recs, en.start, en.end, TC_UNHANDLED, rdefs);
     return TC_UNHANDLED;
@@ -2063,25 +2954,25 @@ fn tc_is_all_int_lit(nodes: Arena<PNode>, kids: Vec<i64>, id: i64) -> bool {
 // every `IntLit` to its concrete sibling's int type (so `v < 0` with `v: i32`
 // types `0` as i32, and the `2 * 3` in `a + 1 - 2 * 3` takes a's i32). Emission
 // order is irrelevant — the differential compares a sorted set.
-fn tc_emit_binop_pair(nodes: Arena<PNode>, kids: Vec<i64>, lid: i64, rid: i64, base: i64, op: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn tc_emit_binop_pair(nodes: Arena<PNode>, kids: Vec<i64>, lid: i64, rid: i64, base: i64, op: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let lislit: bool = tc_is_all_int_lit(nodes, kids, lid);
     let rislit: bool = tc_is_all_int_lit(nodes, kids, rid);
     let mut lt: i64 = TC_UNHANDLED;
     let mut rt: i64 = TC_UNHANDLED;
     if lislit {
         if rislit {
-            lt = tc_emit_expr(nodes, kids, lid, base, binds, sigs, traits, rdefs, recs, diags);
-            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, recs, diags);
+            lt = tc_emit_expr(nodes, kids, lid, base, binds, sigs, traits, rdefs, capnames, recs, diags);
+            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, capnames, recs, diags);
         } else {
-            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, recs, diags);
-            lt = tc_emit_expr(nodes, kids, lid, rt, binds, sigs, traits, rdefs, recs, diags);
+            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, capnames, recs, diags);
+            lt = tc_emit_expr(nodes, kids, lid, rt, binds, sigs, traits, rdefs, capnames, recs, diags);
         }
     } else {
-        lt = tc_emit_expr(nodes, kids, lid, base, binds, sigs, traits, rdefs, recs, diags);
+        lt = tc_emit_expr(nodes, kids, lid, base, binds, sigs, traits, rdefs, capnames, recs, diags);
         if rislit {
-            rt = tc_emit_expr(nodes, kids, rid, lt, binds, sigs, traits, rdefs, recs, diags);
+            rt = tc_emit_expr(nodes, kids, rid, lt, binds, sigs, traits, rdefs, capnames, recs, diags);
         } else {
-            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, recs, diags);
+            rt = tc_emit_expr(nodes, kids, rid, base, binds, sigs, traits, rdefs, capnames, recs, diags);
         }
     }
     // T054 (arithmetic/ordering need a matching numeric type) / T055 (equality
@@ -2097,15 +2988,300 @@ fn tc_emit_binop_pair(nodes: Arena<PNode>, kids: Vec<i64>, lid: i64, rid: i64, b
     return lt;
 }
 
+// Type a tuple literal `(e0, e1, …)` (PR-5f): detail = `$tuple<n>__<m0>$<m1>…`, tag 19.
+// SR-032 mirror: the oracle types each element by the slot the tuple is written to, so
+// each element is typed under its slot in `slot_detail` (the mangle of the `let`
+// annotation or the return type), via tc_tuple_slot_expected. With no tuple slot ("")
+// every element is typed independently (NO expectation), as before SR-032.
+fn tc_emit_tuple(nodes: Arena<PNode>, kids: Vec<i64>, tupid: i64, slot_detail: str, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let en: PNode = nodes.get(tupid);
+    let tcnt: str = en.child_count.itoa();
+    let tword: str = "$tuple";
+    let tpfx: str = tword.concat(tcnt);
+    let mut tdetail: str = tpfx.concat("__");
+    let mut ti: i64 = 0;
+    while ti < en.child_count {
+        let tcid: i64 = kids.get(en.child_start + ti);
+        let texp: i64 = tc_tuple_slot_expected(slot_detail, en.child_count, ti, rdefs);
+        let tec: i64 = tc_emit_expr(nodes, kids, tcid, texp, binds, sigs, traits, rdefs, capnames, recs, diags);
+        let tmg: str = tc_code_mangle(tec, rdefs);
+        if ti == 0 {
+            tdetail = tdetail.concat(tmg);
+        } else {
+            let twithsep: str = tdetail.concat("$");
+            tdetail = twithsep.concat(tmg);
+        }
+        ti = ti + 1;
+    }
+    let ptr: i64 = tc_push_rec_detail(recs, en.start, en.end, TC_T_TUPLE, tdetail);
+    return TC_UNHANDLED;
+}
+
+// SR-032 mirror: the expected type of element `ti` of a tuple literal of `arity`
+// elements written to the slot whose mangle is `slot_detail` (`$tuple2__i64$u32` for a
+// `(i64, u32)` annotation): the element's scalar or record code, so
+// `let t: (i64, u32) = (1, 2)` types `2` as u32, as the oracle does. A slot is used only
+// when it is a tuple of the same arity whose elements are all plain names. A composite
+// element's own mangle carries `$` (`Array__i32$2`), so splitting on `$` then yields
+// more names than `arity`, and every element falls back to NO expectation instead of
+// taking a wrong slot.
+fn tc_tuple_slot_expected(slot_detail: str, arity: i64, ti: i64, rdefs: Vec<TcRec>) -> i64 {
+    let acnt: str = arity.itoa();
+    let tword: str = "$tuple";
+    let tpfx: str = tword.concat(acnt);
+    let spfx: str = tpfx.concat("__");
+    if tc_str_starts(slot_detail, spfx) {
+        let plen: i64 = spfx.len();
+        let dlen: i64 = slot_detail.len();
+        let names: str = slot_detail.substr(plen, dlen);
+        let nlen: i64 = names.len();
+        let mut seg: i64 = 0;
+        let mut segstart: i64 = 0;
+        let mut want: str = "";
+        let mut k: i64 = 0;
+        while k < nlen {
+            let b: i64 = names.byte_at(k);
+            if b == TC_BYTE_DOLLAR {
+                if seg == ti {
+                    want = names.substr(segstart, k);
+                }
+                seg = seg + 1;
+                segstart = k + 1;
+            }
+            k = k + 1;
+        }
+        if seg == ti {
+            want = names.substr(segstart, nlen);
+        }
+        if seg + 1 == arity {
+            let scode: i64 = tc_code_of_name(want, rdefs);
+            if scode != TC_UNHANDLED {
+                return scode;
+            }
+        }
+    }
+    return TC_NO_EXPECT;
+}
+
+// SR-032 mirror: the expected type of payload argument `pi` of a construction of variant
+// `vname` of the enum at `rdefs[ridx]`. The oracle types each argument by the payload
+// slot it is stored into, so an int literal pins to the slot (`Cell::Cu(2)` for `Cu(u32)`
+// types `2` as u32). The slot is the variant's declared payload type or, for a
+// type-param payload, the instance's type-arg: `ctor_targs` holds the `;`-joined codes of
+// a generic-enum `let` annotation naming this enum ("" when no instance is in view). A
+// payload past the variant's arity, a non-scalar declared payload (vptags holds
+// TC_UNHANDLED for it), a type-param payload with no instance in view and an unknown
+// variant are typed WITHOUT expectation.
+fn tc_payload_expected(rdefs: Vec<TcRec>, ridx: i64, vname: str, pi: i64, ctor_targs: str) -> i64 {
+    let erec: TcRec = rdefs.get(ridx);
+    let vk: i64 = tc_variant_index(rdefs, ridx, vname);
+    if vk < 0 {
+        return TC_NO_EXPECT;
+    }
+    let vc: i64 = erec.vcounts.get(vk);
+    if pi >= vc {
+        return TC_NO_EXPECT;
+    }
+    let vs: i64 = erec.vstarts.get(vk);
+    let ptp: i64 = erec.vptp.get(vs + pi);
+    let mut pexp: i64 = erec.vptags.get(vs + pi);
+    if ptp >= 0 {
+        let pseg: str = tc_seg_at(ctor_targs, ptp);
+        pexp = tc_atoi(pseg);
+    }
+    if pexp == TC_UNHANDLED {
+        return TC_NO_EXPECT;
+    }
+    return pexp;
+}
+
 // Type a call expression `f(args)`: result = callee RETURN code; each argument is
 // typed with the matching PARAMETER code as its expected. A callee of the form
 // `Enum::Variant` (the base is a declared enum) is instead a PAYLOAD-variant
 // construction (`Opt::Some(5)`) — typed Named(enum) at the call span, with each
-// payload argument typed WITHOUT expectation (the oracle does not pin a payload
-// literal to the variant field type, so a `u32`-payload literal stays i64).
+// payload argument typed under its payload slot (tc_payload_expected; SR-032: before
+// it, the oracle typed a payload literal without expectation, so a `u32`-payload
+// literal stayed i64). `ctor_targs` is the generic-enum instance a `let` annotation
+// names ("" elsewhere); it applies only when the constructed enum is `expected`.
 // Unknown callee => TC_UNHANDLED.
-fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+// SHP-5c-3: `slot_new::<C>()` (production's `IntrinsicShape::SlotNew`). The arguments are
+// typed first (their own diagnostics surface), then the arity (T074: none expected); the
+// type argument must be present (T192) and name a declared cap type, plain or parametric
+// (T191). A well-formed call types as the slot of that cap: its record is production's
+// Named `Slot`, its code TC_T_SLOT (the let path reads the cap text off the call node).
+fn tc_emit_slot_new(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let cn: PNode = nodes.get(callid);
+    let nargs: i64 = cn.child_count - cn.flags;
+    let mut ai: i64 = cn.flags;
+    while ai < cn.child_count {
+        let at: i64 = tc_emit_expr(nodes, kids, kids.get(cn.child_start + ai), TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+        ai = ai + 1;
+    }
+    if nargs != 0 {
+        let d74: i64 = tc_push_diag(diags, "T074");
+    }
+    let mut captext: str = "";
+    if cn.flags == 0 {
+        let d192: i64 = tc_push_diag(diags, "T192");
+    } else {
+        captext = tc_cap_text_of_typenode(nodes, kids.get(cn.child_start), rdefs, capnames);
+        if captext.len() == 0 {
+            let d191: i64 = tc_push_diag(diags, "T191");
+        }
+    }
+    let mut ok: bool = nargs == 0;
+    if captext.len() == 0 {
+        ok = false;
+    }
+    if ok {
+        let psn: i64 = tc_push_rec_detail(recs, cn.start, cn.end, TC_T_NAMED, "Slot");
+        return TC_T_SLOT;
+    }
+    let pun: i64 = tc_push_rec(recs, cn.start, cn.end, TC_UNHANDLED, rdefs);
+    return TC_UNHANDLED;
+}
+
+// SHP-5c-3: `slot_put(s, c)` (production's `SlotPut`): T074 unless two arguments; the slot
+// argument must be a slot this checker can name (a slot-bound local or a `slot_new` call;
+// a concrete non-slot is T075, an unknown one is refused); the cap argument must be a cap
+// it can name (a cap-bound local or a `slot_take` result; a concrete non-cap is T075, an
+// unknown one is refused) of the slot's cap: another name is T075; the same name with
+// another parametric arity, or any deadline below the slot's (production's covariant
+// `Cap(N, a) <: Cap(N, e)` iff every `a >= e`), is T195. The call is Unit.
+fn tc_emit_slot_put(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let cn: PNode = nodes.get(callid);
+    let nargs: i64 = cn.child_count;
+    let mut at0: i64 = TC_UNHANDLED;
+    let mut at1: i64 = TC_UNHANDLED;
+    let mut ai: i64 = 0;
+    while ai < nargs {
+        let at: i64 = tc_emit_expr(nodes, kids, kids.get(cn.child_start + ai), TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+        if ai == 0 {
+            at0 = at;
+        }
+        if ai == 1 {
+            at1 = at;
+        }
+        ai = ai + 1;
+    }
+    if nargs != 2 {
+        let d74: i64 = tc_push_diag(diags, "T074");
+    }
+    if nargs >= 1 {
+        let slotcap: str = tc_slot_cap_of_expr(nodes, kids, kids.get(cn.child_start), binds, rdefs, capnames);
+        if slotcap.len() == 0 {
+            if tc_is_concrete(at0) {
+                let d75s: i64 = tc_push_diag(diags, "T075");
+            } else {
+                let dus: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+            }
+        } else {
+            if nargs >= 2 {
+                let captext: str = tc_cap_text_of_expr(nodes, kids, kids.get(cn.child_start + 1), binds, rdefs, capnames);
+                if captext.len() == 0 {
+                    if tc_is_concrete(at1) {
+                        let d75c: i64 = tc_push_diag(diags, "T075");
+                    } else {
+                        let duc: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+                    }
+                } else {
+                    let sbase: str = tc_seg_at(slotcap, 0);
+                    let cbase: str = tc_seg_at(captext, 0);
+                    if !sbase.bytes_eq(cbase) {
+                        let d75n: i64 = tc_push_diag(diags, "T075");
+                    } else {
+                        let sar: i64 = tc_cap_arity(slotcap);
+                        let car: i64 = tc_cap_arity(captext);
+                        if sar != car {
+                            let d195a: i64 = tc_push_diag(diags, "T195");
+                        } else {
+                            let mut k: i64 = 0;
+                            let mut below: bool = false;
+                            while k < sar {
+                                if tc_cap_deadline(captext, k) < tc_cap_deadline(slotcap, k) {
+                                    below = true;
+                                }
+                                k = k + 1;
+                            }
+                            if below {
+                                let d195d: i64 = tc_push_diag(diags, "T195");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let pu: i64 = tc_push_rec(recs, cn.start, cn.end, TC_T_UNIT, rdefs);
+    return TC_T_UNIT;
+}
+
+// SHP-5c-3: `slot_take(s)` (production's `SlotTake`): T074 unless one argument; the slot
+// argument as at `slot_put`. The result is the slot's cap: a tag-10 record rendered as
+// production renders the cap, code TC_T_CAP (the let path reads the cap text off the call).
+fn tc_emit_slot_take(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let cn: PNode = nodes.get(callid);
+    let nargs: i64 = cn.child_count;
+    let mut at0: i64 = TC_UNHANDLED;
+    let mut ai: i64 = 0;
+    while ai < nargs {
+        let at: i64 = tc_emit_expr(nodes, kids, kids.get(cn.child_start + ai), TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+        if ai == 0 {
+            at0 = at;
+        }
+        ai = ai + 1;
+    }
+    if nargs != 1 {
+        let d74: i64 = tc_push_diag(diags, "T074");
+    }
+    let mut slotcap: str = "";
+    if nargs >= 1 {
+        slotcap = tc_slot_cap_of_expr(nodes, kids, kids.get(cn.child_start), binds, rdefs, capnames);
+        if slotcap.len() == 0 {
+            if tc_is_concrete(at0) {
+                let d75: i64 = tc_push_diag(diags, "T075");
+            } else {
+                let dus: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+            }
+        }
+    }
+    if slotcap.len() > 0 {
+        let pct: i64 = tc_push_rec_detail(recs, cn.start, cn.end, TC_T_CAP, tc_cap_render(slotcap));
+        return TC_T_CAP;
+    }
+    let pun: i64 = tc_push_rec(recs, cn.start, cn.end, TC_UNHANDLED, rdefs);
+    return TC_UNHANDLED;
+}
+
+fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64, ctor_targs: str, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let cn: PNode = nodes.get(callid);
+    // SHP-5c-3: explicit type arguments ride as the leading `flags` children of the call.
+    // Only `slot_new` reads them (below). An explicit instantiation of anything else is
+    // refused outright: the oracle instantiates the callee from the written arguments where
+    // this checker infers from the value arguments, and a disagreement between the two would
+    // be a wrong type, not a diagnostic. The marker is kept by the pipeline's tc allowlist.
+    if cn.flags > 0 {
+        let isnew: bool = cn.text.bytes_eq("slot_new");
+        if !isnew {
+            let dtu: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+            let ptu: i64 = tc_push_rec(recs, cn.start, cn.end, TC_UNHANDLED, rdefs);
+            return TC_UNHANDLED;
+        }
+    }
+    // SHP-5c-3: the slot intrinsics — production's `resolve_intrinsic_call`, consulted before
+    // any declared function of the name; `slot_put`/`slot_take` with type args are no
+    // intrinsic there, so they fall through (to T062, as a bare unknown callee).
+    if cn.text.bytes_eq("slot_new") {
+        return tc_emit_slot_new(nodes, kids, callid, binds, sigs, traits, rdefs, capnames, recs, diags);
+    }
+    if cn.flags == 0 {
+        if cn.text.bytes_eq("slot_put") {
+            return tc_emit_slot_put(nodes, kids, callid, binds, sigs, traits, rdefs, capnames, recs, diags);
+        }
+        if cn.text.bytes_eq("slot_take") {
+            return tc_emit_slot_take(nodes, kids, callid, binds, sigs, traits, rdefs, capnames, recs, diags);
+        }
+    }
     let cc: i64 = tc_last_colons(cn.text);
     if cc >= 0 {
         let cbase: str = cn.text.substr(0, cc);
@@ -2113,10 +3289,17 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
         if ecode >= TC_REC_BASE {
             let erec: TcRec = rdefs.get(ecode - TC_REC_BASE);
             if erec.is_enum {
+                let qvlen: i64 = cn.text.len();
+                let qvname: str = cn.text.substr(cc + 2, qvlen);
+                let mut qtargs: str = "";
+                if ecode == expected {
+                    qtargs = ctor_targs;
+                }
                 let mut ei: i64 = 0;
                 while ei < cn.child_count {
                     let eargid: i64 = kids.get(cn.child_start + ei);
-                    let eat: i64 = tc_emit_expr(nodes, kids, eargid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                    let eexp: i64 = tc_payload_expected(rdefs, ecode - TC_REC_BASE, qvname, ei, qtargs);
+                    let eat: i64 = tc_emit_expr(nodes, kids, eargid, eexp, binds, sigs, traits, rdefs, capnames, recs, diags);
                     ei = ei + 1;
                 }
                 let pevc: i64 = tc_push_rec(recs, cn.start, cn.end, ecode, rdefs);
@@ -2158,7 +3341,7 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
                 argexp = sg.params.get(ai);
             } else {
             }
-            let at: i64 = tc_emit_expr(nodes, kids, argid, argexp, binds, sigs, traits, rdefs, recs, diags);
+            let at: i64 = tc_emit_expr(nodes, kids, argid, argexp, binds, sigs, traits, rdefs, capnames, recs, diags);
             let aolit: bool = tc_is_all_int_lit(nodes, kids, argid);
             let qat: i64 = argtypes.push(at);
             let qal: i64 = arglits.push(aolit);
@@ -2172,6 +3355,24 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
                 let pdet: str = sg.param_details.get(ai);
                 let dcc71: i64 = tc_check_composite(pdet, argexp, argdet, at, "T071", diags);
                 let dac71: i64 = tc_check_assign(argexp, at, aolit, "T071", diags);
+                // SHP-5c-3 review: a capability, slot or region value crosses a call only into a
+                // parameter production's `type_compatible` admits it to (tc_capflow_fit). Its
+                // T071 is dropped by the composed pipeline (see pipeline.sigil), so a mismatch
+                // carries the refusal marker; a capability whose deadline falls below the
+                // parameter's is production's T195, exact.
+                let apk: i64 = tc_capflow_slot_kind(argexp);
+                let afit: i64 = tc_capflow_fit(nodes, kids, apk, pdet, argid, at, binds, rdefs, capnames);
+                if afit != 0 {
+                    let mut a195: bool = afit == 2;
+                    if apk != 1 {
+                        a195 = false;
+                    }
+                    if a195 {
+                        let da195: i64 = tc_push_diag(diags, "T195");
+                    } else {
+                        let dacf: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+                    }
+                }
             } else {
             }
             ai = ai + 1;
@@ -2322,7 +3523,7 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
     }
     // An UNqualified enum-variant construction (`A(5)`): a bare name that is not a
     // function but IS a variant of a declared enum — typed Named(enum), args typed
-    // without expectation (like the qualified form). The oracle accepts this.
+    // under their payload slots (like the qualified form). The oracle accepts this.
     if cc < 0 {
         let mut evcode: i64 = tc_enum_of_variant(rdefs, cn.text);
         // PR-G2b-iii: prefer the EXPECTED enum (a let/param annotation) when it has this
@@ -2355,10 +3556,15 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
                 }
             } else {
             }
+            let mut uvtargs: str = "";
+            if evcode == expected {
+                uvtargs = ctor_targs;
+            }
             let mut uvi: i64 = 0;
             while uvi < cn.child_count {
                 let uvargid: i64 = kids.get(cn.child_start + uvi);
-                let uvat: i64 = tc_emit_expr(nodes, kids, uvargid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                let uvexp: i64 = tc_payload_expected(rdefs, evcode - TC_REC_BASE, cn.text, uvi, uvtargs);
+                let uvat: i64 = tc_emit_expr(nodes, kids, uvargid, uvexp, binds, sigs, traits, rdefs, capnames, recs, diags);
                 uvi = uvi + 1;
             }
             let puv: i64 = tc_push_rec(recs, cn.start, cn.end, evcode, rdefs);
@@ -2385,7 +3591,7 @@ fn tc_emit_call(nodes: Arena<PNode>, kids: Vec<i64>, callid: i64, expected: i64,
 // The construction itself emits one record (its span) typed Named(record). An
 // unknown record name => TC_UNHANDLED (children still typed, no expectation, so
 // their records are never silently dropped).
-fn tc_emit_construct(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, ctor_targs: str, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn tc_emit_construct(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, ctor_targs: str, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let cn: PNode = nodes.get(ctorid);
     let recname: str = tc_seg_at(cn.text, 0);
     let rcode: i64 = tc_code_of_name(recname, rdefs);
@@ -2414,7 +3620,7 @@ fn tc_emit_construct(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, ctor_targ
                 }
             } else {
             }
-            let ft: i64 = tc_emit_expr(nodes, kids, fvid, fexp, binds, sigs, traits, rdefs, recs, diags);
+            let ft: i64 = tc_emit_expr(nodes, kids, fvid, fexp, binds, sigs, traits, rdefs, capnames, recs, diags);
             // PR-G2a-iii: construct-time field-init type CHECK against the substituted slot.
             // (b) the standard assignment check, plus (a) an EXTRA T071 when a bare int
             // literal lands in a NON-int slot (the oracle's "out-of-range integer literal"
@@ -2442,7 +3648,7 @@ fn tc_emit_construct(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, ctor_targ
     let mut fj: i64 = 0;
     while fj < cn.child_count {
         let fvid2: i64 = kids.get(cn.child_start + fj);
-        let ft2: i64 = tc_emit_expr(nodes, kids, fvid2, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+        let ft2: i64 = tc_emit_expr(nodes, kids, fvid2, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
         fj = fj + 1;
     }
     let pu: i64 = tc_push_rec(recs, cn.start, cn.end, TC_UNHANDLED, rdefs);
@@ -2452,10 +3658,11 @@ fn tc_emit_construct(nodes: Arena<PNode>, kids: Vec<i64>, ctorid: i64, ctor_targ
 // Type a method-form node `Recv::seg(args)` (P_K_METHOD: text = last segment,
 // child[0] = the receiver Path, child[1..] = args). When the receiver path names
 // a declared ENUM, this is a PAYLOAD-variant construction (`Opt::Some(5)`) — typed
-// Named(enum) at the node span, with each arg typed WITHOUT expectation (the
-// receiver child emits NO record, mirroring the oracle's payload-only
-// EnumConstruct). Any real method call is out-of-core => TC_UNHANDLED.
-fn tc_emit_method(nodes: Arena<PNode>, kids: Vec<i64>, mid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+// Named(enum) at the node span, with each arg typed under its payload slot
+// (tc_payload_expected, SR-032; `ctor_targs` as in tc_emit_call, applied only when the
+// enum is `expected`) — the receiver child emits NO record, mirroring the oracle's
+// payload-only EnumConstruct. Any real method call is out-of-core => TC_UNHANDLED.
+fn tc_emit_method(nodes: Arena<PNode>, kids: Vec<i64>, mid: i64, expected: i64, ctor_targs: str, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let mn: PNode = nodes.get(mid);
     if mn.child_count >= 1 {
         let recvid: i64 = kids.get(mn.child_start);
@@ -2465,10 +3672,15 @@ fn tc_emit_method(nodes: Arena<PNode>, kids: Vec<i64>, mid: i64, binds: Vec<TcBi
             if ecode >= TC_REC_BASE {
                 let erec: TcRec = rdefs.get(ecode - TC_REC_BASE);
                 if erec.is_enum {
+                    let mut mtargs: str = "";
+                    if ecode == expected {
+                        mtargs = ctor_targs;
+                    }
                     let mut ai: i64 = 1;
                     while ai < mn.child_count {
                         let argid: i64 = kids.get(mn.child_start + ai);
-                        let at: i64 = tc_emit_expr(nodes, kids, argid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                        let aexp: i64 = tc_payload_expected(rdefs, ecode - TC_REC_BASE, mn.text, ai - 1, mtargs);
+                        let at: i64 = tc_emit_expr(nodes, kids, argid, aexp, binds, sigs, traits, rdefs, capnames, recs, diags);
                         ai = ai + 1;
                     }
                     let pm: i64 = tc_push_rec(recs, mn.start, mn.end, ecode, rdefs);
@@ -2537,7 +3749,7 @@ fn tc_emit_method(nodes: Arena<PNode>, kids: Vec<i64>, mid: i64, binds: Vec<TcBi
                                 }
                             } else {
                             }
-                            let mat: i64 = tc_emit_expr(nodes, kids, margid, margexp, binds, sigs, traits, rdefs, recs, diags);
+                            let mat: i64 = tc_emit_expr(nodes, kids, margid, margexp, binds, sigs, traits, rdefs, capnames, recs, diags);
                             if mai < mplen {
                                 // PR-G3b: the method-arg T071 check, two complementary arms that
                                 // together mirror the oracle's `infer_method_call_expr`:
@@ -2614,7 +3826,113 @@ fn tc_annot_tag(nodes: Arena<PNode>, typeid: i64, rdefs: Vec<TcRec>) -> i64 {
 // expression. The symbol table is flat + append-only (no generic Vec truncate),
 // so a type-changing shadow inside a branch can leak past the branch — the
 // monomorphic corpus avoids that and the resolution-parity vetting catches it.
-fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, fnret: i64, fnret_detail: str, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+// SHP-5c-3: `region name(limit) { body }` as a statement (children [limit, body]).
+// Production: the limit must be a machine integer (T111; an int literal is admitted, an
+// out-of-core limit is not judged); the body is checked in a scope where the name is a
+// `Region` value; every control-flow statement in the body is T068 (the body lowers inline
+// into one basic block); the body's mutable set starts EMPTY (production's `region_mutables`),
+// so an assignment to a bare name there is T042 unless a `let mut` inside the body bound it.
+// The statement's value is discarded, so its type is not computed; a region anywhere else (a
+// let's value, an argument) is refused in tc_emit_expr.
+fn tc_emit_region_stmt(nodes: Arena<PNode>, kids: Vec<i64>, rid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, fnret: i64, fnret_detail: str, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+    let rn: PNode = nodes.get(rid);
+    if rn.child_count != 2 {
+        let dru: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+        return 0;
+    }
+    let lid: i64 = kids.get(rn.child_start);
+    let lt: i64 = tc_emit_expr(nodes, kids, lid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+    let mut lok: bool = tc_is_int_type(lt);
+    if tc_is_all_int_lit(nodes, kids, lid) {
+        lok = true;
+    }
+    if lt == TC_UNHANDLED {
+        lok = true;
+    }
+    if !lok {
+        let d111: i64 = tc_push_diag(diags, "T111");
+    }
+    let bid: i64 = kids.get(rn.child_start + 1);
+    let bn: PNode = nodes.get(bid);
+    // The names a `let mut` inside the body bound so far — the only ones an assignment in
+    // the body may rebind (T042 otherwise). A tuple let's binders are not read here: refuse.
+    let mut bodymuts: Vec<str> = Vec::new();
+    let mut bi: i64 = 0;
+    while bi < bn.child_count {
+        let sn: PNode = nodes.get(kids.get(bn.child_start + bi));
+        if sn.kind == P_K_LET {
+            // A let's flags bit 0 is its `mut` (parser: mflag + taint * 2).
+            let half: i64 = sn.flags / 2;
+            let lowbit: i64 = sn.flags - half * 2;
+            if lowbit == 1 {
+                let qm: i64 = bodymuts.push(sn.text);
+            }
+        }
+        if sn.kind == P_K_LET_TUPLE {
+            let dlt: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+        }
+        if sn.kind == P_K_ASSIGN {
+            if sn.child_count >= 1 {
+                let tn42: PNode = nodes.get(kids.get(sn.child_start));
+                if tn42.kind == P_K_PATH {
+                    if tc_last_colons(tn42.text) < 0 {
+                        if !tc_str_in_vec(bodymuts, tn42.text) {
+                            let d42: i64 = tc_push_diag(diags, "T042");
+                        }
+                    }
+                }
+            }
+        }
+        let mut cf: bool = sn.kind == P_K_IF;
+        if sn.kind == P_K_WHILE {
+            cf = true;
+        }
+        if sn.kind == P_K_MATCH {
+            cf = true;
+        }
+        if sn.kind == P_K_FOR_RANGE {
+            cf = true;
+        }
+        if sn.kind == P_K_FOR_IN {
+            cf = true;
+        }
+        if sn.kind == P_K_RETURN {
+            cf = true;
+        }
+        if sn.kind == P_K_BREAK {
+            cf = true;
+        }
+        if sn.kind == P_K_CONTINUE {
+            cf = true;
+        }
+        if cf {
+            let d68: i64 = tc_push_diag(diags, "T068");
+        }
+        bi = bi + 1;
+    }
+    let mark: i64 = binds.len();
+    let nb: i64 = binds.push(TcBind { name: rn.text, tag: TC_T_REGION, detail: "", targs: "" });
+    let rb: i64 = tc_emit_block_exprs(nodes, kids, bid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
+    // The region expression's own record: its type is the body's last expression statement's
+    // (re-typed into scratch vectors, the body's lets still in scope — the walk above already
+    // reported that expression's diagnostics), else Unit.
+    let mut regty: i64 = TC_T_UNIT;
+    if bn.child_count > 0 {
+        let lastn: PNode = nodes.get(kids.get(bn.child_start + bn.child_count - 1));
+        if lastn.kind == P_K_EXPR_STMT {
+            if lastn.child_count == 1 {
+                let mut srecs: Vec<str> = Vec::new();
+                let mut sdiags: Vec<str> = Vec::new();
+                regty = tc_emit_expr(nodes, kids, kids.get(lastn.child_start), TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, srecs, sdiags);
+            }
+        }
+    }
+    let prg: i64 = tc_push_rec(recs, rn.start, rn.end, regty, rdefs);
+    let un: i64 = tc_scope_unwind(binds, mark);
+    return 0;
+}
+
+fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, fnret: i64, fnret_detail: str, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
     let bn: PNode = nodes.get(blockid);
     // PR-5d: returns 1 iff this block is GUARANTEED to return on every path (a
     // `return`, an `if` whose both branches return, or an exhaustive `match` whose
@@ -2672,7 +3990,14 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                     }
                 } else {
                 }
-                let vt: i64 = tc_emit_expr(nodes, kids, vid, rvexp, binds, sigs, traits, rdefs, recs, diags);
+                // SR-032 mirror: a returned tuple literal is typed under the return type's
+                // tuple slot (`fnret_detail`), as the oracle's check_return types it.
+                let mut vt: i64 = TC_UNHANDLED;
+                if rvn.kind == P_K_TUPLE {
+                    vt = tc_emit_tuple(nodes, kids, vid, fnret_detail, binds, sigs, traits, rdefs, capnames, recs, diags);
+                } else {
+                    vt = tc_emit_expr(nodes, kids, vid, rvexp, binds, sigs, traits, rdefs, capnames, recs, diags);
+                }
                 // T049: the returned value must be assignable to the declared
                 // return type (a bare int literal flexes to a machine int).
                 // PR-5i: the composite check (XOR) covers a composite value returned
@@ -2703,6 +4028,34 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 if skip49 {
                 } else {
                     let dret: i64 = tc_check_assign(fnret, vt, vlit, "T049", diags);
+                }
+                // SHP-5c-3 review: in a capability-returning function (the `$ret` binding
+                // tc_emit_one_fn seeds, walked with an out-of-core return code), the returned
+                // value must fit the declared cap (tc_capflow_fit): a capability of another cap
+                // type is production's T049 and one whose deadline falls below the declared one
+                // its T195, both exact; every other mismatch, and a value this checker cannot
+                // name, carries the refusal marker.
+                if fnret == TC_UNHANDLED {
+                    let rett: i64 = tc_bind_lookup(binds, "$ret");
+                    if rett == TC_T_CAP {
+                        let rettext: str = tc_bind_detail(binds, "$ret");
+                        let rfit: i64 = tc_capflow_fit(nodes, kids, 1, rettext, vid, vt, binds, rdefs, capnames);
+                        if rfit != 0 {
+                            let rak: i64 = tc_capflow_kind(nodes, kids, vid, vt, binds, rdefs, capnames);
+                            let mut r49: bool = rfit == 1;
+                            if rak != 1 {
+                                r49 = false;
+                            }
+                            let mut rcode: str = "SH_TC_UNSUPPORTED";
+                            if r49 {
+                                rcode = "T049";
+                            }
+                            if rfit == 2 {
+                                rcode = "T195";
+                            }
+                            let drcf: i64 = tc_push_diag(diags, rcode);
+                        }
+                    }
                 }
             } else {
             }
@@ -2757,7 +4110,7 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 let lvn: PNode = nodes.get(lvid);
                 let mut lt: i64 = TC_UNHANDLED;
                 if lvn.kind == P_K_RECORD_CONSTRUCT {
-                    lt = tc_emit_construct(nodes, kids, lvid, ltargs, binds, sigs, traits, rdefs, recs, diags);
+                    lt = tc_emit_construct(nodes, kids, lvid, ltargs, binds, sigs, traits, rdefs, capnames, recs, diags);
                 } else {
                     // PR-G2b-iii (Gap D): a generic-ENUM annotation (`let v: A<i64> = …`) yields
                     // exp = TC_NO_EXPECT (the type-arg-bearing annotation is invisible to
@@ -2800,7 +4153,24 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                         }
                     } else {
                     }
-                    lt = tc_emit_expr(nodes, kids, lvid, vexp, binds, sigs, traits, rdefs, recs, diags);
+                    // SR-032 mirror: the oracle types each part of a construct by the slot it
+                    // is written to. A tuple literal takes the annotation's tuple slot, and a
+                    // variant construction under a generic-enum annotation (`ltargs`) takes the
+                    // annotation's instance for its type-param payloads.
+                    if lvn.kind == P_K_TUPLE {
+                        let ltslot: str = tc_tmangle(nodes, kids, aid, rdefs, TC_TYPE_DEPTH_CEILING);
+                        lt = tc_emit_tuple(nodes, kids, lvid, ltslot, binds, sigs, traits, rdefs, capnames, recs, diags);
+                    } else {
+                        if lvn.kind == P_K_CALL {
+                            lt = tc_emit_call(nodes, kids, lvid, vexp, ltargs, binds, sigs, traits, rdefs, capnames, recs, diags);
+                        } else {
+                            if lvn.kind == P_K_METHOD {
+                                lt = tc_emit_method(nodes, kids, lvid, vexp, ltargs, binds, sigs, traits, rdefs, capnames, recs, diags);
+                            } else {
+                                lt = tc_emit_expr(nodes, kids, lvid, vexp, binds, sigs, traits, rdefs, capnames, recs, diags);
+                            }
+                        }
+                    }
                 }
                 // PR-5f: a composite-ANNOTATED local (`let a: [i64;3] = …`) carries
                 // its annotation's mangle so references + indexing recover it. (An
@@ -2815,10 +4185,58 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 // to c2 emits `tag 10, <cap name>` via the var-ref intercept; and the cap
                 // annotation is a VALID non-scalar type (suppresses the T046 that the
                 // unknown-plain-name path would otherwise fire).
-                let cap_let: str = tc_cap_name_of_typenode(nodes, aid, rdefs, cdefs);
+                let mut cap_let: str = tc_cap_name_of_typenode(nodes, aid, rdefs, cdefs);
+                if cap_let.len() == 0 {
+                    // SHP-5c-3: a parametric cap usage annotation (`let c2: Approval(2030)`).
+                    cap_let = tc_cap_text_of_typenode(nodes, aid, rdefs, capnames);
+                }
                 if cap_let.len() > 0 {
                     ldetail = cap_let;
                 } else {
+                }
+                // SHP-5c-3: a `Slot<C>` annotation binds a slot: tag TC_T_SLOT, detail C's text.
+                // The value must be a slot of the same cap (production's `type_compatible` over
+                // `Slot<C>`, reported as the non-scalar annotation mismatch T046): a known slot
+                // of another cap, or a concrete non-slot value, is T046 — carried with the
+                // refusal marker, because the composed pipeline drops T046 (the cross-module
+                // annotation artifact, see pipeline.sigil) and must still not pass the program.
+                let slot_let: str = tc_slot_cap_of_typenode(nodes, kids, aid, rdefs, capnames);
+                if slot_let.len() > 0 {
+                    ldetail = slot_let;
+                }
+                // SHP-5c-3 review: a capability, slot or region annotation admits only a value
+                // production's `type_compatible` admits, and a capability, slot or region value
+                // goes under no annotation of another type (tc_capflow_fit, reported by
+                // tc_capflow_let_diag).
+                let mut lpk: i64 = tc_capflow_slot_kind(exp);
+                let mut lptext: str = "";
+                if cap_let.len() > 0 {
+                    lpk = 1;
+                    lptext = cap_let;
+                }
+                if slot_let.len() > 0 {
+                    lpk = 2;
+                    lptext = slot_let;
+                }
+                let mut lfit: i64 = tc_capflow_fit(nodes, kids, lpk, lptext, lvid, lt, binds, rdefs, capnames);
+                // A `Slot<C>` annotation is invariant in production (its let check is type
+                // equality, T046), where an argument or a return is covariant: a slot of a
+                // longer-lived cap fits a parameter, never an annotation.
+                if lpk == 2 {
+                    if lfit == 0 {
+                        let lvs: str = tc_value_slot_text(nodes, kids, lvid, binds, rdefs, capnames);
+                        if !lvs.bytes_eq(slot_let) {
+                            lfit = 1;
+                        }
+                    }
+                    if lfit == 2 {
+                        lfit = 1;
+                    }
+                }
+                if lfit != 0 {
+                    let lak: i64 = tc_capflow_kind(nodes, kids, lvid, lt, binds, rdefs, capnames);
+                    let lscal: bool = tc_is_scalar(exp);
+                    let lcf: i64 = tc_capflow_let_diag(lpk, lfit, lak, lscal, diags);
                 }
                 // PR-G1a: a SCALAR-annotated binding takes its DECLARED type, not the
                 // value's — so `let x: i64 = <u32 value>` binds x to i64 (the oracle reports
@@ -2829,6 +4247,10 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 if tc_is_scalar(exp) {
                     lbind = exp;
                 } else {
+                }
+                // SHP-5c-3: a `Region` annotation is authoritative too (a concrete non-scalar).
+                if exp == TC_T_REGION {
+                    lbind = exp;
                 }
                 // SELF-2: a PLAIN known record/enum annotation is ALSO authoritative (like a
                 // scalar above / the generic-record case below) — `let t: Token = toks.get(0)`
@@ -2853,6 +4275,10 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                     lbind = TC_T_CAP;
                 } else {
                 }
+                // SHP-5c-3: a `Slot<C>` let binds with tag TC_T_SLOT (its intercept emits `Slot`).
+                if slot_let.len() > 0 {
+                    lbind = TC_T_SLOT;
+                }
                 let nb: i64 = binds.push(TcBind { name: sn.text, tag: lbind, detail: ldetail, targs: ltargs });
                 // PR-5i: composite-vs-scalar let mismatch (XOR) — `let x: bool = (1,2)`
                 // or `let a: [i64;3] = 0`. The annotation detail vs the value's detail;
@@ -2862,7 +4288,13 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 // T041: a SCALAR-annotated binding whose initializer is not
                 // assignable to it. (A non-scalar annotation is T046 — a later
                 // slice — so it is skipped here, not mis-flagged as T041.)
-                if tc_is_scalar(exp) {
+                // SHP-5c-3: a `Region` annotation checks like a scalar's (a concrete code that
+                // only its own kind satisfies) and is never the T046 of an unknown name.
+                let mut lplain: bool = tc_is_scalar(exp);
+                if exp == TC_T_REGION {
+                    lplain = true;
+                }
+                if lplain {
                     let llit: bool = tc_is_all_int_lit(nodes, kids, lvid);
                     let dlet: i64 = tc_check_assign(exp, lt, llit, "T041", diags);
                 } else {
@@ -2986,7 +4418,7 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                         utargs = tc_infer_targs(nodes, kids, lvid2, rdefs, binds, diags);
                     } else {
                     }
-                    let lt2: i64 = tc_emit_expr(nodes, kids, lvid2, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                    let lt2: i64 = tc_emit_expr(nodes, kids, lvid2, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
                     // PR-5i: an un-annotated composite let (`let a = [1,2,3];`) recovers
                     // the value's composite detail so later references/indexing resolve.
                     // ONLY a true composite mangle is stored — a record value's detail
@@ -2997,7 +4429,44 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                         ldet2 = ldraw;
                     } else {
                     }
-                    let nb2: i64 = binds.push(TcBind { name: sn.text, tag: lt2, detail: ldet2, targs: utargs });
+                    // SHP-5c-3: a cap value's detail is its cap text (a `slot_take(s)` result
+                    // reads the slot's, in the parser's form); a slot value's is its cap text
+                    // (`slot_new::<C>()`, or a copy of a slot-bound name).
+                    if lt2 == TC_T_CAP {
+                        ldet2 = ldraw;
+                        let ltake: str = tc_cap_text_of_expr(nodes, kids, lvid2, binds, rdefs, capnames);
+                        if ltake.len() > 0 {
+                            ldet2 = ltake;
+                        }
+                    }
+                    let mut lt2b: i64 = lt2;
+                    if lt2 == TC_T_SLOT {
+                        ldet2 = tc_slot_cap_of_expr(nodes, kids, lvid2, binds, rdefs, capnames);
+                    }
+                    // SHP-5c-3 review: `let r = f.restrict(a)` (or a split or draw of a named
+                    // cap) binds the receiver's cap, as production types it.
+                    let lop2: str = tc_capop_text(nodes, lvid2, binds);
+                    if lop2.len() > 0 {
+                        lt2b = TC_T_CAP;
+                        ldet2 = lop2;
+                    }
+                    // SHP-5c-3: a copy of a slot- or cap-bound name (`let s2 = s`) takes that
+                    // bind's tag and detail — production types the local's reference as the
+                    // local's type, where the var-ref emission above reads it as out-of-core.
+                    if lvn2.kind == P_K_PATH {
+                        if tc_last_colons(lvn2.text) < 0 {
+                            let cptag: i64 = tc_bind_lookup(binds, lvn2.text);
+                            let mut cpy: bool = cptag == TC_T_SLOT;
+                            if cptag == TC_T_CAP {
+                                cpy = true;
+                            }
+                            if cpy {
+                                lt2b = cptag;
+                                ldet2 = tc_bind_detail(binds, lvn2.text);
+                            }
+                        }
+                    }
+                    let nb2: i64 = binds.push(TcBind { name: sn.text, tag: lt2b, detail: ldet2, targs: utargs });
                 } else {
                 }
             }
@@ -3018,7 +4487,7 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
         // block unwind (same `binds` vec + the enclosing scope mark).
         if sn.kind == P_K_LET_TUPLE {
             let ltvid: i64 = kids.get(sn.child_start + sn.child_count - 1);
-            let ltvt: i64 = tc_emit_expr(nodes, kids, ltvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+            let ltvt: i64 = tc_emit_expr(nodes, kids, ltvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
             let ltn: i64 = tc_seg_count(sn.text);
             let mut lti: i64 = 0;
             while lti < ltn {
@@ -3031,7 +4500,13 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
         if sn.kind == P_K_EXPR_STMT {
             if sn.child_count == 1 {
                 let eid: i64 = kids.get(sn.child_start);
-                let et: i64 = tc_emit_expr(nodes, kids, eid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                let en14: PNode = nodes.get(eid);
+                if en14.kind == P_K_REGION {
+                    // SHP-5c-3: a region STATEMENT (the form production's corpus uses).
+                    let rr: i64 = tc_emit_region_stmt(nodes, kids, eid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
+                } else {
+                    let et: i64 = tc_emit_expr(nodes, kids, eid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
+                }
             } else {
             }
         } else {
@@ -3041,10 +4516,26 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 if sn.child_count == 2 {
                     let pid: i64 = kids.get(sn.child_start);
                     let avid: i64 = kids.get(sn.child_start + 1);
-                    let pt: i64 = tc_emit_expr(nodes, kids, pid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                    let pt: i64 = tc_emit_expr(nodes, kids, pid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
                     // PR-5i: read the place's detail BEFORE typing the value (no
                     // ordering hazard — the place's record is last right now).
                     let pdetail: str = tc_last_rec_detail(recs);
+                    // SHP-5c-3 (NC4): a place of a cap or slot type is linear — production's
+                    // T043 on any reassignment. Decided on the bind's tag: the var-ref
+                    // emission types both as out-of-core, so `pt` cannot say.
+                    let pnode43: PNode = nodes.get(pid);
+                    if pnode43.kind == P_K_PATH {
+                        if tc_last_colons(pnode43.text) < 0 {
+                            let ptag43: i64 = tc_bind_lookup(binds, pnode43.text);
+                            let mut lin43: bool = ptag43 == TC_T_CAP;
+                            if ptag43 == TC_T_SLOT {
+                                lin43 = true;
+                            }
+                            if lin43 {
+                                let d43: i64 = tc_push_diag(diags, "T043");
+                            }
+                        }
+                    }
                     // Narrow-int parity: PIN the RHS to a SCALAR place's type, mirroring
                     // the oracle's check_assign, which resolves the assignment RHS's int
                     // literals to the place type (`y: u32; y = 5;` types `5` as u32, not
@@ -3058,7 +4549,7 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                         avexp = pt;
                     } else {
                     }
-                    let avt: i64 = tc_emit_expr(nodes, kids, avid, avexp, binds, sigs, traits, rdefs, recs, diags);
+                    let avt: i64 = tc_emit_expr(nodes, kids, avid, avexp, binds, sigs, traits, rdefs, capnames, recs, diags);
                     let adetail: str = tc_last_rec_detail(recs);
                     // T045: the value must be assignable to the place's type (a bare int
                     // literal flexes via tc_assignable's machine-int rule). The composite
@@ -3077,16 +4568,16 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
                 let cid: i64 = kids.get(sn.child_start);
                 let thid: i64 = kids.get(sn.child_start + 1);
                 let elid: i64 = kids.get(sn.child_start + 2);
-                let ct: i64 = tc_emit_expr(nodes, kids, cid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                let ct: i64 = tc_emit_expr(nodes, kids, cid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
                 // T050: an `if` condition must be exactly `bool`.
                 let dif: i64 = tc_check_bool(ct, "T050", diags);
                 // PR-5g: then and else are SIBLING scopes — each unwinds to the
                 // pre-`if` table length, so neither's bindings leak to the other or
                 // past the `if`.
                 let ifmark: i64 = binds.len();
-                let r1: i64 = tc_emit_block_exprs(nodes, kids, thid, binds, sigs, traits, rdefs, recs, fnret, fnret_detail, diags, cdefs);
+                let r1: i64 = tc_emit_block_exprs(nodes, kids, thid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
                 let u1: i64 = tc_scope_unwind(binds, ifmark);
-                let r2: i64 = tc_emit_block_exprs(nodes, kids, elid, binds, sigs, traits, rdefs, recs, fnret, fnret_detail, diags, cdefs);
+                let r2: i64 = tc_emit_block_exprs(nodes, kids, elid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
                 let u2: i64 = tc_scope_unwind(binds, ifmark);
                 // The `if` guarantees a return only when BOTH branches do.
                 if r1 == 1 {
@@ -3104,19 +4595,19 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
             if sn.child_count == 2 {
                 let wcid: i64 = kids.get(sn.child_start);
                 let wbid: i64 = kids.get(sn.child_start + 1);
-                let wct: i64 = tc_emit_expr(nodes, kids, wcid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                let wct: i64 = tc_emit_expr(nodes, kids, wcid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
                 // T051: a `while` condition must be exactly `bool`.
                 let dwh: i64 = tc_check_bool(wct, "T051", diags);
                 // PR-5g: the loop body is a nested scope — unwind on exit.
                 let wmark: i64 = binds.len();
-                let r3: i64 = tc_emit_block_exprs(nodes, kids, wbid, binds, sigs, traits, rdefs, recs, fnret, fnret_detail, diags, cdefs);
+                let r3: i64 = tc_emit_block_exprs(nodes, kids, wbid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
                 let uw: i64 = tc_scope_unwind(binds, wmark);
             } else {
             }
         } else {
         }
         if sn.kind == P_K_MATCH {
-            let mr: i64 = tc_emit_match(nodes, kids, sid, binds, sigs, traits, rdefs, recs, fnret, fnret_detail, diags, cdefs);
+            let mr: i64 = tc_emit_match(nodes, kids, sid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
             if mr == 1 {
                 guaranteed = 1;
             } else {
@@ -3138,14 +4629,14 @@ fn tc_emit_block_exprs(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds:
 // (`Opt::Some(x)` or bare `Some(x)`) binds each payload name to the variant's
 // payload type (resolved from the scrutinee enum's per-variant payload table,
 // PR-4d). Literal/str/range/wildcard/unit-variant patterns bind nothing.
-fn tc_emit_match(nodes: Arena<PNode>, kids: Vec<i64>, matchid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, fnret: i64, fnret_detail: str, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+fn tc_emit_match(nodes: Arena<PNode>, kids: Vec<i64>, matchid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, fnret: i64, fnret_detail: str, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
     let mn: PNode = nodes.get(matchid);
     if mn.child_count == 0 {
         return 0;
     } else {
     }
     let scrid: i64 = kids.get(mn.child_start);
-    let sct: i64 = tc_emit_expr(nodes, kids, scrid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+    let sct: i64 = tc_emit_expr(nodes, kids, scrid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
     // PR-G2b-ii (Gap C, AG-G17): a generic-enum scrutinee that is a bound LOCAL carries
     // its concrete type-args (`let o: Opt<i64>` → targs "4"); a payload pattern binding
     // (`Opt::Some(x)`) substitutes its type-param payload from these. A non-local
@@ -3278,11 +4769,11 @@ fn tc_emit_match(nodes: Arena<PNode>, kids: Vec<i64>, matchid: i64, binds: Vec<T
             }
             if armn.flags == 1 {
                 let gid: i64 = kids.get(armn.child_start + 1);
-                let gt: i64 = tc_emit_expr(nodes, kids, gid, TC_NO_EXPECT, binds, sigs, traits, rdefs, recs, diags);
+                let gt: i64 = tc_emit_expr(nodes, kids, gid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, recs, diags);
             } else {
             }
             let bid: i64 = kids.get(armn.child_start + armn.child_count - 1);
-            let br: i64 = tc_emit_block_exprs(nodes, kids, bid, binds, sigs, traits, rdefs, recs, fnret, fnret_detail, diags, cdefs);
+            let br: i64 = tc_emit_block_exprs(nodes, kids, bid, binds, sigs, traits, rdefs, capnames, recs, fnret, fnret_detail, diags, cdefs);
             if armn.flags == 1 {
             } else {
                 if br == 1 {
@@ -3353,7 +4844,7 @@ fn tc_emit_match(nodes: Arena<PNode>, kids: Vec<i64>, matchid: i64, binds: Vec<T
 
 // The type code of a parameter node (K_PARAM): its single child is the type
 // (K_TYPE). Scalar or record types; a non-plain param type => TC_UNHANDLED.
-fn tc_param_type_tag(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> i64 {
+fn tc_param_type_tag(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>) -> i64 {
     let pn: PNode = nodes.get(paramid);
     if pn.child_count >= 1 {
         let tid: i64 = kids.get(pn.child_start);
@@ -3374,8 +4865,18 @@ fn tc_param_type_tag(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: V
                         return TC_T_CAP;
                     } else {
                     }
+                    // SHP-5c-3: a parametric cap usage (`c: Approval(2030)`) is a cap too.
+                    let capt: str = tc_cap_text_of_typenode(nodes, tid, rdefs, capnames);
+                    if capt.len() > 0 {
+                        return TC_T_CAP;
+                    }
                     return TC_UNHANDLED;
                 } else {
+                    // SHP-5c-3: a `Slot<C>` param binds as a slot (its detail is C's text).
+                    let slott: str = tc_slot_cap_of_typenode(nodes, kids, tid, rdefs, capnames);
+                    if slott.len() > 0 {
+                        return TC_T_SLOT;
+                    }
                 }
             } else {
             }
@@ -3387,15 +4888,15 @@ fn tc_param_type_tag(nodes: Arena<PNode>, kids: Vec<i64>, paramid: i64, rdefs: V
 }
 
 // Seed a function's symbol table with its parameters BEFORE its body is typed.
-fn tc_seed_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+fn tc_seed_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let fnn: PNode = nodes.get(fnid);
     let mut i: i64 = 0;
     while i < fnn.child_count {
         let cid: i64 = kids.get(fnn.child_start + i);
         let cn: PNode = nodes.get(cid);
         if cn.kind == P_K_PARAM {
-            let mut ptag: i64 = tc_param_type_tag(nodes, kids, cid, rdefs, cdefs);
-            let pdetail: str = tc_param_detail(nodes, kids, cid, rdefs, cdefs);
+            let mut ptag: i64 = tc_param_type_tag(nodes, kids, cid, rdefs, capnames, cdefs);
+            let pdetail: str = tc_param_detail(nodes, kids, cid, rdefs, capnames, cdefs);
             // PR-G3b: a GENERIC-RECORD-typed param (`b: Box<i64>`) must bind as its
             // record code with concrete type-args, exactly like a `let b: Box<i64>`
             // local — otherwise tc_param_type_tag returns TC_UNHANDLED (its plain-type
@@ -3423,7 +4924,18 @@ fn tc_seed_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, binds: Vec<TcB
                 }
             } else {
             }
-            let nb: i64 = binds.push(TcBind { name: cn.text, tag: ptag, detail: pdetail, targs: ptargs });
+            // SHP-5c-3: a param's text is `name;region` under an `@in r` annotation — the
+            // bind is the NAME. P024 (production's parser): `r` must be a `Region` parameter
+            // of this function. The self-hosted parser refuses such a list itself since the
+            // SHP-5c-2 third review (parser_region_dangling), so this is its backstop.
+            let pname: str = tc_seg_at(cn.text, 0);
+            let preg: str = tc_seg_at(cn.text, 1);
+            if preg.len() > 0 {
+                if !tc_fn_has_region_param(nodes, kids, fnid, preg) {
+                    let dp24: i64 = tc_push_diag(diags, "P024");
+                }
+            }
+            let nb: i64 = binds.push(TcBind { name: pname, tag: ptag, detail: pdetail, targs: ptargs });
         } else {
         }
         i = i + 1;
@@ -3431,19 +4943,59 @@ fn tc_seed_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, binds: Vec<TcB
     return 0;
 }
 
+// SHP-5c-3: does fn `fnid` declare a parameter named `name` of the bare type `Region`?
+fn tc_fn_has_region_param(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, name: str) -> bool {
+    let fnn: PNode = nodes.get(fnid);
+    let mut i: i64 = 0;
+    while i < fnn.child_count {
+        let cid: i64 = kids.get(fnn.child_start + i);
+        let cn: PNode = nodes.get(cid);
+        if cn.kind == P_K_PARAM {
+            let pname: str = tc_seg_at(cn.text, 0);
+            if pname.bytes_eq(name) {
+                if cn.child_count >= 1 {
+                    let tn: PNode = nodes.get(kids.get(cn.child_start));
+                    if tn.kind == P_K_TYPE {
+                        if tn.flags == 0 {
+                            if tn.child_count == 0 {
+                                if tn.text.bytes_eq("Region") {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 // SELF-2: seed module-level `const` decls into a fn's symbol table so their references resolve.
 // The tc shadow had NO const handling (P_K_CONST was never referenced in typecheck.sigil), so
 // every constant reference (T_LPAREN, P_K_FN, TC_T_I64, … — the enum-like constants that
 // saturate every selfhost module) was an unbound bare name → a false T060 (undefined local).
-// Consts are module-level (always in scope, like fns), so this runs per-fn right after
-// tc_seed_params — the analogue of the oracle putting a module const in scope. A P_K_CONST node's
-// text is "name;value" (name = seg 0) and its single child is the declared TYPE node, resolved to
-// a scalar/record code (an out-of-core/composite type stays TC_UNHANDLED — the ref still BINDS, so
+// Consts are module-level (always in scope, like fns), so tc_emit_one_fn seeds them per-fn right
+// after tc_seed_params — the analogue of the oracle putting a module const in scope. Seeded AFTER
+// the params, a const shadows a param of the same name, where production resolves the param first
+// (its local environment before the module's consts): `const x: i64 = 1; fn f(x: bool) -> bool {
+// return x; }` types `x` as i64 here. Const names are UPPERCASE by convention, so the certified
+// source never meets this; on other input the shadow can refuse, or type differently, a program
+// production accepts.
+//
+// tc_module_consts reads them ONCE per module (tc_emit_module): a P_K_CONST node's text is
+// "name;value" (name = seg 0) and its single child is the declared TYPE node, resolved to a
+// scalar/record code (an out-of-core/composite type stays TC_UNHANDLED — the ref still BINDS, so
 // no T060; the exact type is a faithfulness follow-on, AG-S2-CONSTTYPE). Scans root's DIRECT
-// children (top-level items) only. Const names are UPPERCASE by convention, so they never collide
-// with a lowercase param/local (no shadow-order hazard on the selfhost source).
-fn tc_seed_consts(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>) -> i64 ! { Alloc } {
+// children (top-level items) only. The binds come back sorted by name, equal names in
+// declaration order, for tc_bind_index's binary search. Rereading every top-level item and
+// re-resolving every const's type for each function was 5.8% of the self-compile on its own
+// (2026-10-08 profile).
+fn tc_module_consts(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRec>) -> Vec<TcBind> ! { Alloc } {
     let rn: PNode = nodes.get(root);
+    let mut found: Vec<TcBind> = Vec::new();
+    let mut keys: Vec<str> = Vec::new();
     let mut i: i64 = 0;
     while i < rn.child_count {
         let cid: i64 = kids.get(rn.child_start + i);
@@ -3455,13 +5007,42 @@ fn tc_seed_consts(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, binds: Vec<TcB
                 let ctid: i64 = kids.get(cn.child_start);
                 let ctn: PNode = nodes.get(ctid);
                 ctag = tc_code_of_name(ctn.text, rdefs);
-            } else {
             }
-            let cb: i64 = binds.push(TcBind { name: cname, tag: ctag, detail: "", targs: "" });
-        } else {
+            let qk: i64 = keys.push(cname);
+            let qf: i64 = found.push(TcBind { name: cname, tag: ctag, detail: "", targs: "" });
         }
         i = i + 1;
     }
+    let order: Vec<i64> = tc_sorted_order(keys);
+    let mut sorted: Vec<TcBind> = Vec::new();
+    let mut k: i64 = 0;
+    while k < order.len() {
+        let qs: i64 = sorted.push(found.get(order.get(k)));
+        k = k + 1;
+    }
+    return sorted;
+}
+
+// The `targs` text of the const-run marker: a bind whose name is empty and whose `tag` is the
+// length of the sorted const run directly below it (see tc_dead_run_mark for why no live bind can
+// carry it).
+fn tc_const_run_mark() -> str {
+    return "$consts";
+}
+
+// Push the module's sorted consts (tc_module_consts) and the marker that lets tc_bind_index
+// binary-search them. Nothing is pushed for a module without consts.
+fn tc_seed_consts(binds: Vec<TcBind> @Mut, consts: Vec<TcBind>) -> i64 ! { Alloc } {
+    let n: i64 = consts.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut i: i64 = 0;
+    while i < n {
+        let cb: i64 = binds.push(consts.get(i));
+        i = i + 1;
+    }
+    let mk: i64 = binds.push(TcBind { name: "", tag: n, detail: "", targs: tc_const_run_mark() });
     return 0;
 }
 
@@ -3493,6 +5074,7 @@ fn tc_build_recs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRe
             let mut fnames: Vec<str> = Vec::new();
             let mut ftags: Vec<i64> = Vec::new();
             let mut fparmtp: Vec<i64> = Vec::new();
+            let mut ftids: Vec<i64> = Vec::new();
             let mut fi: i64 = 0;
             while fi < cn.child_count {
                 let fcid: i64 = kids.get(cn.child_start + fi);
@@ -3500,8 +5082,10 @@ fn tc_build_recs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRe
                 if fcn.kind == P_K_FIELD {
                     let mut ftag: i64 = TC_UNHANDLED;
                     let mut fptp: i64 = 0 - 1;
+                    let mut ftid: i64 = 0 - 1;
                     if fcn.child_count >= 1 {
                         let tid: i64 = kids.get(fcn.child_start);
+                        ftid = tid;
                         let tn: PNode = nodes.get(tid);
                         if tn.kind == P_K_TYPE {
                             if tn.flags == 0 {
@@ -3560,6 +5144,7 @@ fn tc_build_recs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRe
                     let q1: i64 = fnames.push(fcn.text);
                     let q2: i64 = ftags.push(ftag);
                     let q3: i64 = fparmtp.push(fptp);
+                    let q4: i64 = ftids.push(ftid);
                 } else {
                 }
                 fi = fi + 1;
@@ -3569,7 +5154,7 @@ fn tc_build_recs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRe
             let revc: Vec<i64> = Vec::new();
             let revp: Vec<i64> = Vec::new();
             let revtp: Vec<i64> = Vec::new();
-            let qs: i64 = rdefs.push(TcRec { name: cn.text, fnames: fnames, ftags: ftags, is_enum: false, vnames: revn, vstarts: revs, vcounts: revc, vptags: revp, tpnames: rtpnames, fparmtp: fparmtp, vptp: revtp });
+            let qs: i64 = rdefs.push(TcRec { name: cn.text, fnames: fnames, ftags: ftags, is_enum: false, vnames: revn, vstarts: revs, vcounts: revc, vptags: revp, tpnames: rtpnames, fparmtp: fparmtp, vptp: revtp, ftids: ftids });
         } else {
         }
         if cn.kind == P_K_ENUM_DEF {
@@ -3650,7 +5235,8 @@ fn tc_build_recs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, rdefs: Vec<TcRe
                 vi = vi + 1;
             }
             let efp: Vec<i64> = Vec::new();
-            let qe: i64 = rdefs.push(TcRec { name: cn.text, fnames: efn, ftags: eft, is_enum: true, vnames: vnames, vstarts: vstarts, vcounts: vcounts, vptags: vptags, tpnames: etpnames, fparmtp: efp, vptp: vptp });
+            let eftids: Vec<i64> = Vec::new();
+            let qe: i64 = rdefs.push(TcRec { name: cn.text, fnames: efn, ftags: eft, is_enum: true, vnames: vnames, vstarts: vstarts, vcounts: vcounts, vptags: vptags, tpnames: etpnames, fparmtp: efp, vptp: vptp, ftids: eftids });
         } else {
         }
         i = i + 1;
@@ -3696,99 +5282,60 @@ fn tc_build_caps(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, cdefs: Vec<TcCa
     return 0;
 }
 
+// Push an intrinsic's signature in the seed-block shape below: `np` params that all carry the code
+// `pcode`, no type ids, no details, no type params. One code for every param, so no param can
+// silently take another's.
+fn tc_push_intr_sig(sigs: Vec<TcSig> @Mut, name: str, ret: i64, np: i64, pcode: i64) -> i64 ! { Alloc } {
+    let mut ps: Vec<i64> = Vec::new();
+    let mut pt: Vec<i64> = Vec::new();
+    let mut pd: Vec<str> = Vec::new();
+    let mut pp: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < np {
+        let q1: i64 = ps.push(pcode);
+        let q2: i64 = pt.push(0 - 1);
+        let q3: i64 = pd.push("");
+        let q4: i64 = pp.push(0 - 1);
+        i = i + 1;
+    }
+    let tpb: Vec<str> = Vec::new();
+    let q5: i64 = sigs.push(TcSig { name: name, ret: ret, params: ps, param_typeids: pt, ret_detail: "", param_details: pd, tpbounds: tpb, parmtp: pp, rettp: 0 - 1, inst: 0, is_extern: false });
+    return 0;
+}
+
 // Build the module-level function-signature table (record-typed params/returns
 // resolve via `rdefs`).
-fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig> @Mut, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
-    // B-COMPOSE: the three vec-backing intrinsics the ORACLE knows globally (alloc user-code
-    // calls ACCEPT; vec_load/vec_store are recognized with a witness-shape check). Without
-    // sigs, every cloned Vec method body T062s in the composed tc gate. Ret/params are the
-    // LOOSEST faithful codes: alloc -> i64 (the oracle's IntrinsicAlloc result); the two
-    // vec ops type as UNHANDLED (compatible-with-anything — vec_load's true ret is the
-    // witness's T). Witness MISUSE shapes (a non-Vec 4th arg the oracle rejects) stay an
-    // explicit divergence fence: quarantined out of tree + never on a covered corpus.
-    let mut ial_params: Vec<i64> = Vec::new();
-    let qia1: i64 = ial_params.push(TC_T_I64);
-    let mut ial_ptids: Vec<i64> = Vec::new();
-    let qia0: i64 = ial_ptids.push(0 - 1);
-    let mut ial_pdet: Vec<str> = Vec::new();
-    let qia2: i64 = ial_pdet.push("");
-    let ial_tpb: Vec<str> = Vec::new();
-    let mut ial_ptp: Vec<i64> = Vec::new();
-    let qia3: i64 = ial_ptp.push(0 - 1);
-    let qial: i64 = sigs.push(TcSig { name: "alloc", ret: TC_T_I64, params: ial_params, param_typeids: ial_ptids, ret_detail: "", param_details: ial_pdet, tpbounds: ial_tpb, parmtp: ial_ptp, rettp: 0 - 1 });
-    let mut ivl_params: Vec<i64> = Vec::new();
-    let mut ivl_ptids: Vec<i64> = Vec::new();
-    let mut ivl_pdet: Vec<str> = Vec::new();
-    let mut ivl_ptp: Vec<i64> = Vec::new();
-    let mut ivi: i64 = 0;
-    while ivi < 4 {
-        let qv1: i64 = ivl_params.push(TC_UNHANDLED);
-        let qv0: i64 = ivl_ptids.push(0 - 1);
-        let qv2: i64 = ivl_pdet.push("");
-        let qv3: i64 = ivl_ptp.push(0 - 1);
-        ivi = ivi + 1;
+fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig> @Mut, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+    // The intrinsics the ORACLE knows globally (intrinsics.rs), which have no declaration to read
+    // a signature from. Without these sigs, every cloned Vec method body and every stdlib caller
+    // of a byte intrinsic T062s in the composed tc gate. Ret codes mirror the oracle: alloc ->
+    // i64; vec_load -> UNHANDLED (its true ret is the witness's T); vec_store and store8 -> Unit;
+    // load8 -> i64; ct_eq and ct_lt -> bool; ct_select -> i64; str_from_raw -> str.
+    // Every param is UNHANDLED (compatible with anything): the oracle accepts more than one type
+    // at most of them (an i64 or a u64 ct_* operand, any machine integer elsewhere, a bool for
+    // ct_select's condition) and reports a wrong one with its own intrinsic code (T075 for a
+    // 4-byte ct_* operand or a ct_lt pair of one i64 and one u64), so a concrete param code would
+    // add a T071 on a program the oracle accepts. Skipping the check misses the oracle's code
+    // instead; a literal argument still defaults to i64, where the oracle checks one beside a u64
+    // ct_lt operand as a u64. The emitter refuses what it cannot lower as the oracle does
+    // (cv_emit_vecintr), a 4-byte ct_* operand and a mixed ct_lt pair included. Out of core and
+    // not modeled: vec_load's witness shape (a non-Vec 4th arg the oracle rejects stays a
+    // divergence fence, quarantined out of tree) and str_from_raw's module-privacy gate.
+    let start: i64 = sigs.len();
+    // Once per table, with its first module's build. The copies every later build pushed were
+    // never read (a lookup returns the leftmost equal name, the first copy), and re-sorting them
+    // on every build made a table's work and memory grow with the square of its module count.
+    if start == 0 {
+        let qial: i64 = tc_push_intr_sig(sigs, "alloc", TC_T_I64, 1, TC_UNHANDLED);
+        let qivl: i64 = tc_push_intr_sig(sigs, "vec_load", TC_UNHANDLED, 4, TC_UNHANDLED);
+        let qivs: i64 = tc_push_intr_sig(sigs, "vec_store", TC_T_UNIT, 4, TC_UNHANDLED);
+        let qis8: i64 = tc_push_intr_sig(sigs, "store8", TC_T_UNIT, 2, TC_UNHANDLED);
+        let qil8: i64 = tc_push_intr_sig(sigs, "load8", TC_T_I64, 1, TC_UNHANDLED);
+        let qcte: i64 = tc_push_intr_sig(sigs, "ct_eq", TC_T_BOOL, 2, TC_UNHANDLED);
+        let qctl: i64 = tc_push_intr_sig(sigs, "ct_lt", TC_T_BOOL, 2, TC_UNHANDLED);
+        let qcts: i64 = tc_push_intr_sig(sigs, "ct_select", TC_T_I64, 3, TC_UNHANDLED);
+        let qisr: i64 = tc_push_intr_sig(sigs, "str_from_raw", TC_T_STR, 2, TC_UNHANDLED);
     }
-    let ivl_tpb: Vec<str> = Vec::new();
-    let qivl: i64 = sigs.push(TcSig { name: "vec_load", ret: TC_UNHANDLED, params: ivl_params, param_typeids: ivl_ptids, ret_detail: "", param_details: ivl_pdet, tpbounds: ivl_tpb, parmtp: ivl_ptp, rettp: 0 - 1 });
-    let mut ivs_params: Vec<i64> = Vec::new();
-    let mut ivs_ptids: Vec<i64> = Vec::new();
-    let mut ivs_pdet: Vec<str> = Vec::new();
-    let mut ivs_ptp: Vec<i64> = Vec::new();
-    let mut ivj: i64 = 0;
-    while ivj < 4 {
-        let qw1: i64 = ivs_params.push(TC_UNHANDLED);
-        let qw0: i64 = ivs_ptids.push(0 - 1);
-        let qw2: i64 = ivs_pdet.push("");
-        let qw3: i64 = ivs_ptp.push(0 - 1);
-        ivj = ivj + 1;
-    }
-    let ivs_tpb: Vec<str> = Vec::new();
-    let qivs: i64 = sigs.push(TcSig { name: "vec_store", ret: TC_T_UNIT, params: ivs_params, param_typeids: ivs_ptids, ret_detail: "", param_details: ivs_pdet, tpbounds: ivs_tpb, parmtp: ivs_ptp, rettp: 0 - 1 });
-    // HB-2 family-1: the raw-memory intrinsics the certified artifact's stdlib tail calls from
-    // NON-generic fns (generic Vec/Arena bodies are PR-G0-skipped, which is why only these two
-    // ever fired T062 over cap0). Ret codes mirror the oracle exactly (intrinsics.rs):
-    // store8 -> Unit, load8 -> i64, str_from_raw -> Str. Param codes are the loosest faithful
-    // i64s — the oracle's own arg checks (T075 etc.) are out-of-core, so the shadow skips them
-    // (subset-safe: a missed code, never a false one). Module-privacy gates (str_from_raw is
-    // T257-private to `string`) are likewise out-of-core and not modeled.
-    let mut is8_params: Vec<i64> = Vec::new();
-    let qs81: i64 = is8_params.push(TC_T_I64);
-    let qs82: i64 = is8_params.push(TC_T_I64);
-    let mut is8_ptids: Vec<i64> = Vec::new();
-    let qs83: i64 = is8_ptids.push(0 - 1);
-    let qs84: i64 = is8_ptids.push(0 - 1);
-    let mut is8_pdet: Vec<str> = Vec::new();
-    let qs85: i64 = is8_pdet.push("");
-    let qs86: i64 = is8_pdet.push("");
-    let is8_tpb: Vec<str> = Vec::new();
-    let mut is8_ptp: Vec<i64> = Vec::new();
-    let qs87: i64 = is8_ptp.push(0 - 1);
-    let qs88: i64 = is8_ptp.push(0 - 1);
-    let qis8: i64 = sigs.push(TcSig { name: "store8", ret: TC_T_UNIT, params: is8_params, param_typeids: is8_ptids, ret_detail: "", param_details: is8_pdet, tpbounds: is8_tpb, parmtp: is8_ptp, rettp: 0 - 1 });
-    let mut il8_params: Vec<i64> = Vec::new();
-    let ql81: i64 = il8_params.push(TC_T_I64);
-    let mut il8_ptids: Vec<i64> = Vec::new();
-    let ql82: i64 = il8_ptids.push(0 - 1);
-    let mut il8_pdet: Vec<str> = Vec::new();
-    let ql83: i64 = il8_pdet.push("");
-    let il8_tpb: Vec<str> = Vec::new();
-    let mut il8_ptp: Vec<i64> = Vec::new();
-    let ql84: i64 = il8_ptp.push(0 - 1);
-    let qil8: i64 = sigs.push(TcSig { name: "load8", ret: TC_T_I64, params: il8_params, param_typeids: il8_ptids, ret_detail: "", param_details: il8_pdet, tpbounds: il8_tpb, parmtp: il8_ptp, rettp: 0 - 1 });
-    let mut isr_params: Vec<i64> = Vec::new();
-    let qsr1: i64 = isr_params.push(TC_T_I64);
-    let qsr2: i64 = isr_params.push(TC_T_I64);
-    let mut isr_ptids: Vec<i64> = Vec::new();
-    let qsr3: i64 = isr_ptids.push(0 - 1);
-    let qsr4: i64 = isr_ptids.push(0 - 1);
-    let mut isr_pdet: Vec<str> = Vec::new();
-    let qsr5: i64 = isr_pdet.push("");
-    let qsr6: i64 = isr_pdet.push("");
-    let isr_tpb: Vec<str> = Vec::new();
-    let mut isr_ptp: Vec<i64> = Vec::new();
-    let qsr7: i64 = isr_ptp.push(0 - 1);
-    let qsr8: i64 = isr_ptp.push(0 - 1);
-    let qisr: i64 = sigs.push(TcSig { name: "str_from_raw", ret: TC_T_STR, params: isr_params, param_typeids: isr_ptids, ret_detail: "", param_details: isr_pdet, tpbounds: isr_tpb, parmtp: isr_ptp, rettp: 0 - 1 });
     let rn: PNode = nodes.get(root);
     let mut i: i64 = 0;
     while i < rn.child_count {
@@ -3872,7 +5419,7 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
                 if pcn.kind == P_K_PARAM {
                     // ET-J4: params + param_details pushed in lockstep, one each per
                     // param. tc_param_detail is "" for a non-composite param (gated).
-                    let ptag: i64 = tc_param_type_tag(nodes, kids, pcid, rdefs, cdefs);
+                    let ptag: i64 = tc_param_type_tag(nodes, kids, pcid, rdefs, capnames, cdefs);
                     let qp: i64 = params.push(ptag);
                     let mut ptid: i64 = 0 - 1;
                     if pcn.child_count > 0 {
@@ -3880,7 +5427,7 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
                     } else {
                     }
                     let qpi: i64 = param_typeids.push(ptid);
-                    let pdet: str = tc_param_detail(nodes, kids, pcid, rdefs, cdefs);
+                    let pdet: str = tc_param_detail(nodes, kids, pcid, rdefs, capnames, cdefs);
                     let qpd: i64 = param_details.push(pdet);
                     // PR-6b: parmtp[i] = the type-param index this param bare-IS, or -1.
                     let pnm: str = tc_param_typename(nodes, kids, pcid);
@@ -3907,8 +5454,49 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
             // effect-row fn (`fn a() -> i64 ! { Alloc }`) registers under "a;!;Alloc" and every
             // call to it false-fires T062 (the BOOT composition surfaced this latent gap).
             let fnkey: str = tc_seg_at(cn.text, 0);
-            let qs: i64 = sigs.push(TcSig { name: fnkey, ret: ret, params: params, param_typeids: param_typeids, ret_detail: ret_detail, param_details: param_details, tpbounds: tpbounds, parmtp: parmtp, rettp: rettp });
+            let qs: i64 = sigs.push(TcSig { name: fnkey, ret: ret, params: params, param_typeids: param_typeids, ret_detail: ret_detail, param_details: param_details, tpbounds: tpbounds, parmtp: parmtp, rettp: rettp, inst: cn.flags & 1048576, is_extern: false });
         } else {
+        }
+        // SHP-2a: an `extern "ABI" fn` declaration's signature, built as the oracle builds it
+        // (type_check/universe.rs): the declared params, and a Unit return when none is written.
+        // The node text is `abi;name;eff…`, so the call-site key is segment 1, never the ABI. An
+        // extern has no type params and no body. A call to one then types like any call (its
+        // return code, the argument checks) where it used to fire T062, and the oracle's
+        // ExternCall node carries the same return type.
+        if cn.kind == P_K_EXTERN_FN {
+            let xret: i64 = tc_fn_ret_tag(nodes, kids, cid, rdefs);
+            let xrtid: i64 = tc_fn_ret_typeid(nodes, kids, cid);
+            let mut xret_detail: str = "";
+            if xrtid >= 0 {
+                if tc_is_composite_typenode(nodes, xrtid) {
+                    xret_detail = tc_tmangle(nodes, kids, xrtid, rdefs, TC_TYPE_DEPTH_CEILING);
+                }
+            }
+            let mut xparams: Vec<i64> = Vec::new();
+            let mut xptids: Vec<i64> = Vec::new();
+            let mut xpdets: Vec<str> = Vec::new();
+            let mut xparmtp: Vec<i64> = Vec::new();
+            let mut xpi: i64 = 0;
+            while xpi < cn.child_count {
+                let xpcid: i64 = kids.get(cn.child_start + xpi);
+                let xpcn: PNode = nodes.get(xpcid);
+                if xpcn.kind == P_K_PARAM {
+                    let xptag: i64 = tc_param_type_tag(nodes, kids, xpcid, rdefs, capnames, cdefs);
+                    let qxp: i64 = xparams.push(xptag);
+                    let mut xptid: i64 = 0 - 1;
+                    if xpcn.child_count > 0 {
+                        xptid = kids.get(xpcn.child_start);
+                    }
+                    let qxi: i64 = xptids.push(xptid);
+                    let xpdet: str = tc_param_detail(nodes, kids, xpcid, rdefs, capnames, cdefs);
+                    let qxd: i64 = xpdets.push(xpdet);
+                    let qxt: i64 = xparmtp.push(0 - 1);
+                }
+                xpi = xpi + 1;
+            }
+            let xtpb: Vec<str> = Vec::new();
+            let xkey: str = tc_seg_at(cn.text, 1);
+            let qxs: i64 = sigs.push(TcSig { name: xkey, ret: xret, params: xparams, param_typeids: xptids, ret_detail: xret_detail, param_details: xpdets, tpbounds: xtpb, parmtp: xparmtp, rettp: 0 - 1, inst: 0, is_extern: true });
         }
         // PR-6b: seed each impl method as a sig keyed "Type::method" (the oracle's
         // function_sigs key) so structural satisfaction can look it up. Inherent and
@@ -3969,7 +5557,7 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
                         let mpcid: i64 = kids.get(mcn.child_start + mpi);
                         let mpcn: PNode = nodes.get(mpcid);
                         if mpcn.kind == P_K_PARAM {
-                            let mptag: i64 = tc_param_type_tag(nodes, kids, mpcid, rdefs, cdefs);
+                            let mptag: i64 = tc_param_type_tag(nodes, kids, mpcid, rdefs, capnames, cdefs);
                             let qm1: i64 = mparams.push(mptag);
                             let mut mptid: i64 = 0 - 1;
                             if mpcn.child_count > 0 {
@@ -3977,7 +5565,7 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
                             } else {
                             }
                             let qmi: i64 = mparam_typeids.push(mptid);
-                            let mpd: str = tc_param_detail(nodes, kids, mpcid, rdefs, cdefs);
+                            let mpd: str = tc_param_detail(nodes, kids, mpcid, rdefs, capnames, cdefs);
                             let qm2: i64 = mpdet.push(mpd);
                             // PR-G3b: parmtp[i] = the impl-type-param index this param bare-IS,
                             // or -1. A type-param-typed param (`x: T`) stores mptag = TC_UNHANDLED
@@ -4006,7 +5594,7 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
                     // `Type::method` the call site looks up (same latent gap as top-level fns).
                     let mbare: str = tc_seg_at(mcn.text, 0);
                     let mkey: str = pre.concat(mbare);
-                    let qms: i64 = sigs.push(TcSig { name: mkey, ret: mret, params: mparams, param_typeids: mparam_typeids, ret_detail: "", param_details: mpdet, tpbounds: mtpb, parmtp: mpp, rettp: mrettp });
+                    let qms: i64 = sigs.push(TcSig { name: mkey, ret: mret, params: mparams, param_typeids: mparam_typeids, ret_detail: "", param_details: mpdet, tpbounds: mtpb, parmtp: mpp, rettp: mrettp, inst: 0, is_extern: false });
                 } else {
                 }
                 mi2 = mi2 + 1;
@@ -4015,7 +5603,112 @@ fn tc_build_sigs(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig
         }
         i = i + 1;
     }
+    return tc_sort_sig_tail(sigs, start);
+}
+
+// Keep a signature table sorted by name for tc_sig_find: sort the rows this build appended (from
+// `start`) and merge them into the rows before them, which an earlier build already sorted. Both
+// sorts are stable and a tie takes the earlier row, so equal names stay in push order and the
+// leftmost is the first one pushed. Returns 0.
+fn tc_sort_sig_tail(sigs: Vec<TcSig> @Mut, start: i64) -> i64 ! { Alloc } {
+    let n: i64 = sigs.len();
+    let mut keys: Vec<str> = Vec::new();
+    let mut k: i64 = start;
+    while k < n {
+        let ks: TcSig = sigs.get(k);
+        let qk: i64 = keys.push(ks.name);
+        k = k + 1;
+    }
+    let order: Vec<i64> = tc_sorted_order(keys);
+    let tail: i64 = n - start;
+    let mut merged: Vec<TcSig> = Vec::new();
+    let mut a: i64 = 0;
+    let mut b: i64 = 0;
+    while a + b < n {
+        let mut take_a: bool = false;
+        if a < start {
+            take_a = true;
+            if b < tail {
+                let sa: TcSig = sigs.get(a);
+                let sb: TcSig = sigs.get(start + order.get(b));
+                if tc_str_lt(sb.name, sa.name) {
+                    take_a = false;
+                }
+            }
+        }
+        if take_a {
+            let qa: i64 = merged.push(sigs.get(a));
+            a = a + 1;
+        } else {
+            let qb: i64 = merged.push(sigs.get(start + order.get(b)));
+            b = b + 1;
+        }
+    }
+    let mut w: i64 = 0;
+    while w < n {
+        let sw: i64 = sigs.set(w, merged.get(w));
+        w = w + 1;
+    }
     return 0;
+}
+
+// The stable byte-lexicographic order of `keys` (tc_str_lt) as a permutation of their indices:
+// a bottom-up merge sort whose merge takes the LEFT run on a tie, so equal keys keep their input
+// order.
+fn tc_sorted_order(keys: Vec<str>) -> Vec<i64> ! { Alloc } {
+    let n: i64 = keys.len();
+    let mut cur: Vec<i64> = Vec::new();
+    let mut nxt: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < n {
+        let qc: i64 = cur.push(i);
+        let qn: i64 = nxt.push(i);
+        i = i + 1;
+    }
+    let mut width: i64 = 1;
+    while width < n {
+        let mut lo: i64 = 0;
+        while lo < n {
+            let mut mid: i64 = lo + width;
+            if mid > n {
+                mid = n;
+            }
+            let mut hi: i64 = mid + width;
+            if hi > n {
+                hi = n;
+            }
+            let mut a: i64 = lo;
+            let mut b: i64 = mid;
+            let mut k: i64 = lo;
+            while k < hi {
+                let mut take_a: bool = false;
+                if a < mid {
+                    take_a = true;
+                    if b < hi {
+                        if tc_str_lt(keys.get(cur.get(b)), keys.get(cur.get(a))) {
+                            take_a = false;
+                        }
+                    }
+                }
+                if take_a {
+                    let sa: i64 = nxt.set(k, cur.get(a));
+                    a = a + 1;
+                } else {
+                    let sb: i64 = nxt.set(k, cur.get(b));
+                    b = b + 1;
+                }
+                k = k + 1;
+            }
+            lo = hi;
+        }
+        let mut c: i64 = 0;
+        while c < n {
+            let sc: i64 = cur.set(c, nxt.get(c));
+            c = c + 1;
+        }
+        width = width * 2;
+    }
+    return cur;
 }
 
 // Lexicographic byte-compare a < b (for sorting trait methods by name, ET-TR8).
@@ -4440,7 +6133,7 @@ fn tc_fn_has_type_params(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool
     return false;
 }
 
-fn tc_emit_one_fn(nodes: Arena<PNode>, kids: Vec<i64>, cid: i64, root: i64, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, recs: Vec<str> @Mut, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+fn tc_emit_one_fn(nodes: Arena<PNode>, kids: Vec<i64>, cid: i64, consts: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, recs: Vec<str> @Mut, diags: Vec<str> @Mut, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
     let cn: PNode = nodes.get(cid);
     let rtag: i64 = tc_fn_ret_tag(nodes, kids, cid, rdefs);
     let rtid: i64 = tc_fn_ret_typeid(nodes, kids, cid);
@@ -4453,14 +6146,37 @@ fn tc_emit_one_fn(nodes: Arena<PNode>, kids: Vec<i64>, cid: i64, root: i64, sigs
         cap_ret = tc_cap_name_of_typenode(nodes, rtid, rdefs, cdefs);
     } else {
     }
+    // SHP-5c-3 review: the declared cap of a capability-returning function, plain or a
+    // parametric usage, rides a `$ret` binding (no source name can collide with it) so each
+    // return statement checks its value against it; and a return type carrying a region handle
+    // is production's T253/T254, a handle escaping its region through the return — refused.
+    let mut cap_ret_text: str = cap_ret;
+    if rtid >= 0 {
+        let rtn: PNode = nodes.get(rtid);
+        if rtn.kind == P_K_TYPE {
+            if rtn.flags == 0 {
+                if rtn.child_count == 0 {
+                    let rbase: str = tc_seg_at(rtn.text, 0);
+                    let rcc: i64 = tc_cap_code_of_name(rbase, cdefs);
+                    if rcc != TC_UNHANDLED {
+                        cap_ret_text = rtn.text;
+                    }
+                }
+            }
+        }
+        if tc_type_mentions_name(nodes, kids, rtid, "Region") {
+            let drr: i64 = tc_push_diag(diags, "SH_TC_UNSUPPORTED");
+        }
+    }
     if cap_ret.len() > 0 {
         let pcapr: i64 = tc_push_rec_detail(recs, cn.start, cn.end, TC_T_CAP, cap_ret);
         let bidc: i64 = tc_fn_body(nodes, kids, cid);
         if bidc >= 0 {
             let mut bindsc: Vec<TcBind> = Vec::new();
-            let spc: i64 = tc_seed_params(nodes, kids, cid, bindsc, rdefs, cdefs);
-            let scc: i64 = tc_seed_consts(nodes, kids, root, bindsc, rdefs);
-            let p2c: i64 = tc_emit_block_exprs(nodes, kids, bidc, bindsc, sigs, traits, rdefs, recs, TC_UNHANDLED, "", diags, cdefs);
+            let spc: i64 = tc_seed_params(nodes, kids, cid, bindsc, rdefs, capnames, cdefs, diags);
+            let pretc: i64 = bindsc.push(TcBind { name: "$ret", tag: TC_T_CAP, detail: cap_ret_text, targs: "" });
+            let scc: i64 = tc_seed_consts(bindsc, consts);
+            let p2c: i64 = tc_emit_block_exprs(nodes, kids, bidc, bindsc, sigs, traits, rdefs, capnames, recs, TC_UNHANDLED, "", diags, cdefs);
         } else {
         }
         return 0;
@@ -4486,9 +6202,12 @@ fn tc_emit_one_fn(nodes: Arena<PNode>, kids: Vec<i64>, cid: i64, root: i64, sigs
     let bid: i64 = tc_fn_body(nodes, kids, cid);
     if bid >= 0 {
         let mut binds: Vec<TcBind> = Vec::new();
-        let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, cdefs);
-        let scn: i64 = tc_seed_consts(nodes, kids, root, binds, rdefs);
-        let p2: i64 = tc_emit_block_exprs(nodes, kids, bid, binds, sigs, traits, rdefs, recs, rtag, fnret_detail, diags, cdefs);
+        let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, capnames, cdefs, diags);
+        if cap_ret_text.len() > 0 {
+            let pret: i64 = binds.push(TcBind { name: "$ret", tag: TC_T_CAP, detail: cap_ret_text, targs: "" });
+        }
+        let scn: i64 = tc_seed_consts(binds, consts);
+        let p2: i64 = tc_emit_block_exprs(nodes, kids, bid, binds, sigs, traits, rdefs, capnames, recs, rtag, fnret_detail, diags, cdefs);
         // T044: a non-unit function whose body does not return on every path.
         // Non-unit = a concrete non-unit `rtag` (scalar/record) OR a COMPOSITE
         // return — for which `tc_fn_ret_tag` yields TC_T_UNIT (PR-5i), so gate
@@ -4542,6 +6261,79 @@ fn tc_collect_modules(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, out: Vec<i
     return 0;
 }
 
+// True when the `;`-separated segments of `text` from index `from` on include `want` exactly.
+// The effect names of a fn (`name;!;E1;…`) and of an extern (`abi;name;E1;…`) both start at
+// segment 2; a fn written without a row has no segment 1 at all.
+fn tc_seg_from_has(text: str, from: i64, want: str) -> bool {
+    let mut i: i64 = from;
+    let mut scanning: bool = true;
+    while scanning {
+        let seg: str = tc_seg_at(text, i);
+        if seg.len() == 0 {
+            scanning = false;
+        }
+        if seg.bytes_eq(want) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// SHP-2a: the ring and extern checks the oracle's type check applies, so reported at its tc
+// stage and at this one (type_check/validators.rs, type_check/mod.rs):
+//   E003 — a top-level fn of an inner-ring module whose effect row names FFI or Unsafe (an impl
+//          method or an actor handler is not checked, in the oracle either);
+//   R006 — `#[trusted]` on a module that is not `#[ring(outer)]`;
+//   T160 / T161 — an extern declaration whose row lacks FFI / Unsafe.
+// Code-only diags, like every tc code the composed gate compares as a set. Without them, a
+// program the oracle rejects here would pass this gate (the fail-open direction).
+fn tc_ring_extern_checks(nodes: Arena<PNode>, kids: Vec<i64>, mods: Vec<i64>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let nmod: i64 = mods.len();
+    let mut m: i64 = 0;
+    while m < nmod {
+        let mid: i64 = mods.get(m);
+        let mn: PNode = nodes.get(mid);
+        let half: i64 = mn.flags / 2;
+        let outer: i64 = mn.flags - half * 2;
+        let trusted: i64 = half - (half / 2) * 2;
+        if trusted == 1 {
+            if outer == 0 {
+                let d6: i64 = tc_push_diag(diags, "R006");
+            }
+        }
+        let mut i: i64 = 0;
+        while i < mn.child_count {
+            let cid: i64 = kids.get(mn.child_start + i);
+            let cn: PNode = nodes.get(cid);
+            if cn.kind == P_K_FN {
+                if outer == 0 {
+                    let mut privileged: bool = tc_seg_from_has(cn.text, 2, "FFI");
+                    if tc_seg_from_has(cn.text, 2, "Unsafe") {
+                        privileged = true;
+                    }
+                    if privileged {
+                        let d3: i64 = tc_push_diag(diags, "E003");
+                    }
+                }
+            }
+            if cn.kind == P_K_EXTERN_FN {
+                let has_ffi: bool = tc_seg_from_has(cn.text, 2, "FFI");
+                if !has_ffi {
+                    let d160: i64 = tc_push_diag(diags, "T160");
+                }
+                let has_unsafe: bool = tc_seg_from_has(cn.text, 2, "Unsafe");
+                if !has_unsafe {
+                    let d161: i64 = tc_push_diag(diags, "T161");
+                }
+            }
+            i = i + 1;
+        }
+        m = m + 1;
+    }
+    return 0;
+}
+
 // Per top-level function, emit its return-type record then its body's expression
 // records. The record-def table and the signature table are built once up front —
 // program-wide unions across modules (the own/ring precedent) — and each build pass is
@@ -4552,7 +6344,9 @@ fn tc_emit(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, recs: Vec<str> @Mut, 
     let mut mods: Vec<i64> = Vec::new();
     let cmods: i64 = tc_collect_modules(nodes, kids, root, mods);
     let nmod: i64 = mods.len();
+    let rxc: i64 = tc_ring_extern_checks(nodes, kids, mods, diags);
     let mut rdefs: Vec<TcRec> = Vec::new();
+    let capnames: Vec<str> = tc_cap_names(nodes);
     // PR-C0: the cap-declaration table (flat Vec<TcCap>, source order), built as a
     // pre-pass alongside rdefs. INERT in C0 — the corpus has zero `cap type` decls, so
     // `cdefs` is empty and no cap record/code is emitted (byte-identical to pre-C0, the
@@ -4564,14 +6358,22 @@ fn tc_emit(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, recs: Vec<str> @Mut, 
         let m1: i64 = mods.get(b1);
         let br: i64 = tc_build_recs(nodes, kids, m1, rdefs);
         let bc: i64 = tc_build_caps(nodes, kids, m1, cdefs);
+        let bs: i64 = tc_reserved_names(nodes, kids, m1, diags);
         b1 = b1 + 1;
+    }
+    // SHP-5c-3 review: the cap-carrying aggregates (T183/T184) read every module's cap types.
+    let mut b1c: i64 = 0;
+    while b1c < nmod {
+        let m1c: i64 = mods.get(b1c);
+        let bca: i64 = tc_cap_aggregates(nodes, kids, m1c, cdefs, diags);
+        b1c = b1c + 1;
     }
     // sigs need the COMPLETE rdefs/cdefs union, so a second pass.
     let mut sigs: Vec<TcSig> = Vec::new();
     let mut b2: i64 = 0;
     while b2 < nmod {
         let m2: i64 = mods.get(b2);
-        let bs: i64 = tc_build_sigs(nodes, kids, m2, sigs, rdefs, cdefs);
+        let bs: i64 = tc_build_sigs(nodes, kids, m2, sigs, rdefs, capnames, cdefs);
         b2 = b2 + 1;
     }
     // The trait table (names + sorted method contracts) — used by the decl-time
@@ -4593,7 +6395,7 @@ fn tc_emit(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, recs: Vec<str> @Mut, 
     let mut mw: i64 = 0;
     while mw < nmod {
         let mroot: i64 = mods.get(mw);
-        let e0: i64 = tc_emit_module(nodes, kids, mroot, sigs, traits, rdefs, cdefs, recs, diags);
+        let e0: i64 = tc_emit_module(nodes, kids, mroot, sigs, traits, rdefs, capnames, cdefs, recs, diags);
         emitted = emitted + e0;
         mw = mw + 1;
     }
@@ -4602,8 +6404,9 @@ fn tc_emit(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, recs: Vec<str> @Mut, 
 
 // One module's fn/impl walk — the body of the old single-module tc_emit loop, with the
 // enclosing MODULE as the const-seed root for its fns.
-fn tc_emit_module(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn tc_emit_module(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, recs: Vec<str> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let rn: PNode = nodes.get(root);
+    let consts: Vec<TcBind> = tc_module_consts(nodes, kids, root, rdefs);
     let mut emitted: i64 = 0;
     let mut i: i64 = 0;
     while i < rn.child_count {
@@ -4614,7 +6417,7 @@ fn tc_emit_module(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSi
             // the oracle side — ET-G2b). A concrete fn is walked as before.
             if tc_fn_has_type_params(nodes, kids, cid) {
             } else {
-                let e1: i64 = tc_emit_one_fn(nodes, kids, cid, root, sigs, traits, rdefs, recs, diags, cdefs);
+                let e1: i64 = tc_emit_one_fn(nodes, kids, cid, consts, sigs, traits, rdefs, capnames, recs, diags, cdefs);
                 emitted = emitted + 1;
             }
         } else {
@@ -4642,7 +6445,7 @@ fn tc_emit_module(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, sigs: Vec<TcSi
                         // its instances are filtered. Only a fully-concrete method is walked.
                         if tc_fn_has_type_params(nodes, kids, mcid) {
                         } else {
-                            let e2: i64 = tc_emit_one_fn(nodes, kids, mcid, root, sigs, traits, rdefs, recs, diags, cdefs);
+                            let e2: i64 = tc_emit_one_fn(nodes, kids, mcid, consts, sigs, traits, rdefs, capnames, recs, diags, cdefs);
                             emitted = emitted + 1;
                         }
                     }

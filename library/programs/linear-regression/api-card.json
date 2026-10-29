@@ -1,0 +1,24 @@
+{
+  "contract_hash": "sha256:5521f19b2acb2271ee03222150cbddb086e343b501cb6685b0462f99317b8351",
+  "dependencies": [
+    "sigil/autodiff",
+    "sigil/numeric"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "input": "0..200 epochs as at most three ASCII bytes; empty defaults to 100",
+  "optimizer": "plain SGD, rate 0.05; bounded scalar reverse-mode tape gradients",
+  "output": "72 bytes: nine little-endian f64 fields defined in API.md",
+  "package": "linear-regression/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "result": "i64@Public",
+  "runtime_backend": "native SIGIL/Wasm CPU; no Torch/Python training backend",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.2"
+}

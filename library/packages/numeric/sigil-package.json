@@ -1,0 +1,67 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "numeric::add_into(a:Public,b:Public,out:Public)->Public",
+      "numeric::dot_into(a:Public,b:Public,out:Public)->Public",
+      "numeric::get_into(a:Public,row:Public,col:Public,out:Public)->Public",
+      "numeric::matmul_into(a:Public,b:Public,out:Public)->Public",
+      "numeric::mean_into(a:Public,out:Public)->Public",
+      "numeric::mse_grad_into(prediction:Public,target:Public,out:Public)->Public",
+      "numeric::mse_into(prediction:Public,target:Public,out:Public)->Public",
+      "numeric::mul_into(a:Public,b:Public,out:Public)->Public",
+      "numeric::new_scalar()->Public",
+      "numeric::relu_into(a:Public,out:Public)->Public",
+      "numeric::scale_into(a:Public,factor:Public,out:Public)->Public",
+      "numeric::set(a:Public,row:Public,col:Public,value:Public)->Public",
+      "numeric::sgd_step(weights:Public,gradient:Public,rate:Public)->Public",
+      "numeric::sub_into(a:Public,b:Public,out:Public)->Public",
+      "numeric::sum_into(a:Public,out:Public)->Public",
+      "numeric::transpose_into(a:Public,out:Public)->Public",
+      "numeric::zeros(rows:Public,cols:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source bounded CPU f64 matrices and training primitives; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:be69bb3bfc2010770ff033ceae5b129659df6d63da3b6f11098c1d99185c034b",
+    "api_contract_hash": "sha256:64e2664701cc278eb1ef751511fe7e04a27a0b49690b32bd27c413a94e1a5fee",
+    "charter_hash": "sha256:67f29f5d0d774721749a684e439cacea9c5c240e5ef7db7a0e672b8c98fdb035",
+    "evidence_manifest_hash": "sha256:e03c2dd7907a5297424116a3de86f768353fcb24db7383f3c98a59fedebc7358"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "numeric"
+  ],
+  "name": "numeric",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

@@ -1,0 +1,113 @@
+// Bounded canonical evaluation messages; exact request matching, not authentication.
+module exchange;
+use sigil::records;
+use sigil::json;
+
+record EvaluationRequest { profile: i64, profile_len: i64, context: i64, context_len: i64, sequence: u64, payload: i64, payload_len: i64, error: i64 }
+record EvaluationReply { status: u64, payload: i64, payload_len: i64, error: i64 }
+
+fn failed_request(code: i64 @Flow) -> EvaluationRequest @Flow ! { Alloc } {
+    return EvaluationRequest { profile: 0, profile_len: 0, context: 0, context_len: 0, sequence: 0, payload: 0, payload_len: 0, error: code };
+}
+fn failed_reply(code: i64 @Flow) -> EvaluationReply @Flow ! { Alloc } {
+    return EvaluationReply { status: 0, payload: 0, payload_len: 0, error: code };
+}
+fn span(ptr: i64 @Flow, len: i64 @Flow, maximum: i64 @Flow) -> i64 @Flow {
+    if ptr < 0 || len < 0 { return -400; } else {}
+    if ptr > 2147483647 || len > maximum || len > 2147483647 - ptr { return -413; } else {}
+    return 0;
+}
+fn equal(a: i64 @Flow, alen: i64 @Flow, b: i64 @Flow, blen: i64 @Flow) -> bool @Flow {
+    if alen != blen { return false; } else {}
+    let mut i = 0; while i < alen { if load8(a + i) != load8(b + i) { return false; } else {} i = i + 1; } return true;
+}
+fn field(ptr: i64 @Flow, len: i64 @Flow, key: str @Flow) -> i64 @Flow ! { Alloc } {
+    let name = key.as_output(); return json::parse_field(ptr, len, name / 4294967296, key.len());
+}
+fn text(doc: JsonRecord @Flow @ReadOnly, key: str @Flow, ptr: i64 @Flow, len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let name = key.as_output(); return records::put_string(doc, name / 4294967296, key.len(), ptr, len);
+}
+fn blob(doc: JsonRecord @Flow @ReadOnly, key: str @Flow, ptr: i64 @Flow, len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let name = key.as_output(); return records::put_hex(doc, name / 4294967296, key.len(), ptr, len);
+}
+fn word(doc: JsonRecord @Flow @ReadOnly, key: str @Flow, value: u64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let name = key.as_output(); return records::put_u64(doc, name / 4294967296, key.len(), value);
+}
+
+pub fn request(profile: i64 @Flow, profile_len: i64 @Flow, context: i64 @Flow, context_len: i64 @Flow, sequence: u64 @Flow, payload: i64 @Flow, payload_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let a = span(profile, profile_len, 64); if a < 0 { return a; } else {}
+    let b = span(context, context_len, 128); if b < 0 { return b; } else {}
+    let c = span(payload, payload_len, 512); if c < 0 { return c; } else {}
+    if profile_len == 0 || context_len == 0 { return -422; } else {}
+    let mut i = 0;
+    while i < profile_len {
+        let ch = load8(profile + i);
+        if !(ch >= 97 && ch <= 122) && !(ch >= 48 && ch <= 57) && ch != 45 && ch != 46 && ch != 58 && ch != 95 { return -422; } else {} i = i + 1;
+    }
+    let format = "sigil-evaluation-request-v1"; let f = format.as_output();
+    let empty = records::new(1536);
+    let r1 = text(empty, "format", f / 4294967296, format.len());
+    let r2 = text(r1, "profile", profile, profile_len);
+    let r3 = blob(r2, "context_hex", context, context_len);
+    let r4 = word(r3, "sequence", sequence);
+    let r5 = blob(r4, "payload_hex", payload, payload_len);
+    return records::finish(r5);
+}
+
+pub fn open_request(ptr: i64 @Flow, len: i64 @Flow) -> EvaluationRequest @Flow ! { Alloc } {
+    let size = span(ptr, len, 1536); if size < 0 { return failed_request(size); } else {}
+    let grammar = json::validate(ptr, len); if grammar < 0 { return failed_request(grammar); } else {}
+    let format = field(ptr, len, "format"); if format < 0 { return failed_request(format); } else {}
+    let expected = "sigil-evaluation-request-v1"; let e = expected.as_output();
+    if !equal(format / 4294967296, format % 4294967296, e / 4294967296, expected.len()) { return failed_request(-409); } else {}
+    let profile = field(ptr, len, "profile"); if profile < 0 { return failed_request(profile); } else {}
+    let raw_context = field(ptr, len, "context_hex"); if raw_context < 0 { return failed_request(raw_context); } else {}
+    let context = records::unhex(raw_context / 4294967296, raw_context % 4294967296, 128); if context < 0 { return failed_request(context); } else {}
+    let raw_sequence = field(ptr, len, "sequence"); if raw_sequence < 0 { return failed_request(raw_sequence); } else {}
+    let sequence = records::read_u64(raw_sequence / 4294967296, raw_sequence % 4294967296); if sequence.error < 0 { return failed_request(sequence.error); } else {}
+    let raw_payload = field(ptr, len, "payload_hex"); if raw_payload < 0 { return failed_request(raw_payload); } else {}
+    let payload = records::unhex(raw_payload / 4294967296, raw_payload % 4294967296, 512); if payload < 0 { return failed_request(payload); } else {}
+    let canonical = request(profile / 4294967296, profile % 4294967296, context / 4294967296, context % 4294967296, sequence.value, payload / 4294967296, payload % 4294967296);
+    if canonical < 0 { return failed_request(canonical); } else {}
+    if !equal(ptr, len, canonical / 4294967296, canonical % 4294967296) { return failed_request(-422); } else {}
+    return EvaluationRequest { profile: profile / 4294967296, profile_len: profile % 4294967296,
+        context: context / 4294967296, context_len: context % 4294967296, sequence: sequence.value,
+        payload: payload / 4294967296, payload_len: payload % 4294967296, error: 0 };
+}
+
+fn build_response(request_ptr: i64 @Flow, request_len: i64 @Flow, status: u64 @Flow, payload: i64 @Flow, payload_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let valid = span(payload, payload_len, 1024); if valid < 0 { return valid; } else {}
+    if status > 4 { return -422; } else {}
+    let format = "sigil-evaluation-response-v1"; let f = format.as_output();
+    let empty = records::new(6144);
+    let r1 = text(empty, "format", f / 4294967296, format.len());
+    let r2 = blob(r1, "request_hex", request_ptr, request_len);
+    let r3 = word(r2, "status", status);
+    let r4 = blob(r3, "payload_hex", payload, payload_len);
+    return records::finish(r4);
+}
+
+pub fn respond(request_ptr: i64 @Flow, request_len: i64 @Flow, status: u64 @Flow, payload: i64 @Flow, payload_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let valid = open_request(request_ptr, request_len); if valid.error < 0 { return valid.error; } else {}
+    return build_response(request_ptr, request_len, status, payload, payload_len);
+}
+
+pub fn open_response(expected_ptr: i64 @Flow, expected_len: i64 @Flow, ptr: i64 @Flow, len: i64 @Flow) -> EvaluationReply @Flow ! { Alloc } {
+    let expected = open_request(expected_ptr, expected_len); if expected.error < 0 { return failed_reply(expected.error); } else {}
+    let size = span(ptr, len, 6144); if size < 0 { return failed_reply(size); } else {}
+    let grammar = json::validate(ptr, len); if grammar < 0 { return failed_reply(grammar); } else {}
+    let format = field(ptr, len, "format"); if format < 0 { return failed_reply(format); } else {}
+    let name = "sigil-evaluation-response-v1"; let n = name.as_output();
+    if !equal(format / 4294967296, format % 4294967296, n / 4294967296, name.len()) { return failed_reply(-409); } else {}
+    let raw_request = field(ptr, len, "request_hex"); if raw_request < 0 { return failed_reply(raw_request); } else {}
+    let actual = records::unhex(raw_request / 4294967296, raw_request % 4294967296, 1536); if actual < 0 { return failed_reply(actual); } else {}
+    if !equal(expected_ptr, expected_len, actual / 4294967296, actual % 4294967296) { return failed_reply(-409); } else {}
+    let raw_status = field(ptr, len, "status"); if raw_status < 0 { return failed_reply(raw_status); } else {}
+    let status = records::read_u64(raw_status / 4294967296, raw_status % 4294967296); if status.error < 0 { return failed_reply(status.error); } else {}
+    let raw_payload = field(ptr, len, "payload_hex"); if raw_payload < 0 { return failed_reply(raw_payload); } else {}
+    let payload = records::unhex(raw_payload / 4294967296, raw_payload % 4294967296, 1024); if payload < 0 { return failed_reply(payload); } else {}
+    let canonical = build_response(expected_ptr, expected_len, status.value, payload / 4294967296, payload % 4294967296);
+    if canonical < 0 { return failed_reply(canonical); } else {}
+    if !equal(ptr, len, canonical / 4294967296, canonical % 4294967296) { return failed_reply(-422); } else {}
+    return EvaluationReply { status: status.value, payload: payload / 4294967296, payload_len: payload % 4294967296, error: 0 };
+}

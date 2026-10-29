@@ -473,19 +473,34 @@ fn committed_wire_fixtures_match_the_explicit_generator_and_inventory() {
 }
 
 fn declaration_jobs_are_gated(workflow: &str) -> bool {
-    ["checks", "portability"].into_iter().all(|job| {
+    // `test` is the required lane that names these suites; `portability` runs them per host.
+    ["test", "portability"].into_iter().all(|job| {
         let marker = format!("\n  {job}:\n");
         let Some((_, body)) = workflow.split_once(&marker) else {
             return false;
         };
-        let commands: Vec<_> = body
+        // A folded `run: >-` command continues on lines that begin with a flag, so a `--test`
+        // on a continuation line belongs to the `cargo test` above it; any other line ends it.
+        let mut commands: Vec<String> = Vec::new();
+        let mut open = false;
+        for line in body
             .lines()
             .take_while(|line| {
                 !line.starts_with("  ") || line.starts_with("   ") || line.trim().starts_with('#')
             })
             .map(str::trim)
-            .filter(|line| line.starts_with("cargo test "))
-            .collect();
+        {
+            if line.starts_with("cargo test ") {
+                commands.push(line.to_string());
+                open = true;
+            } else if open && line.starts_with("--") {
+                let command = commands.last_mut().expect("an open command was pushed");
+                command.push(' ');
+                command.push_str(line);
+            } else {
+                open = false;
+            }
+        }
         ["v9_declaration_parity", "formal_v9_declarations"]
             .into_iter()
             .all(|target| {

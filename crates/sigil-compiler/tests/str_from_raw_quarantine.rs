@@ -35,6 +35,12 @@ const ALLOWED: &[&str] = &[
     // is the sig-table NAME in tc_build_sigs' intrinsic seed, never a call. Same rationale as
     // the air.sigil allow above.
     "selfhost/typecheck.sigil",
+    // SHP-5c-1: the self-hosted TAINT shadow recognizes the intrinsic name to FLOOR it (the
+    // same role the Rust taint_check.rs `intrinsic_memory` table plays — a forged view is a
+    // deferred raw read, so its result joins the raw-load floor) and to type its result as a
+    // `str` — the string literals are name tests in the call-classification arms, never a
+    // call. Same rationale as the two allows above.
+    "selfhost/taint_check.sigil",
 ];
 
 /// Forbidden intrinsic token.

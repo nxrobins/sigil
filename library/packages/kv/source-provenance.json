@@ -1,0 +1,8 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/kv.sigil": "sha256:4447e376de46c70b26fca53d4929f78927c28f0519d860f16245fa388abd9572"
+  },
+  "package": "sigil/kv",
+  "previous_version": "0.1.0-dogfood.1"
+}

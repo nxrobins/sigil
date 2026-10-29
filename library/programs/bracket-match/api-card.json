@@ -1,0 +1,31 @@
+{
+  "allocation_requests": "input-length stack and one four- or five-byte output",
+  "bracket_pairs": [
+    "()",
+    "[]",
+    "{}"
+  ],
+  "contract_hash": "sha256:c9768873a2e7b34b72d067213df5df9d4bd185bf92b747d94139ac6c8aa30646",
+  "dependencies": [
+    "sigil/fmt"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "empty_input": "true",
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "non_bracket_bytes": "ignored",
+  "ownership": "ephemeral runtime consumes output bytes before discarding store",
+  "package": "bracket-match/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "quoted_strings_and_comments": "not parsed",
+  "result": "i64@Public",
+  "result_bytes": "ASCII true or false",
+  "result_encoding": "pointer * 4294967296 + length",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

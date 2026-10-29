@@ -64,8 +64,9 @@ but a new silent divergence fails before either list comparison.
 - Closures outside the exact surface poison rather than disappearing.
 - Unsupported expression, statement, memory, fuel, or Wasm forms taint the owning function and
   force `ai_encode_wasm` to return `!!` for the module.
-- Multi-module outer-ring programs are compared at the exact AIR boundary when the oracle does not
-  expose a single inner Wasm module.
+- Multi-module outer-ring programs are compared at the exact AIR boundary in the AIR suites; their
+  final Wasm, both modules, is compared by `pipeline_differential.rs` and the never-diverge gate
+  ([sh-wasm.md](sh-wasm.md), SHP-2b).
 
 ## Required verification
 

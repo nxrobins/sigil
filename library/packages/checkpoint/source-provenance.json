@@ -1,0 +1,8 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/checkpoint.sigil": "sha256:119e530033729ec36f01485cd74bd51455b7d8ff41488c69ad3d6849a6e58a9c"
+  },
+  "package": "sigil/checkpoint",
+  "previous_version": "0.1.0-dogfood.1"
+}

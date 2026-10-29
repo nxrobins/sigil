@@ -13,13 +13,15 @@ use super::capability_tc::{
     infer_mint_expr, infer_region_expr,
 };
 use super::resolve::{
-    RecordSubstFault, apply_subst, build_record_construction_subst, infer_literal_type,
-    is_machine_integer_type, register_concrete_enum, render_binary_op, render_type,
-    resolve_int_literals_in_expr, resolve_int_literals_or_reject, resolve_type_expr,
-    try_array_size_mismatch_diagnostic, type_compatible, type_contains_cap, type_contains_never,
-    type_contains_typestate, type_contains_wide_int,
+    RecordSubstFault, apply_subst, build_record_construction_subst, default_int_lit_in_type,
+    first_unnarrowable_value, infer_literal_type, is_machine_integer_type, register_concrete_enum,
+    render_binary_op, render_type, resolve_int_literals_in_expr, resolve_int_literals_or_reject,
+    resolve_type_expr, try_array_size_mismatch_diagnostic, type_compatible, type_contains_cap,
+    type_contains_never, type_contains_typestate, type_contains_wide_int, unify,
+    unnarrowable_message,
 };
 use super::statements::check_block;
+use super::validators::check_type_arg_arity;
 use super::{
     BorrowContextGuard, ExpectedTypeGuard, MonomorphTracker, Type, TypeCheckContext, TypeUniverse,
     find_free_vars, lookup_pattern_refinement, undefined_local_diagnostic_with_edit,
@@ -143,8 +145,9 @@ fn infer_perform_expr(
                     // `mangle_type` to i64 against a narrow-int (i32/u32) parameter and
                     // the synthesized evidence closure / IndirectCall would be
                     // width-mismatched → non-validating wasm (EH4.2 sweep D1). Mirrors
-                    // the call-argument path's `resolve_int_literals_in_expr`.
-                    resolve_int_literals_in_expr(arg, expected);
+                    // the call-argument path, which also rejects a value typed by a
+                    // literal it is not (SR-032, `first_unnarrowable_value`).
+                    resolve_int_literals_or_reject(arg, expected, codes::T071, diagnostics);
                 }
             }
             if had_mismatch {
@@ -282,7 +285,21 @@ fn infer_clause_handle_expr(
         // RF-M2 BARRIER: clause bodies are evidence-passing closures (a
         // DIFFERENT function post-desugar) whose binders may shadow an
         // enclosing range-loop var — same fail-closed treatment as closures.
+        // For the same reason no `break`/`continue` in one reaches an
+        // enclosing loop: the loop depth starts at 0 (T260; inherited, a
+        // `break` here passed, and only the E004 lowering gate stopped it).
         let saved_range_facts = std::mem::take(&mut tracker.range_loop_facts);
+        let saved_loop_depth = std::mem::replace(&mut tracker.loop_depth, 0);
+        // DBC0-1: a frame with each binder's (empty) entry, so a binder that shadows an
+        // enclosing narrowed name reads no fact through it.
+        let mut binder_frame = super::refinement::RefinementFrame::new();
+        for binder in &clause.binders {
+            binder_frame.insert(
+                binder.clone(),
+                super::refinement::RefinementEntry::default(),
+            );
+        }
+        tracker.pattern_refinement_stack.push(binder_frame);
         let mut clause_mutables = HashSet::new();
         let typed_body = check_block(
             &clause.body,
@@ -295,6 +312,8 @@ fn infer_clause_handle_expr(
             false,
         );
         tracker.range_loop_facts = saved_range_facts;
+        tracker.loop_depth = saved_loop_depth;
+        tracker.pattern_refinement_stack.pop();
         typed_clauses.push(TypedHandleClause {
             effect: clause.effect.clone(),
             op: clause.op.clone(),
@@ -385,6 +404,14 @@ pub(super) fn infer_expr(
             refinement: None,
         };
     }
+    // PR AF: the immediate-borrow flag marks the borrow's DIRECT child only. A
+    // slice reads it and clears it for its own children (`infer_slice_expr`);
+    // every other expression clears it for everything beneath it and restores
+    // it after, so a slice nested deeper under a borrow (a call's argument, a
+    // closure's body, an instance's body) is bare: T238. Left set, it admitted
+    // `&g(arr[1..3])`, and a bare slice in a closure under `&g(..)`.
+    let outer_immediate_borrow = (!matches!(expr, Expr::Slice(_)))
+        .then(|| std::mem::replace(&mut tracker.parent_is_immediate_borrow, false));
     let inferred = match expr {
         Expr::Literal(expr) => TypedExpr {
             ty: infer_literal_type(&expr.literal),
@@ -514,6 +541,9 @@ pub(super) fn infer_expr(
             infer_fstring_expr(expr, env, current_return, context, tracker, diagnostics)
         }
     };
+    if let Some(flag) = outer_immediate_borrow {
+        tracker.parent_is_immediate_borrow = flag;
+    }
     if tracker.check_type_work([&inferred.ty], expr.span(), diagnostics) {
         inferred
     } else {
@@ -890,70 +920,121 @@ pub(super) fn infer_path_expr(
 
     // Fallback: check if name is a no-payload enum variant (e.g., None)
     if expr.path.segments.len() == 1 {
-        for (enum_name, (type_params, variants)) in &universe.enums {
-            if let Some((idx, _)) = variants
+        // The enum that declares it: the only one, or the one the expected type
+        // names among several (N5-PRB), as `classify_variant_callee` decides for
+        // a payload variant. This loop used to take the first declaring enum in
+        // `universe.enums` order, a `HashMap`'s, so a unit variant several enums
+        // declare resolved to a different enum from run to run, and a program
+        // compiled or failed by chance. Several with no expected type to choose
+        // between are T236, as for a payload variant; fails closed.
+        let candidates: Vec<&String> = universe
+            .enums
+            .iter()
+            .filter(|(_, (_, variants))| {
+                variants
+                    .iter()
+                    .any(|(vname, ptypes)| vname == &name && ptypes.is_empty())
+            })
+            .map(|(enum_name, _)| enum_name)
+            .collect::<std::collections::BTreeSet<&String>>()
+            .into_iter()
+            .collect();
+        let chosen: Option<&String> = match candidates.as_slice() {
+            [] => None,
+            [only] => Some(only),
+            _ => match &tracker.current_expected_type {
+                Some(Type::Named(expected, _)) if candidates.contains(&expected) => {
+                    candidates.iter().copied().find(|c| *c == expected)
+                }
+                _ => {
+                    let listed = candidates
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    diagnostics.push(Diagnostic::error(
+                        codes::T236,
+                        format!(
+                            "ambiguous bare variant `{name}` — found in enums [{listed}]; add a \
+                             type annotation (`let x: EnumName = {name};`) or qualify it \
+                             (`EnumName::{name}`)"
+                        ),
+                        Some(expr.span),
+                    ));
+                    // The same placeholder as an undefined name below.
+                    return TypedExpr {
+                        ty: Type::Error,
+                        kind: TypedExprKind::Literal(Literal::Int(0)),
+                        span: expr.span,
+                        refinement: None,
+                    };
+                }
+            },
+        };
+        if let Some(enum_name) = chosen
+            && let Some((type_params, variants)) = universe.enums.get(enum_name)
+            && let Some((idx, _)) = variants
                 .iter()
                 .enumerate()
                 .find(|(_, (vname, ptypes))| vname == &name && ptypes.is_empty())
-            {
-                // GAP 2: a no-payload variant (`None`) carries no value to infer
-                // its enum's type params from, so bind them from
-                // `current_expected_type` — but ONLY when it names THIS enum
-                // (CF-A1 enum identity), with matching arity (CF-A1), and FULLY
-                // CONCRETE args (CF-A2). A non-matching / wrong-arity / abstract /
-                // un-threaded expected type falls back to argless `vec![]`
-                // (fail-closed: the downstream return/let check then emits
-                // T049/T041), so an abstract `V` is never bound into the typed AST.
-                let resolved_args = match &tracker.current_expected_type {
-                    Some(Type::Named(exp_enum, exp_args))
-                        if exp_enum == enum_name
-                            && !exp_args.is_empty()
-                            && exp_args.len() == type_params.len()
-                            && exp_args.iter().all(type_is_concrete) =>
-                    {
-                        exp_args.clone()
-                    }
-                    _ => Vec::new(),
-                };
-                // CF-A1 fail-fast: a wrong-arity bind would ICE in AIR `mangle_type`;
-                // catch it at the source instead of emitting a malformed type.
-                debug_assert!(
-                    resolved_args.is_empty() || resolved_args.len() == type_params.len(),
-                    "ICE: bare variant `{name}` of `{enum_name}` resolved {} args but the enum declares {} type params",
-                    resolved_args.len(),
-                    type_params.len(),
+        {
+            // GAP 2: a no-payload variant (`None`) carries no value to infer
+            // its enum's type params from, so bind them from
+            // `current_expected_type` — but ONLY when it names THIS enum
+            // (CF-A1 enum identity), with matching arity (CF-A1), and FULLY
+            // CONCRETE args (CF-A2). A non-matching / wrong-arity / abstract /
+            // un-threaded expected type falls back to argless `vec![]`
+            // (fail-closed: the downstream return/let check then emits
+            // T049/T041), so an abstract `V` is never bound into the typed AST.
+            let resolved_args = match &tracker.current_expected_type {
+                Some(Type::Named(exp_enum, exp_args))
+                    if exp_enum == enum_name
+                        && !exp_args.is_empty()
+                        && exp_args.len() == type_params.len()
+                        && exp_args.iter().all(type_is_concrete) =>
+                {
+                    exp_args.clone()
+                }
+                _ => Vec::new(),
+            };
+            // CF-A1 fail-fast: a wrong-arity bind would ICE in AIR `mangle_type`;
+            // catch it at the source instead of emitting a malformed type.
+            debug_assert!(
+                resolved_args.is_empty() || resolved_args.len() == type_params.len(),
+                "ICE: bare variant `{name}` of `{enum_name}` resolved {} args but the enum declares {} type params",
+                resolved_args.len(),
+                type_params.len(),
+            );
+            let concrete_ty = Type::Named(enum_name.clone(), resolved_args.clone());
+            let lowered_enum_name = if type_params.is_empty() || resolved_args.is_empty() {
+                enum_name.clone()
+            } else {
+                if !tracker.check_type_work([&concrete_ty], expr.span, diagnostics) {
+                    return work_limit_expr(expr.span);
+                }
+                let mangled = mangle_type(&concrete_ty);
+                register_concrete_enum(
+                    tracker,
+                    &mangled,
+                    variants,
+                    type_params,
+                    &resolved_args,
+                    expr.span,
+                    diagnostics,
                 );
-                let concrete_ty = Type::Named(enum_name.clone(), resolved_args.clone());
-                let lowered_enum_name = if type_params.is_empty() || resolved_args.is_empty() {
-                    enum_name.clone()
-                } else {
-                    if !tracker.check_type_work([&concrete_ty], expr.span, diagnostics) {
-                        return work_limit_expr(expr.span);
-                    }
-                    let mangled = mangle_type(&concrete_ty);
-                    register_concrete_enum(
-                        tracker,
-                        &mangled,
-                        variants,
-                        type_params,
-                        &resolved_args,
-                        expr.span,
-                        diagnostics,
-                    );
-                    mangled
-                };
-                return TypedExpr {
-                    ty: concrete_ty,
-                    kind: TypedExprKind::EnumConstruct(TypedEnumConstructExpr {
-                        enum_name: lowered_enum_name,
-                        variant_index: idx as u32,
-                        fields: Vec::new(),
-                    }),
-                    span: expr.span,
+                mangled
+            };
+            return TypedExpr {
+                ty: concrete_ty,
+                kind: TypedExprKind::EnumConstruct(TypedEnumConstructExpr {
+                    enum_name: lowered_enum_name,
+                    variant_index: idx as u32,
+                    fields: Vec::new(),
+                }),
+                span: expr.span,
 
-                    refinement: None,
-                };
-            }
+                refinement: None,
+            };
         }
     }
 
@@ -990,7 +1071,7 @@ pub(super) fn infer_path_expr(
 /// CF-I1: a type may be pinned as an expected type / narrowed against ONLY if it
 /// is FULLY concrete — no `Generic` anywhere, including nested (`Vec<T>` must NOT
 /// pin, or fill-unbound would bind an inner call's param to the outer `T`).
-fn type_is_concrete(t: &Type) -> bool {
+pub(super) fn type_is_concrete(t: &Type) -> bool {
     match t {
         Type::Generic(_) | Type::Error | Type::IntLit(_) => false,
         Type::Named(_, args) => args.iter().all(type_is_concrete),
@@ -999,6 +1080,17 @@ fn type_is_concrete(t: &Type) -> bool {
         Type::Ref(inner, _) | Type::Slice(inner) | Type::Ptr(inner) | Type::MutPtr(inner) => {
             type_is_concrete(inner)
         }
+        // A tuple slot is concrete only if every element is. Without this arm the
+        // field type `(M<T>, i64)` of a generic record with no instance in view
+        // was pinned as the expected type of its value `mk(1)` (`fn mk<U>(n: i64)
+        // -> (M<U>, i64)`), whose return-type inference then bound `U` to the
+        // outer `T` — the hazard CF-I1 exists to stop — and the compiler panicked
+        // in `mangle_type` (`tuple_slot_mentioning_a_type_parameter_is_not_pinned`).
+        Type::Tuple(elems) => elems.iter().all(type_is_concrete),
+        // The check-time-only HKT trio stands for a type parameter (or its
+        // binding target), so it is never concrete: a generic callee's formal
+        // `xs: F<A>` must not be pinned as an argument's expected type.
+        Type::HktVar { .. } | Type::HktApp { .. } | Type::TypeCtor(_) => false,
         // Scalar leaves, `Cap` (deadline literals are i64, no nested Type),
         // `ActorRef`, `Str`, `Unit` are concrete.
         _ => true,
@@ -1006,8 +1098,7 @@ fn type_is_concrete(t: &Type) -> bool {
 }
 
 /// True iff `t` contains a `Type::Generic` anywhere in its structure
-/// (recursing through every composite — including `Tuple`, which
-/// `type_is_concrete` does NOT descend into).
+/// (recursing through every composite, `Tuple` included).
 ///
 /// The method-call closure-arg check uses this as an ICE-guard on BOTH
 /// sides before routing a `Type::Fn` argument through `type_compatible`:
@@ -1033,6 +1124,131 @@ fn type_mentions_generic(t: &Type) -> bool {
     }
 }
 
+/// SR-032: once an instance is known, fit a value that was typed before it was
+/// to the slot the instance reads it at. The value is a generic call's
+/// argument, or a generic record's field or a generic enum's payload whose
+/// declared type mentions a type parameter. `slot` is that declared type with
+/// the instance's type arguments substituted; it holds `IntLit` where a literal
+/// bound a parameter, which the instance reads at the `i64` default.
+///
+/// Before, such a value kept the widths it was typed with: `B::V((1, 40))` for
+/// `enum B<T> { V((i32, T)) }` laid the tuple out as `(i64, i64)`, and a `match`
+/// read it as `(i32, i64)`. A value stored as the instance reads it
+/// (`stored_alike`) now has its literal parts narrowed, or is rejected with
+/// `code` where narrowing would change a part's type but not its width
+/// (`resolve_int_literals_or_reject`). A value stored otherwise returns `false`,
+/// and the caller reports it with its own diagnostic.
+///
+/// Skipped, failing open, as fitting: a slot that is not concrete and a value
+/// that mentions a type parameter (both occur inside a generic body, which is
+/// checked again per instance), and a value typed `Type::Error`. That is a
+/// value poisoned where it was reported, or one typed so with no diagnostic,
+/// which is an OPEN entry in `tests/attack/KNOWN_GAPS.md`.
+pub(super) fn fit_to_instance_slot(
+    value: &mut TypedExpr,
+    slot: &Type,
+    code: codes::DiagnosticCode,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let mut concrete = slot.clone();
+    default_int_lit_in_type(&mut concrete);
+    if !type_is_concrete(&concrete)
+        || type_mentions_generic(&value.ty)
+        || matches!(value.ty, Type::Error)
+    {
+        return true;
+    }
+    if !stored_alike(slot, &value.ty) {
+        return false;
+    }
+    resolve_int_literals_or_reject(value, &concrete, code, diagnostics);
+    true
+}
+
+/// Whether a value of type `actual` is stored as an instance reads a value of
+/// its slot type `expected` (`fit_to_instance_slot`), where `expected` holds
+/// `IntLit` at a type parameter a literal bound.
+///
+/// Two differences from the slot's own type are stored alike and pass, as they
+/// passed before these values were checked:
+/// - a `u64` where a literal bound the parameter. `max(0, n)` with `n: u64`
+///   builds `max<i64>`, because the literal binds `T` first (X-M7). The instance
+///   computes on it as an `i64`, so it compares and divides signed, as it did
+///   before: a value of 2^63 or more reads as negative (an OPEN entry in
+///   `tests/attack/KNOWN_GAPS.md`). Anywhere else a difference in signedness is
+///   a mismatch, since no typing of the call admits it.
+/// - an enum written without its type arguments, such as a bare `None` that
+///   `infer_path_expr`'s fallback typed with no slot. A unit variant is a
+///   tag-only cell, which every instance reads alike, and a payload variant
+///   always carries its type arguments. A method can still give a value with a
+///   payload such a type, since a method's argument is not checked and a
+///   generic signature skips the arity check (an OPEN entry in
+///   `tests/attack/KNOWN_GAPS.md`); this check accepts it as main did.
+///
+/// A closure is checked at what crosses its boundary. The instance passes each
+/// parameter value in, so the closure's own parameter type is that value's
+/// slot, and the instance reads the result at its return type. Either side's
+/// `IntLit` is the `i64` an instance built for it, so a function value whose
+/// return a literal typed does not pass for an `i32` return (it trapped at the
+/// indirect call). It passes for a `u64` return, as the first difference above
+/// does, since the bits it stores read alike there. Effect rows and linearity
+/// are not compared here:
+/// `bind_and_check_effect_rows` checks the row of a top-level function-typed
+/// parameter, and a row that reaches an instance any other way is lost (an
+/// OPEN entry in `tests/attack/KNOWN_GAPS.md`).
+fn stored_alike(expected: &Type, actual: &Type) -> bool {
+    alike(expected, actual, false)
+}
+
+/// `stored_alike`, where `built` says that `actual` is part of a function type.
+/// Such a part was fixed when the function was built, so an `IntLit` in it is
+/// the `i64` its instance computes: it reads alike at `i64` and at `u64` (X-M7),
+/// and at nothing narrower. Outside a function type an `IntLit` is a literal
+/// that narrowing still retypes, so it is left to `type_compatible`.
+fn alike(expected: &Type, actual: &Type, built: bool) -> bool {
+    let default_width =
+        |t: &Type| matches!(t, Type::I64 | Type::U64 | Type::IntLit(_) | Type::Error);
+    match (expected, actual) {
+        (Type::IntLit(_), actual) => default_width(actual),
+        (expected, Type::IntLit(_)) if built => default_width(expected),
+        (Type::Fn(e_params, e_ret, _, _), Type::Fn(a_params, a_ret, _, _)) => {
+            e_params.len() == a_params.len()
+                && e_params
+                    .iter()
+                    .zip(a_params)
+                    .all(|(passed, read)| alike(read, passed, true))
+                && alike(e_ret, a_ret, true)
+        }
+        (Type::Named(e, _), Type::Named(a, a_args)) if e == a && a_args.is_empty() => true,
+        (Type::Named(e, e_args), Type::Named(a, a_args)) => {
+            e == a
+                && e_args.len() == a_args.len()
+                && e_args.iter().zip(a_args).all(|(x, y)| alike(x, y, built))
+        }
+        (Type::Tuple(e), Type::Tuple(a)) => {
+            e.len() == a.len() && e.iter().zip(a).all(|(x, y)| alike(x, y, built))
+        }
+        (Type::Array { elem: e, size: n }, Type::Array { elem: a, size: m }) => {
+            n == m && alike(e, a, built)
+        }
+        (Type::Slice(e), Type::Slice(a)) | (Type::Ref(e, _), Type::Ref(a, _)) => alike(e, a, built),
+        // Any other pair is compared as the instance is built: an `IntLit` left in
+        // the slot reads at the `i64` default, which `type_compatible` would let a
+        // narrower integer fit (`&[T]` with `T` bound by a literal, given an
+        // `[i32; 3]`). A function's part is compared at its default too.
+        _ => {
+            let mut expected = expected.clone();
+            default_int_lit_in_type(&mut expected);
+            if built {
+                let mut actual = actual.clone();
+                default_int_lit_in_type(&mut actual);
+                return type_compatible(&expected, &actual);
+            }
+            type_compatible(&expected, actual)
+        }
+    }
+}
+
 /// PR #132/#135: infer a call/field argument with an EXPECTED type pinned —
 /// two complementary effects, both reusing existing machinery.
 ///
@@ -1054,32 +1270,15 @@ fn infer_arg_with_expected(
     tracker: &mut MonomorphTracker,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TypedExpr {
-    // CF-I1: only a FULLY-concrete type may pin or narrow.
-    let pin = target.filter(|&t| type_is_concrete(t));
-    // CF-I4: the guard scopes EXACTLY this one inference; Drop restores prior.
-    let mut typed = {
-        let mut guard = ExpectedTypeGuard::push(tracker, pin.cloned());
-        infer_expr(
-            arg,
-            env,
-            current_return,
-            context,
-            guard.tracker_mut(),
-            diagnostics,
-        )
-    };
-    if let Some(t) = pin
-        && type_compatible(t, &typed.ty)
-    {
-        // Narrow fitting IntLit leaves to the pinned target, and REJECT a
-        // non-fitting binop leaf (e.g. `f(0 - 2147483648)` for an i32
-        // param) as T071 instead of letting it default to i64 and emit a
-        // width-mismatched binary op (INVALID wasm). Mirrors the
-        // single-literal `f(2147483648)` overflow, which is already T071.
-        // The complementary top-level-stays-IntLit case (where this guard's
-        // `type_compatible` is false) is caught by callers' own T071 arms.
-        resolve_int_literals_or_reject(&mut typed, t, codes::T071, diagnostics);
-    }
+    let mut typed = infer_against_slot(
+        arg,
+        target,
+        env,
+        current_return,
+        context,
+        tracker,
+        diagnostics,
+    );
     // F003 / value-position `trap()` (Tier A): an argument-like position — a call
     // argument, a record-field value, an enum payload, a method argument (every
     // caller of this shared helper) — cannot receive a DIVERGING value. A `never`
@@ -1104,6 +1303,75 @@ fn infer_arg_with_expected(
         typed.ty = Type::Error;
     }
     typed
+}
+
+/// Mechanisms 1 and 2 of `infer_arg_with_expected` without its argument-position
+/// `never` gate: infer `expr` with the slot type `target` pinned as the expected
+/// type, then narrow its fitting integer-literal leaves to that type. A tuple
+/// element calls this directly because the tuple runs its own element-position
+/// `never` gate (T279 naming the element's index); going through
+/// `infer_arg_with_expected` would report a diverging element with the
+/// argument wording instead.
+fn infer_against_slot(
+    expr: &crate::ast::Expr,
+    target: Option<&Type>,
+    env: &HashMap<String, Type>,
+    current_return: &Type,
+    context: TypeCheckContext<'_>,
+    tracker: &mut MonomorphTracker,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> TypedExpr {
+    // CF-I1: only a FULLY-concrete type may pin or narrow.
+    let pin = target.filter(|&t| type_is_concrete(t));
+    // CF-I4: the guard scopes EXACTLY this one inference; Drop restores prior.
+    let mut typed = {
+        let mut guard = ExpectedTypeGuard::push(tracker, pin.cloned());
+        infer_expr(
+            expr,
+            env,
+            current_return,
+            context,
+            guard.tracker_mut(),
+            diagnostics,
+        )
+    };
+    if let Some(t) = pin
+        && type_compatible(t, &typed.ty)
+    {
+        // Narrow fitting IntLit leaves to the pinned target, and REJECT a
+        // non-fitting binop leaf (e.g. `f(0 - 2147483648)` for an i32
+        // param) as T071 instead of letting it default to i64 and emit a
+        // width-mismatched binary op (INVALID wasm). Mirrors the
+        // single-literal `f(2147483648)` overflow, which is already T071.
+        // The complementary top-level-stays-IntLit case (where this guard's
+        // `type_compatible` is false) is caught by callers' own T071 arms.
+        resolve_int_literals_or_reject(&mut typed, t, codes::T071, diagnostics);
+    }
+    typed
+}
+
+/// Narrow an integer-literal operand to the other operand's type, as PIL does,
+/// unless the operand is a value typed by a literal it is not (a local bound by
+/// `let n = 5;`): its value is stored at the `i64` default, so retyping it to an
+/// `i32` operand gave a module the engine refuses. That is rejected with the
+/// operator's own mismatch code (SR-032, `first_unnarrowable_value`), and the
+/// operand is poisoned to `Type::Error` so the operator reports nothing more.
+fn narrow_operand(
+    operand: &mut TypedExpr,
+    other: &Type,
+    code: codes::DiagnosticCode,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(span) = first_unnarrowable_value(operand, other) {
+        diagnostics.push(Diagnostic::error(
+            code,
+            unnarrowable_message(other),
+            Some(span),
+        ));
+        operand.ty = Type::Error;
+        return;
+    }
+    let _ = resolve_int_literals_in_expr(operand, other);
 }
 
 pub(super) fn infer_binary_expr(
@@ -1140,10 +1408,15 @@ pub(super) fn infer_binary_expr(
     // walker to that concrete type. If BOTH are IntLit, leave them as
     // IntLit — the final post-pass walker defaults to I64.
     let (mut lhs, mut rhs) = (lhs, rhs);
+    let operand_code = if matches!(expr.op, BinaryOp::Eq | BinaryOp::NotEq) {
+        codes::T055
+    } else {
+        codes::T054
+    };
     if matches!(lhs.ty, Type::IntLit(_)) && !matches!(rhs.ty, Type::IntLit(_)) {
-        let _ = resolve_int_literals_in_expr(&mut lhs, &rhs.ty);
+        narrow_operand(&mut lhs, &rhs.ty, operand_code, diagnostics);
     } else if matches!(rhs.ty, Type::IntLit(_)) && !matches!(lhs.ty, Type::IntLit(_)) {
-        let _ = resolve_int_literals_in_expr(&mut rhs, &lhs.ty);
+        narrow_operand(&mut rhs, &lhs.ty, operand_code, diagnostics);
     }
     let ty = match expr.op {
         BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
@@ -1468,22 +1741,50 @@ pub(super) fn infer_record_construct_expr(
         })
         .unwrap_or_default();
 
+    // SR-032: with no annotation that names the instance, a field whose declared
+    // type mentions a type parameter is pinned once the fields written before it
+    // bind every parameter that type mentions, with `unify`'s bindings, as a generic
+    // function's argument is (`ArgSlots::Generic`). Before, such a field was never
+    // pinned, so `R { a: x, o: Some(5) }` for `record R<T> { a: T, o: Option<T> }`
+    // with `x: i32` built the `Some` at `Option<i64>`. Each such field is then
+    // fitted to the instance (`fit_to_instance_slot`, below), which the
+    // construction's bindings build in declared field order, where a literal's
+    // binding is not replaced. Where the pin and the instance disagree (`R { a: 5, o: s, c: 7 }`
+    // with `s: Option<i32>` pins `c` to `i32` and builds `R<i64>`), the fit rejects
+    // the field, failing closed.
+    let declared_original: HashMap<&str, &Type> = record_decl
+        .as_ref()
+        .map(|(_, fields)| fields.iter().map(|(n, t)| (n.as_str(), t)).collect())
+        .unwrap_or_default();
+    let mut progressive: HashMap<String, Type> = HashMap::new();
+
     // Type-check each field's value expression first.
-    let typed_fields: Vec<(String, TypedExpr)> = expr
+    let mut typed_fields: Vec<(String, TypedExpr)> = expr
         .fields
         .iter()
         .map(|(name, value)| {
             // CF-I5: looked up by field NAME, never positional.
             let expected = declared_by_name.get(name.as_str());
+            let pinned: Option<Type> = match declared_original.get(name.as_str()) {
+                Some(declared) if construction_subst.is_none() && type_mentions_generic(declared) => {
+                    Some(apply_subst(declared, &progressive)).filter(type_is_concrete)
+                }
+                _ => None,
+            };
             let typed = infer_arg_with_expected(
                 value,
-                expected,
+                pinned.as_ref().or(expected),
                 env,
                 current_return,
                 context,
                 tracker,
                 diagnostics,
             );
+            if construction_subst.is_none()
+                && let Some(declared) = declared_original.get(name.as_str())
+            {
+                unify(declared, &typed.ty, &mut progressive);
+            }
             // CF-I3: a field literal that did NOT fit its concrete type stays
             // `IntLit`; reject it (else it defaults to i64 into a narrower slot).
             if let Some(p) = expected
@@ -1595,6 +1896,52 @@ pub(super) fn infer_record_construct_expr(
 
             match subst_result {
                 Ok(subst) => {
+                    // SR-032: a field whose declared type mentions a type parameter
+                    // is pinned while it is inferred only under an annotation that
+                    // names the instance (GAP 1). Otherwise it was typed by its own
+                    // value, so `P { t: (1, 40) }` for `record P<T> { t: (i32, T) }`
+                    // laid the tuple out as `(i64, i64)` while `p.t` read it as
+                    // `(i32, i64)`, and the general field check above skips such a
+                    // field, so a closure taking a `(i64, i64)` was stored in a
+                    // `Fn((i32, i64)) -> T` field unchecked. Each such field is fitted
+                    // to the instance now (`fit_to_instance_slot`), and one stored
+                    // otherwise is T071 (or T227 for an array size), as a concrete
+                    // field's mismatch is.
+                    for (field_name, value) in typed_fields.iter_mut() {
+                        let Some((_, declared_ty)) = declared_fields
+                            .iter()
+                            .find(|(n, t)| n == field_name && type_mentions_generic(t))
+                        else {
+                            continue;
+                        };
+                        let slot = apply_subst(declared_ty, &subst);
+                        if !fit_to_instance_slot(value, &slot, codes::T071, diagnostics) {
+                            let mut concrete = slot;
+                            default_int_lit_in_type(&mut concrete);
+                            let site_ctx = format!("field `{field_name}` of `{}`", expr.type_name);
+                            diagnostics.push(
+                                try_array_size_mismatch_diagnostic(
+                                    &concrete,
+                                    &value.ty,
+                                    &site_ctx,
+                                    value.span,
+                                )
+                                .unwrap_or_else(|| {
+                                    Diagnostic::error(
+                                        codes::T071,
+                                        format!(
+                                            "field `{field_name}` of `{}` expected `{}`, found `{}`",
+                                            expr.type_name,
+                                            render_type(&concrete),
+                                            render_type(&value.ty)
+                                        ),
+                                        Some(value.span),
+                                    )
+                                }),
+                            );
+                            value.ty = Type::Error;
+                        }
+                    }
                     // N6-PRA: build resolved type-args by reading
                     // the subst map. Each type_param maps to its
                     // discovered concrete type; missing entries
@@ -2091,14 +2438,22 @@ pub(super) fn compute_field_access_refinement(
     }
 }
 
-/// Infer a tuple literal `(a, b, …)` → `Type::Tuple([T_a, T_b, …])`. Each
-/// element is inferred INDEPENDENTLY — no homogeneity check (unlike arrays) and
-/// no expected-type threading (AG-3: a non-`i64` int element defaults to `i64`
-/// like every other PIL, via the orphan defaulter + `default_int_lit_in_type`'s
-/// tuple arm). The value lowers through the record machinery: a `RecordConstruct`
-/// with a mangled tuple `type_name` (unforgeable `$tuple…` prefix, ET-2) and
-/// positional field names "0","1",… synthesized as `String`s — never lexed, so
-/// surface `.0` stays deferred (AG-1).
+/// Infer a tuple literal `(a, b, …)` → `Type::Tuple([T_a, T_b, …])`. No
+/// homogeneity check (unlike arrays). The value lowers through the record
+/// machinery: a `RecordConstruct` with a mangled tuple `type_name` (unforgeable
+/// `$tuple…` prefix, ET-2) and positional field names "0","1",… synthesized as
+/// `String`s — never lexed, so surface `.0` stays deferred (AG-1).
+///
+/// Element typing (ET-1). The construct lays each element out at the width of
+/// the ELEMENT's own type, while every reader (`let (a, b) = t`) uses the width of
+/// the slot's declared tuple type (ET-5's on-demand offsets). So when the expected
+/// type is a tuple of this arity, each element is inferred against its slot
+/// (`infer_against_slot`): an integer literal takes the slot's integer type and a
+/// nested construct takes the slot's instance. Inferring the elements
+/// independently let `let t: (i32, i64) = (1, 40)` store `1` as 8 bytes, so the
+/// read of the second element took the high half of the first. With no tuple
+/// expected type the elements infer independently, as before, and an integer
+/// literal defaults to `i64`.
 pub(super) fn infer_tuple_expr(
     expr: &TupleExpr,
     env: &HashMap<String, Type>,
@@ -2107,10 +2462,26 @@ pub(super) fn infer_tuple_expr(
     tracker: &mut MonomorphTracker,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TypedExpr {
+    let slots: Option<Vec<Type>> = match &tracker.current_expected_type {
+        Some(Type::Tuple(slots)) if slots.len() == expr.elements.len() => Some(slots.clone()),
+        _ => None,
+    };
     let typed_elements: Vec<TypedExpr> = expr
         .elements
         .iter()
-        .map(|elem| infer_expr(elem, env, current_return, context, tracker, diagnostics))
+        .enumerate()
+        .map(|(i, elem)| match &slots {
+            Some(slots) => infer_against_slot(
+                elem,
+                slots.get(i),
+                env,
+                current_return,
+                context,
+                tracker,
+                diagnostics,
+            ),
+            None => infer_expr(elem, env, current_return, context, tracker, diagnostics),
+        })
         .collect();
     // F003 / value-position `trap()` (Tier A): a tuple ELEMENT cannot be a
     // diverging value — `(trap(), 1)` builds a `(never, i64)` whose `never` limb
@@ -2225,10 +2596,38 @@ pub(super) fn infer_array_lit_expr(
         };
     }
 
+    // The element slot: when the expected type is an array or slice, its element
+    // type is each element's expected type, so a nested construct takes the
+    // slot's instance (`[G::V(3, 40)]` against `[G<i32>; 1]` builds `G<i32>`, and
+    // `[(1, 10)]` against `[(i32, i64); 1]` types its tuple by the slot). Only the
+    // expected type is pinned here (CF-I1: when fully concrete): integer-literal
+    // elements are still narrowed afterwards by the enclosing slot, whose
+    // `resolve_int_literals_in_expr` walks array elements, so the element-type
+    // homogeneity check below keeps comparing unnarrowed literals as it always
+    // has. With no array expected type the elements infer as before.
+    let elem_slot: Option<Type> = match &tracker.current_expected_type {
+        Some(Type::Array { elem, .. }) | Some(Type::Slice(elem)) if type_is_concrete(elem) => {
+            Some((**elem).clone())
+        }
+        _ => None,
+    };
     let typed_elements: Vec<TypedExpr> = expr
         .elements
         .iter()
-        .map(|elem| infer_expr(elem, env, current_return, context, tracker, diagnostics))
+        .map(|elem| match &elem_slot {
+            Some(slot) => {
+                let mut guard = ExpectedTypeGuard::push(tracker, Some(slot.clone()));
+                infer_expr(
+                    elem,
+                    env,
+                    current_return,
+                    context,
+                    guard.tracker_mut(),
+                    diagnostics,
+                )
+            }
+            None => infer_expr(elem, env, current_return, context, tracker, diagnostics),
+        })
         .collect();
 
     let mut elem_type = typed_elements[0].ty.clone();
@@ -2517,6 +2916,19 @@ pub(super) fn infer_closure_expr(
         .as_ref()
         .map(|ty| resolve_type_expr(ty, universe, &HashMap::new(), &[]))
         .unwrap_or(Type::Unit);
+    // SR-032: a closure's annotations are held to the arity rule (T231) that a
+    // non-generic function's signature, a `let`, a field and a payload are held
+    // to. Resolved raw, `fn(o: Option) -> i64` typed a value that may carry a
+    // payload as an enum without type arguments, which a generic call accepts in
+    // any instance's place (`stored_alike`): `or_default(o, 7)` inside such a
+    // closure, given a `Some(5)` built as an `Option<i32>`, read the 4-byte
+    // payload as 8 bytes.
+    for (param, ty) in closure_expr.params.iter().zip(&param_types) {
+        check_type_arg_arity(ty, universe, param.ty.span, diagnostics);
+    }
+    if let Some(ty) = closure_expr.return_type.as_ref() {
+        check_type_arg_arity(&ret_type, universe, ty.span, diagnostics);
+    }
 
     // 2. Capture analysis: find free variables in the closure body
     let mut inner_bound: HashSet<String> = HashSet::new();
@@ -2526,6 +2938,12 @@ pub(super) fn infer_closure_expr(
     let free_vars = find_free_vars(&closure_expr.body, &inner_bound);
 
     // 3. Filter to only variables that exist in the outer environment
+    // SHP-P0: this order IS the `__env` layout: the closure construct stores the captures
+    // and the lifted body's prologue loads them in exactly this sequence (air.rs).
+    // `find_free_vars` returns a `BTreeSet`, so the captures come out in name order on every
+    // compile; a hashed set handed a closure with two or more captures a different layout,
+    // and different Wasm bytes, each time. A name order is also the simplest order a second
+    // implementation can reproduce exactly.
     let captures: Vec<TypedCapture> = free_vars
         .iter()
         .filter_map(|name| {
@@ -2679,8 +3097,22 @@ pub(super) fn infer_closure_expr(
     // RF-M2 BARRIER: the closure body is lambda-lifted into a DIFFERENT
     // function whose params/locals may shadow an enclosing range-loop var —
     // empty the bounds-fact channel for the duration (fail-closed: no
-    // enclosing-loop elision inside any closure).
+    // enclosing-loop elision inside any closure). For the same reason no
+    // `break`/`continue` in it reaches an enclosing loop: the loop depth
+    // starts at 0 (T260; inherited, it passed and stopped on I013).
     let saved_range_facts = std::mem::take(&mut tracker.range_loop_facts);
+    let saved_loop_depth = std::mem::replace(&mut tracker.loop_depth, 0);
+    // DBC0-1: a frame with each parameter's (empty) entry: a parameter that shadows an
+    // enclosing narrowed name reads no fact through it. Captures get no entry — they are the
+    // enclosing bindings themselves, and only an immutable one carries a fact.
+    let mut param_frame = super::refinement::RefinementFrame::new();
+    for p in &closure_expr.params {
+        param_frame.insert(
+            p.name.clone(),
+            super::refinement::RefinementEntry::default(),
+        );
+    }
+    tracker.pattern_refinement_stack.push(param_frame);
     let mut closure_mutables = HashSet::new();
     let body = check_block(
         &closure_expr.body,
@@ -2693,6 +3125,8 @@ pub(super) fn infer_closure_expr(
         !matches!(ret_type, Type::Unit),
     );
     tracker.range_loop_facts = saved_range_facts;
+    tracker.loop_depth = saved_loop_depth;
+    tracker.pattern_refinement_stack.pop();
 
     // Patch the type-checked body into the reserved slot. `closure_id` stays in
     // bounds: `check_block` only ever GROWS `tracker.functions`.

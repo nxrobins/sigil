@@ -1,0 +1,25 @@
+{
+  "contract_hash": "sha256:294c7b015a56cd1fe628965d6fa5501437834ace20929cc988df4149ac4014ed",
+  "dependencies": [
+    "sigil/fmt"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "empty_input": "0",
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "nonempty_input": "one plus number of byte-44 commas",
+  "ownership": "ephemeral runtime consumes output bytes before discarding store",
+  "package": "split-count/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "quoted_csv": false,
+  "result": "i64@Public",
+  "result_bytes": "decimal ASCII field count",
+  "result_encoding": "pointer * 4294967296 + length",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

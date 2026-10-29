@@ -1,0 +1,27 @@
+// expect-error: T211
+// Z3 corpus #107: axis-1 — DBC-0b: a store of a value with no fact into a refined field.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `idx.value = n` stores a local with no fact into the field that
+// `where value > 100` guards. The collector refuses it statically with
+// T211, without Z3, exactly as the construction `Index { value: n }` is
+// refused (#28): a symbolic value with no fact cannot be queried, so the
+// store cannot be shown to keep the invariant. Fail-closed in both builds.
+//
+// MUTATION CONTRACT
+//
+// Deleting the mutation site leaves the construction and an unused
+// `let n`; compiles cleanly.
+module sigil;
+
+record Index { value: i64 } where value > 100
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut idx: Index = Index { value: 200 };
+        let n: i64 = 500;
+        idx.value = n;  // MUTATION_SITE
+        return 1;
+    }
+}

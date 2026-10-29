@@ -1,0 +1,152 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public",
+      "tool_exchange::run(input:Public,len:Public)->Public",
+      "tool_fit::run(input_ptr:Public,input_len:Public)->Public",
+      "tool_population::crossover(out:Public,a:Public,b:Public,generator:Public)->Public",
+      "tool_population::mutate(body:Public,generator:Public)->Public",
+      "tool_population::rank(pop:Public)->Public",
+      "tool_population::seed(out:Public,which:Public,steps:Public)->Public",
+      "tool_population::valid(body:Public,steps:Public,scored:Public)->Public",
+      "tool_records::emit(request:Public,size:Public,header:Public,summary:Public,weights:Public,accepted:Public,decisions:Public,trace:Public)->Public",
+      "tool_report::validate(report:Public,len:Public,request:Public,request_len:Public)->Public",
+      "tool_search::accept_evaluation(snapshot_ptr:Public,len:Public,identity:Public,identity_len:Public,response:Public,response_len:Public)->Public",
+      "tool_search::evaluation_request(snapshot_ptr:Public,len:Public,identity:Public,identity_len:Public)->Public",
+      "tool_search::evaluation_response(ptr:Public,len:Public,status:Public,report:Public,report_len:Public)->Public",
+      "tool_search::evaluation_work_request(ptr:Public,len:Public)->Public",
+      "tool_search::run(input:Public,len:Public)->Public",
+      "tool_search::validate_state(ptr:Public,len:Public)->Public",
+      "tool_state::run(input:Public,len:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:30538666e65979510ea22ebd4f4171fd6364846aeeb336930d9e99f89f103a0b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/autodiff",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:c91fcbd280c82ddcef4e0a09128d5800f1b1183fb29baabc538e188940f03b3e",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/bytes",
+      "requirement": "=0.1.0-public.5",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:ca685e112bae2b670c513ac7d6f37e9d3594fc2ba7943faa5c5714b9732cd33d",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/checkpoint",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:e593ade7c7da2e11895a390a755473467dead6a76fd0463329bdfb8b8d5ba906",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/exchange",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:45b1dd08fe75e4ad93f1276786bd0d29700f5b66e8f14de2c1e4bd8e037a05df",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/json",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:d047ae5c1c990af0641e0adde538713e9629f0ad7e13aa056da4bbe3229ef0d7",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/numeric",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:dbae82ed18234485f586bad1ae8fbd3b799259fae159cf4bf47664a549679c16",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/optim",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:fb1499b9682383f51d7c63850aabb2f80d2e5f793d9326c228b701dea507a2cc",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/records",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:801d724366c1268808a2035cbc8fb238c987f9207f5fc80fa61797720c868154",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/rng",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source library-composed autoresearch; bounded fitting and resumable population search.",
+  "evidence": {
+    "api_card_hash": "sha256:d2f12dba10feea34d839c7a976586cb3ef22ddb9000acfc3cf91715c4f0d2233",
+    "api_contract_hash": "sha256:ad1243fa45d537c9a39e19f55f9c108347c25aca3f53dcb36d8331633cc67403",
+    "charter_hash": "sha256:a151624d9b2cb65fe30e139147b02bcd89ee14c39427749018e890cb2f8a982a",
+    "evidence_manifest_hash": "sha256:44bef2979115cbfb9649be688d74d490d583b744b53e9603c676c9580df135c3"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool",
+    "tool_exchange",
+    "tool_fit",
+    "tool_population",
+    "tool_records",
+    "tool_report",
+    "tool_search",
+    "tool_state"
+  ],
+  "name": "tool",
+  "namespace": "autoresearch",
+  "version": "0.1.0-public.1"
+}

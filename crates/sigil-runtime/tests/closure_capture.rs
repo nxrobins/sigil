@@ -235,3 +235,17 @@ fn nested_closure_transitive_capture() {
         "inner closure must target its own function, not recurse into outer"
     );
 }
+
+// SHP-P0: the three-capture parity fixture, whose first-use order (zeta, alpha, mid) is not
+// its name order. Its arithmetic is asymmetric in the captures (zeta + alpha * x + mid), so a
+// construct that stored the captures in one order while the lifted body loaded them in another
+// would compute a different value. 100 + 20 * 2 + 3 = 143.
+#[test]
+fn multi_capture_fixture_reads_each_capture_from_its_own_slot() {
+    let src = include_str!("../../../tests/compile/closure_multi_capture.sigil");
+    assert_eq!(
+        neg(src),
+        143,
+        "each capture must be read from the slot the construct stored it in"
+    );
+}

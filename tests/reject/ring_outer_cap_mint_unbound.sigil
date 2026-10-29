@@ -1,0 +1,10 @@
+// R009: an outer-ring function mints a capability without binding it, so R001 sees no owned binding, but the outer-ring module has no `cap_mint` host import
+// expect-error: R009
+#[ring(outer)] module tool;
+cap type Admin { mint_file }
+cap type FileAccess mintable_by Admin { read, write }
+record File { id: i64 }
+fn make(f: File, admin: &Admin) -> i64 {
+    mint FileAccess for f; // MUTATION_SITE
+    return 0;
+}

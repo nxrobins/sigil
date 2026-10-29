@@ -309,7 +309,7 @@ pub(super) fn collect_type_universe(program: &crate::ast::Program) -> TypeUniver
         generic_fns: HashMap::new(),
         generic_impl_methods: HashMap::new(),
         authority_registry: AuthorityRegistry::default(),
-        extern_fns: std::collections::HashSet::new(),
+        extern_fns: HashMap::new(),
         effect_registry: {
             let mut reg = EffectRegistry::default();
             reg.register("FFI"); // built-in
@@ -568,7 +568,15 @@ pub(super) fn collect_type_universe(program: &crate::ast::Program) -> TypeUniver
                     }
                 }
                 Item::ExternFnDecl(def) => {
-                    universe.extern_fns.insert(def.name.clone());
+                    // Keyed by QUALIFIED name, the form a resolved call's
+                    // `FunctionSig::qualified_name` carries (see the extern arm of
+                    // `collect_function_sigs`). Keying by the bare name made a module's
+                    // own `fn fs_read` an FFI call whenever ANY module declared an extern
+                    // of that name. The value is the DECLARED name, which names the
+                    // `ExternCall` and so the host import (`calls.rs`).
+                    universe
+                        .extern_fns
+                        .insert(format!("{}::{}", module.name, def.name), def.name.clone());
                 }
                 Item::TraitDef(def) => {
                     // PR-3a: register the trait contract. Method param/return

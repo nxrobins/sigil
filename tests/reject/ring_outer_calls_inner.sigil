@@ -1,0 +1,13 @@
+// R004: an outer-ring module calls a function in an inner-ring module; no call crosses the ring boundary in this direction either
+// expect-error: R004
+module core_lib;
+pub fn twice(x: i64) -> i64 {
+    return x * 2;
+}
+#[ring(outer)]
+module tool;
+use core_lib;
+pub fn run() -> i64 {
+    let doubled: i64 = core_lib::twice(21); // MUTATION_SITE
+    return 42;
+}

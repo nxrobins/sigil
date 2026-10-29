@@ -1,11 +1,12 @@
 {"name": "cap_typed_apikey_demo.sigil", "categories": ["cap_typed", "alloc"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 19}
+{"name": "ct_demo.sigil", "categories": ["taint", "pure_compute"], "first_body_line": "fn ct_equal(a: i64 @SecretCT, b: i64 @SecretCT) -> bool @SecretCT {", "line_count": 58}
 {"name": "manual_http_alloc.sigil", "categories": ["ffi_outer_ring", "alloc", "manual"], "first_body_line": "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, Unsafe } {", "line_count": 12}
 {"name": "manual_reverse_intrinsic.sigil", "categories": ["alloc", "manual"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 20}
 {"name": "multi_param_cap_demo.sigil", "categories": ["cap_typed", "alloc"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 25}
 {"name": "probe_fs_i64.sigil", "categories": ["ffi_outer_ring", "alloc", "probe"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {", "line_count": 10}
 {"name": "probe_suffix_parse.sigil", "categories": ["alloc", "probe"], "first_body_line": "pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {", "line_count": 45}
 {"name": "restrict_deadline_demo.sigil", "categories": ["cap_typed", "restrict_deadline", "alloc"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 24}
-{"name": "slot_aggregation_demo.sigil", "categories": ["actor", "cap_typed", "slot", "alloc"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 42}
+{"name": "slot_aggregation_demo.sigil", "categories": ["actor", "cap_typed", "slot"], "first_body_line": "cap type Fuel {}  // Demonstrator: an entry actor whose state aggregates a cap via Slot<Fuel>. // The `on Stash` handler shows the put pattern; `on Drain` shows", "line_count": 42}
 {"name": "spawn_send_demo.sigil", "categories": ["actor", "spawn_send", "cap_typed"], "first_body_line": "actor Worker {", "line_count": 33}
 {"name": "task001_echo.sigil", "categories": ["alloc", "task"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 10}
 {"name": "task002_reverse.sigil", "categories": ["alloc", "task"], "first_body_line": "pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {", "line_count": 20}

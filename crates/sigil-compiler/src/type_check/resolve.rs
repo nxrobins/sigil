@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{MonomorphTracker, Type, TypeUniverse, closest_name};
 use crate::ast::{BinaryOp, Literal, TypeExpr};
-use crate::diagnostics::{Diagnostic, codes};
+use crate::diagnostics::{Diagnostic, Severity, codes};
 use crate::registries::EffectSet;
 use crate::span::Span;
 use crate::typed_ast::{TypedBlock, TypedExpr, TypedExprKind, TypedStmt};
@@ -1345,20 +1345,152 @@ pub(super) fn resolve_int_literals_in_expr(expr: &mut TypedExpr, target: &Type) 
             }
             // Resolve the carried `elem_type` (drives AIR storage stride)
             // and keep `expr.ty`'s element in sync. Only rewrite when the
-            // current element type is an unresolved `IntLit` so a genuine
-            // element-type mismatch on an already-concrete element type
-            // (caught elsewhere as T140/T071) is never masked.
-            if matches!(arr.elem_type, Type::IntLit(_)) {
+            // current element type still holds an unresolved `IntLit` (at
+            // the top, or inside a tuple element) so a genuine element-type
+            // mismatch on an already-concrete element type (caught
+            // elsewhere as T140/T071) is never masked.
+            if contains_int_lit(&arr.elem_type) {
                 arr.elem_type = elem_target.clone();
             }
             if let Type::Array { elem, .. } = &mut expr.ty
-                && matches!(**elem, Type::IntLit(_))
+                && contains_int_lit(elem)
             {
                 **elem = elem_target;
             }
         }
     }
+    // SR-032: a tuple literal's elements narrow to the target tuple's element
+    // types, as an array literal's elements narrow to its element type. A tuple
+    // literal is usually typed by its slot when it is inferred
+    // (`infer_tuple_expr`); this reaches one typed before its slot was known,
+    // such as a generic function's argument whose instance only later
+    // arguments decide. A tuple is laid out from its elements' types
+    // (`flatten_record`), so each element type of its own that held a literal
+    // is taken from its narrowed element; one that did not keeps what it has,
+    // such as the `Type::Error` a diverging element was poisoned to (T279).
+    // Its `type_name` is inert for a tuple and is left as it is.
+    let TypedExpr { kind, ty, .. } = expr;
+    if let TypedExprKind::RecordConstruct(rc) = kind
+        && let Type::Tuple(elem_tys) = ty
+        && let Type::Tuple(slots) = target
+        && slots.len() == rc.fields.len()
+        && elem_tys.len() == rc.fields.len()
+    {
+        for (((_, elem), slot), elem_ty) in rc.fields.iter_mut().zip(slots).zip(elem_tys) {
+            ok &= resolve_int_literals_in_expr(elem, slot);
+            if contains_int_lit(elem_ty) {
+                *elem_ty = elem.ty.clone();
+            }
+        }
+    }
     ok
+}
+
+/// Whether `t` holds an unresolved `Type::IntLit` anywhere: at the top, or
+/// inside a tuple, an array, a slice, a reference or a generic instance.
+fn contains_int_lit(t: &Type) -> bool {
+    match t {
+        Type::IntLit(_) => true,
+        Type::Tuple(elems) | Type::Named(_, elems) => elems.iter().any(contains_int_lit),
+        Type::Array { elem, .. } | Type::Slice(elem) | Type::Ref(elem, _) => contains_int_lit(elem),
+        _ => false,
+    }
+}
+
+/// SR-032: the span of the first part of `expr` that narrowing to `target`
+/// would retype without changing its value, or `None`.
+///
+/// `resolve_int_literals_in_expr` retypes an integer-literal leaf by changing
+/// its type alone. That is sound for a literal (and for arithmetic, an array
+/// literal or a tuple literal built from literals), which lowers at whatever
+/// type it carries. Any other value whose type comes from a literal (a local
+/// bound by `let n = 5;` or `let p = (5, 6);`, a call such as `id(5)`, an index
+/// into such a local, an enum construct typed before its slot was known) is
+/// already stored at the `i64` default. Retyping it to a 4-byte or `u256` slot
+/// gave a module the engine refuses (a scalar) or a value its readers took at
+/// the slot's offsets (a compound: `let p = (5, 6);` passed to a `(i32, i32)`
+/// parameter read `(5, 0)`). This walks the parts the narrowing walker walks.
+pub(super) fn first_unnarrowable_value(expr: &TypedExpr, target: &Type) -> Option<Span> {
+    // A part already rejected was poisoned to `Type::Error`; a later
+    // narrowing of the same value (a generic call's post-inference pass, a
+    // `let` around a pinned tuple) must not report it again.
+    if matches!(expr.ty, Type::Error) {
+        return None;
+    }
+    match &expr.kind {
+        TypedExprKind::Literal(_) => None,
+        TypedExprKind::Binary(bin) => first_unnarrowable_value(&bin.lhs, target)
+            .or_else(|| first_unnarrowable_value(&bin.rhs, target)),
+        TypedExprKind::ArrayLit(arr) => match target {
+            Type::Array { elem, .. } | Type::Slice(elem) => arr
+                .elements
+                .iter()
+                .find_map(|e| first_unnarrowable_value(e, elem)),
+            _ => None,
+        },
+        TypedExprKind::RecordConstruct(rc) if matches!(expr.ty, Type::Tuple(_)) => match target {
+            Type::Tuple(slots) if slots.len() == rc.fields.len() => rc
+                .fields
+                .iter()
+                .zip(slots)
+                .find_map(|((_, e), slot)| first_unnarrowable_value(e, slot)),
+            _ => None,
+        },
+        _ => narrows_literal_type(&expr.ty, target).then_some(expr.span),
+    }
+}
+
+/// Whether narrowing a value of type `ty` to `target` retypes an
+/// integer-literal part to a type stored other than as the `i64` default:
+/// `i32` or `u32` (4 bytes) or `u256` (a cell), the narrow arms of
+/// `int_literal_fits`. `i64` and `u64` share the default's representation.
+///
+/// A `Result` is left as it was, failing open: the `Ok`/`Err` shortcut types
+/// its value with no slot and lays it out at its own width, which `?` reads
+/// at the slot's width from the same offset (the low bytes, on this
+/// little-endian target), so `return Ok(3);` from a `-> Result<i32, _>`
+/// worked. The shortcut is the open `Ok`/`Err` entry in
+/// `tests/attack/KNOWN_GAPS.md`, which owns its typing.
+fn narrows_literal_type(ty: &Type, target: &Type) -> bool {
+    match (ty, target) {
+        (Type::Named(n, _), _) if n == "Result" => false,
+        (Type::IntLit(_), t) => matches!(t, Type::I32 | Type::U32 | Type::U256),
+        (Type::Tuple(a), Type::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).any(|(x, y)| narrows_literal_type(x, y))
+        }
+        (Type::Named(n, a), Type::Named(m, b)) => {
+            n == m && a.len() == b.len() && a.iter().zip(b).any(|(x, y)| narrows_literal_type(x, y))
+        }
+        (Type::Array { elem: a, .. }, Type::Array { elem: b, .. })
+        | (Type::Array { elem: a, .. }, Type::Slice(b))
+        | (Type::Slice(a), Type::Slice(b))
+        | (Type::Ref(a, _), Type::Ref(b, _)) => narrows_literal_type(a, b),
+        // A function value was fixed when it was built: a parameter or a return a
+        // literal typed is the `i64` default, so narrowing it retypes the function
+        // and not the code. `apply_i32(g)` for `f: Fn() -> i32`, with `g` from
+        // `constf(7, c)`, read `g`'s `i64` result as an `i32` and trapped at the
+        // indirect call, and so did `let k: Fn() -> i32 = g;`.
+        (Type::Fn(a_params, a_ret, ..), Type::Fn(b_params, b_ret, ..)) => {
+            narrows_literal_type(a_ret, b_ret)
+                || (a_params.len() == b_params.len()
+                    && a_params
+                        .iter()
+                        .zip(b_params)
+                        .any(|(x, y)| narrows_literal_type(x, y)))
+        }
+        _ => false,
+    }
+}
+
+/// The diagnostic text for a value `first_unnarrowable_value` found: it names
+/// the slot's type and the fix.
+pub(super) fn unnarrowable_message(target: &Type) -> String {
+    format!(
+        "this value was typed by an integer literal before its slot was known, so it is \
+         stored at the `i64` default, which does not fit `{t}`; give it the type `{t}` where \
+         it is bound or built, or convert it",
+        t = render_type(target)
+    )
 }
 
 /// PIL / N20-PIL follow-through: resolve `Type::IntLit` leaves in `expr`
@@ -1386,51 +1518,123 @@ pub(super) fn resolve_int_literals_or_reject(
     code: codes::DiagnosticCode,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    resolve_int_literals_or_reject_with_hint(expr, target, code, None, diagnostics);
+}
+
+/// `resolve_int_literals_or_reject` with a hint on the out-of-range diagnostic, for a site whose
+/// code's registry hint describes another site (`ct_lt`'s T075: the registry's names `alloc`,
+/// `load8` and `store8`). `None` keeps the registry hint.
+pub(super) fn resolve_int_literals_or_reject_with_hint(
+    expr: &mut TypedExpr,
+    target: &Type,
+    code: codes::DiagnosticCode,
+    hint: Option<&'static str>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // SR-032: a part whose type narrowing would change while its value would
+    // not is rejected with the site's own code, and the value is poisoned to
+    // `Type::Error` so a later narrowing of the same value (a generic call's
+    // post-inference pass) does not report it twice. Fails closed: the
+    // alternative is a retyped value stored at the wrong width.
+    if let Some(span) = first_unnarrowable_value(expr, target) {
+        report_once(
+            diagnostics,
+            Diagnostic::error(code, unnarrowable_message(target), Some(span)),
+        );
+        expr.ty = Type::Error;
+        return;
+    }
     if resolve_int_literals_in_expr(expr, target) {
         return;
     }
     // `resolve_int_literals_in_expr` returned false: some IntLit leaf did
-    // not fit `target`. Only a CONCRETE machine-integer target has a
-    // finite range a literal can actually overflow. When `target` is
-    // itself `Type::IntLit` — an un-annotated `let seed = 1;`, whose
+    // not fit its target. Only a CONCRETE machine-integer target has a
+    // finite range a literal can actually overflow, so a leaf is reported
+    // only against one (`first_overflowing_int_literal`). When the target
+    // is itself `Type::IntLit` — an un-annotated `let seed = 1;`, whose
     // inferred binding type IS the value's own IntLit — or `Type::Error`
     // from an upstream failure, `int_literal_fits` returns false for
     // EVERY leaf, which is benign: the leaves stay IntLit and default to
     // i64 later, exactly as the pre-fix `let _ = resolve(…)` allowed.
     // Don't manufacture an out-of-range diagnostic there. (`resolve`
     // above still ran for its leaf-narrowing side effect in every case.)
-    if !matches!(target, Type::I32 | Type::U32 | Type::I64 | Type::U64) {
-        return;
-    }
-    if let Some((value, span)) = first_overflowing_int_literal(expr, target) {
-        diagnostics.push(Diagnostic::error(
-            code,
-            format!(
-                "integer literal `{value}` is out of range for `{}`",
-                render_type(target)
-            ),
-            Some(span),
-        ));
+    if let Some((value, span, leaf_target)) = first_overflowing_int_literal(expr, target) {
+        let message = format!(
+            "integer literal `{value}` is out of range for `{}`",
+            render_type(&leaf_target)
+        );
+        report_once(
+            diagnostics,
+            match hint {
+                Some(hint) => Diagnostic::error_with_hint(code, message, Some(span), hint),
+                None => Diagnostic::error(code, message, Some(span)),
+            },
+        );
+        // Poisoned like an unnarrowable part above: `g(x, 0 - 5000000000)` for
+        // `g<T>(a: T, b: T)` with `x: i32` gave T071 twice, once from the
+        // argument loop and once from the fit to the instance.
+        expr.ty = Type::Error;
     }
 }
 
-/// Find the first `Type::IntLit` leaf in `expr` — top-level or a binop
-/// operand, mirroring `resolve_int_literals_in_expr`'s recursion — whose
-/// value does not fit `target`. Walked only on the failure path (after
-/// `resolve_int_literals_in_expr` returned `false`), so the second walk
-/// is off the happy path. Returns the literal value + its span for the
-/// diagnostic.
-fn first_overflowing_int_literal(expr: &TypedExpr, target: &Type) -> Option<(i64, Span)> {
+/// Push `diagnostic` unless an error was already reported at its span, so a
+/// value narrowed twice is reported once: pinned while it was inferred and then
+/// fitted to its instance, narrowed as a tuple's element and again at its
+/// `let`, or narrowed in each instance of the generic body that holds it. The
+/// test is a reported error, not the value's type: `Type::Error` also types a
+/// value no diagnostic named (`r` bound from `Either::L(7)`'s unbound `B`), and
+/// an out-of-range literal beside it must still be reported. Skipping on the
+/// type left `let y: i32 = r + 5000000000;` unreported, and the backend then
+/// panicked on the operand it could not lower.
+pub(super) fn report_once(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) {
+    let span = diagnostic.span();
+    if span.is_some()
+        && diagnostics
+            .iter()
+            .any(|d| d.span() == span && d.severity() == Severity::Error)
+    {
+        return;
+    }
+    diagnostics.push(diagnostic);
+}
+
+/// Find the first `Type::IntLit` leaf in `expr` whose value does not fit
+/// its own machine-integer target, walking the leaves
+/// `resolve_int_literals_in_expr` walks: the top, a binop operand (the same
+/// target), an array literal's element (the element type) and a tuple
+/// literal's element (its slot). Walked only on the failure path (after
+/// `resolve_int_literals_in_expr` returned `false`), so the second walk is
+/// off the happy path. Returns the literal value, its span and the target
+/// it does not fit, for the diagnostic. SR-032: a compound target was not
+/// walked, so `g((1 + 5000000000, 7), a)` for `t: (i32, T)` narrowed the
+/// sum to `i32` around an `i64` leaf, a module the engine refused.
+fn first_overflowing_int_literal(expr: &TypedExpr, target: &Type) -> Option<(i64, Span, Type)> {
     if let Type::IntLit(n) = expr.ty
+        && matches!(target, Type::I32 | Type::U32 | Type::I64 | Type::U64)
         && !int_literal_fits(n, target)
     {
-        return Some((n, expr.span));
+        return Some((n, expr.span, target.clone()));
     }
-    if let TypedExprKind::Binary(bin) = &expr.kind {
-        return first_overflowing_int_literal(&bin.lhs, target)
-            .or_else(|| first_overflowing_int_literal(&bin.rhs, target));
+    match &expr.kind {
+        TypedExprKind::Binary(bin) => first_overflowing_int_literal(&bin.lhs, target)
+            .or_else(|| first_overflowing_int_literal(&bin.rhs, target)),
+        TypedExprKind::ArrayLit(arr) => match target {
+            Type::Array { elem, .. } | Type::Slice(elem) => arr
+                .elements
+                .iter()
+                .find_map(|e| first_overflowing_int_literal(e, elem)),
+            _ => None,
+        },
+        TypedExprKind::RecordConstruct(rc) if matches!(expr.ty, Type::Tuple(_)) => match target {
+            Type::Tuple(slots) if slots.len() == rc.fields.len() => rc
+                .fields
+                .iter()
+                .zip(slots)
+                .find_map(|((_, e), slot)| first_overflowing_int_literal(e, slot)),
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }
 
 /// PIL: default-fallback variant of the walker that rewrites any IntLit
