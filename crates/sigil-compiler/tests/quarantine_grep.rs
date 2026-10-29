@@ -1,12 +1,16 @@
 //! Pure-collector I/O confinement gate.
 //!
-//! Two Pure Pipelines must NEVER import the Z3 backend:
+//! Two Pure Pipelines, and the native refinement decider, must NEVER import the Z3
+//! backend:
 //!
 //! * `type_check_v2`: `refinement.rs`,
 //!   `obligations.rs`. The orchestrator `type_check_v2/mod.rs` is the
 //!   ONLY Z3-touching file.
 //! * `air_capability_v2`: `collector.rs`, `obligations.rs`. The orchestrator
 //!   `air_capability_v2/mod.rs` is the ONLY Z3-touching file.
+//! * `refinement_decide.rs`: the native refinement backend (the design-by-contract
+//!   spec's DBC-1a), which decides the fragment without a solver in both
+//!   configurations and so must never reach for one.
 //!
 //! This test reads each Pure-Pipeline file, strips line comments
 //! (everything from `//` to end of line), and asserts none of the
@@ -31,6 +35,8 @@ const PURE_FILES: &[&str] = &[
     // Pure refinement collection.
     "src/type_check_v2/refinement.rs",
     "src/type_check_v2/obligations.rs",
+    // The native refinement decider (DBC-1a): solver-free in both configurations.
+    "src/refinement_decide.rs",
     // Pure AIR-capability collection.
     "src/air_capability_v2/collector.rs",
     "src/air_capability_v2/obligations.rs",

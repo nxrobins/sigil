@@ -1,0 +1,16 @@
+// Accesses through 4-byte signed indices — a `byte_at`, an array write and read, a slice read and a slice range — each bounds-checked unsigned, so a negative `i32` index traps instead of reading or writing before its buffer.
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let s: str = "hello";
+    let i: i32 = 1;
+    let b: i64 = s.byte_at(i);
+    let mut a: [i64; 3] = [7, 8, 9];
+    let j: i32 = 2;
+    a[j] = b;
+    let k: i32 = 0;
+    let lo: i32 = 1;
+    let hi: i32 = 3;
+    let t: &[i64] = &a[lo..hi];
+    return a[k] + t[k] + input_len;
+}

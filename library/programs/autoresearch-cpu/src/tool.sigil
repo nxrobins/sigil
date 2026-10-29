@@ -1,0 +1,211 @@
+// Bounded candidate bytecode to an unrolled CPU loss and one reverse sweep.
+module tool;
+use sigil::autodiff;
+use sigil::vec;
+
+record Machine { tape: Tape, zero: i64, one: i64, low: i64, high: i64 }
+
+fn nibble(byte: i64) -> i64 {
+    if byte >= 48 && byte <= 57 { return byte - 48; } else {}
+    if byte >= 97 && byte <= 102 { return byte - 87; } else {}
+    return -422;
+}
+
+// Each request builds a fresh graph. Returning a constant at either endpoint
+// gives the declared zero derivative; these primal-dependent decisions must
+// never be reused by replay with different weights.
+fn clip(m: Machine @ReadOnly, cell: TapeCell @Mut, value: i64, low: f64, high: f64, lo: i64, hi: i64) -> i64 {
+    if value < 0 { return value; } else {}
+    let read = autodiff::value_into(m.tape, value, cell);
+    if read < 0 { return read; } else {}
+    if cell.value <= low { return lo; } else {}
+    if cell.value >= high { return hi; } else {}
+    return value;
+}
+
+fn instruction(m: Machine @Mut, cell: TapeCell @Mut, op: i64, a: i64, b: i64) -> i64 {
+    let mut value = 0;
+    if op == 0 || op == 5 { value = autodiff::add(m.tape, a, b); } else {
+        if op == 1 { value = autodiff::sub(m.tape, a, b); } else {
+            if op == 2 || op == 4 || op == 6 { value = autodiff::mul(m.tape, a, b); } else {
+                if op == 3 { value = autodiff::relu(m.tape, a); } else {
+                    if op == 7 { value = autodiff::sub(m.tape, m.zero, a); } else { return -422; }
+                }
+            }
+        }
+    }
+    if op == 6 { return clip(m, cell, value, 0.0, 1.0, m.zero, m.one); } else {}
+    return clip(m, cell, value, 0.0 - 4096.0, 4096.0, m.low, m.high);
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len > 240 { return -413; } else {}
+    if input_len < 152 || input_len % 2 != 0 { return -422; } else {}
+    let size = input_len / 2;
+    let body = alloc(120);
+    let mut i = 0;
+    while i < size {
+        let high = nibble(load8(input_ptr + 2 * i));
+        let low = nibble(load8(input_ptr + 2 * i + 1));
+        if high < 0 || low < 0 { return -422; } else {}
+        store8(body + i, high * 16 + low); i = i + 1;
+    }
+    if load8(body) != 65 || load8(body + 1) != 67 || load8(body + 2) != 80 || load8(body + 3) != 85 || load8(body + 4) != 1 || load8(body + 7) != 1 { return -422; } else {}
+    let steps = load8(body + 5);
+    let count = load8(body + 6);
+    if steps > 20 || count > 12 { return -413; } else {}
+    if count < 1 || size != 72 + count * 4 { return -422; } else {}
+    i = 0;
+    let mut complexity = 0.0;
+    while i < count {
+        let at = body + 72 + 4 * i;
+        let op = load8(at); let dst = load8(at + 1);
+        let a = load8(at + 2); let b = load8(at + 3);
+        if op > 7 || dst < 4 || dst > 15 || a > 15 { return -422; } else {}
+        if op == 4 || op == 5 || op == 6 {
+            if b > 7 { return -422; } else {}
+        } else {
+            if b > 15 { return -422; } else {}
+        }
+        complexity = complexity + 66.0 / 65536.0; i = i + 1;
+    }
+    let weights: Vec<f64> = Vec::with_capacity(8);
+    i = 0;
+    while i < 8 { weights.push(0.0); i = i + 1; }
+    i = 0;
+    while i < 64 { store8(weights.buf + i, load8(body + 8 + i)); i = i + 1; }
+    i = 0;
+    while i < 8 {
+        let weight = weights.get(i);
+        if weight - weight != 0.0 || weight < 0.0 - 4096.0 || weight > 4096.0 { return -422; } else {}
+        i = i + 1;
+    }
+    let tape = autodiff::new_tape(768, 0);
+    if tape.error < 0 { return tape.error; } else {}
+    let cell = autodiff::new_cell();
+    let variables: Vec<i64> = Vec::with_capacity(8);
+    let registers: Vec<i64> = Vec::with_capacity(16);
+    let positions: Vec<i64> = Vec::with_capacity(2);
+    let momentum: Vec<i64> = Vec::with_capacity(2);
+    let targets: Vec<i64> = Vec::with_capacity(2);
+    let curvature: Vec<i64> = Vec::with_capacity(2);
+    let result: Vec<f64> = Vec::with_capacity(14);
+    let header: Vec<i64> = Vec::with_capacity(4);
+    let output = alloc(264);
+    header.push(1); header.push(steps); header.push(count); header.push(0);
+    i = 0;
+    while i < 14 { result.push(0.0); i = i + 1; }
+    let zero = autodiff::constant(tape, 0.0);
+    if zero < 0 { return zero; } else {}
+    let one = autodiff::constant(tape, 1.0);
+    if one < 0 { return one; } else {}
+    let low = autodiff::constant(tape, 0.0 - 4096.0);
+    if low < 0 { return low; } else {}
+    let high = autodiff::constant(tape, 4096.0);
+    if high < 0 { return high; } else {}
+    let fifty = autodiff::constant(tape, 50.0);
+    if fifty < 0 { return fifty; } else {}
+    let two = autodiff::constant(tape, 2.0);
+    if two < 0 { return two; } else {}
+    let hundred = autodiff::constant(tape, 100.0);
+    if hundred < 0 { return hundred; } else {}
+    let three = autodiff::constant(tape, 3.0);
+    if three < 0 { return three; } else {}
+    let negative_two = autodiff::constant(tape, 0.0 - 2.0);
+    if negative_two < 0 { return negative_two; } else {}
+    let negative_four = autodiff::constant(tape, 0.0 - 4.0);
+    if negative_four < 0 { return negative_four; } else {}
+    targets.push(three); targets.push(negative_two);
+    curvature.push(two); curvature.push(hundred);
+    positions.push(negative_four); positions.push(three);
+    momentum.push(zero); momentum.push(zero);
+    i = 0;
+    while i < 16 { registers.push(zero); i = i + 1; }
+    i = 0;
+    while i < 8 {
+        let node = autodiff::variable(tape, weights.get(i));
+        if node < 0 { return node; } else {}
+        variables.push(node); i = i + 1;
+    }
+    let m = Machine { tape: tape, zero: zero, one: one, low: low, high: high };
+    let before = alloc(0);
+    let mut step = 0;
+    let mut time = 0.0;
+    while step < steps {
+        let clock = autodiff::constant(tape, time / 20.0);
+        if clock < 0 { return clock; } else {}
+        let mut coordinate = 0;
+        while coordinate < 2 {
+            let difference = autodiff::sub(tape, positions.get(coordinate), targets.get(coordinate));
+            if difference < 0 { return difference; } else {}
+            let scaled = autodiff::mul(tape, difference, curvature.get(coordinate));
+            let gradient = clip(m, cell, scaled, 0.0 - 4096.0, 4096.0, low, high);
+            if gradient < 0 { return gradient; } else {}
+            i = 0;
+            while i < 16 { registers.set(i, zero); i = i + 1; }
+            registers.set(0, gradient); registers.set(1, momentum.get(coordinate));
+            registers.set(2, clock); registers.set(3, one);
+            registers.set(15, momentum.get(coordinate));
+            i = 0;
+            while i < count {
+                let at = body + 72 + i * 4;
+                let op = load8(at); let dst = load8(at + 1);
+                let a = registers.get(load8(at + 2)); let bi = load8(at + 3);
+                let mut b = zero;
+                if op == 4 || op == 5 || op == 6 { b = variables.get(bi); } else {
+                    if op <= 2 { b = registers.get(bi); } else {}
+                }
+                let value = instruction(m, cell, op, a, b);
+                if value < 0 { return value; } else {}
+                registers.set(dst, value); i = i + 1;
+            }
+            let update = autodiff::add(tape, positions.get(coordinate), registers.get(14));
+            let next = clip(m, cell, update, 0.0 - 4096.0, 4096.0, low, high);
+            if next < 0 { return next; } else {}
+            positions.set(coordinate, next); momentum.set(coordinate, registers.get(15));
+            coordinate = coordinate + 1;
+        }
+        step = step + 1; time = time + 1.0;
+    }
+    let error0 = autodiff::sub(tape, positions.get(0), three);
+    if error0 < 0 { return error0; } else {}
+    let error1 = autodiff::sub(tape, positions.get(1), negative_two);
+    if error1 < 0 { return error1; } else {}
+    let loss0 = autodiff::mul(tape, error0, error0);
+    if loss0 < 0 { return loss0; } else {}
+    let loss1 = autodiff::mul(tape, error1, error1);
+    if loss1 < 0 { return loss1; } else {}
+    let weighted = autodiff::mul(tape, fifty, loss1);
+    if weighted < 0 { return weighted; } else {}
+    let loss = autodiff::add(tape, loss0, weighted);
+    if loss < 0 { return loss; } else {}
+    let backward = autodiff::backward(tape, loss);
+    if backward < 0 { return backward; } else {}
+    if alloc(0) != before { return -500; } else {}
+    let read_loss = autodiff::value_into(tape, loss, cell);
+    if read_loss < 0 { return read_loss; } else {}
+    result.set(0, cell.value); result.set(1, cell.value + complexity);
+    i = 0;
+    while i < 2 {
+        let position = autodiff::value_into(tape, positions.get(i), cell);
+        if position < 0 { return position; } else {}
+        result.set(2 + i, cell.value);
+        let carried = autodiff::value_into(tape, momentum.get(i), cell);
+        if carried < 0 { return carried; } else {}
+        result.set(4 + i, cell.value); i = i + 1;
+    }
+    i = 0;
+    while i < 8 {
+        let read = autodiff::gradient_into(tape, variables.get(i), cell);
+        if read < 0 { return read; } else {}
+        result.set(6 + i, cell.value); i = i + 1;
+    }
+    header.set(3, tape.used);
+    i = 0;
+    while i < 32 { store8(output + i, load8(header.buf + i)); i = i + 1; }
+    i = 0;
+    while i < 112 { store8(output + 32 + i, load8(result.buf + i)); i = i + 1; }
+    i = 0;
+    while i < size { store8(output + 144 + i, load8(body + i)); i = i + 1; }
+    return output * 4294967296 + 144 + size;
+}

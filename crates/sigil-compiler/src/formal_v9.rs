@@ -14,7 +14,10 @@ use sigil_abi::host_contract::{HostContractProfile, HostValueType, SecurityLabel
 
 pub const MODEL_VERSION: u32 = 9;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_RECORDS: usize = 1_000_000;
+// Raised from 1,000,000 with `formal::MAX_NODES` (2026-10-06): the self-hosted compiler's
+// certified source names more records than that; 2,000,000 records of RECORD bytes still fit
+// under MAX_BYTES, which stays the wire ceiling.
+pub const MAX_RECORDS: usize = 2_000_000;
 const HEADER: usize = 12;
 const RECORD: usize = 32;
 const CHUNK: usize = 20;

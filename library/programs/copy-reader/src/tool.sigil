@@ -1,0 +1,13 @@
+// Walkthrough program: bounded shared copying, u32 reading and decimal formatting.
+module tool;
+use sigil::bytes;
+use sigil::fmt;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let copied = alloc(input_len);
+    let next = bytes::copy_into(copied, input_len, 0, input_ptr, input_len, 0, input_len);
+    if next < 0 { return next; } else {}
+    let value = bytes::read_u32_le(copied, input_len, 0);
+    if value < 0 { return value; } else {}
+    return fmt::decimal_i64(value);
+}

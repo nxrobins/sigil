@@ -1,0 +1,20 @@
+{
+  "algorithm": "pcg-xsh-rr-64-32-v1",
+  "allocation": "constructors only; fixed-size records",
+  "contract_hash": "sha256:540cb1fd0877bfde00b29e8c59d1db092fc4fc05bba29f7069ee74cbfb1f193c",
+  "effects": [
+    "Alloc"
+  ],
+  "errors": {
+    "-400": "invalid generator, bounds or snapshot",
+    "-429": "bounded rejection exhaustion"
+  },
+  "host_imports": [],
+  "limits": {
+    "rejection_attempts": 32
+  },
+  "package": "sigil/rng",
+  "security": "not cryptographic; Public-only",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

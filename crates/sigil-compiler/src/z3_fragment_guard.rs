@@ -18,16 +18,24 @@
 //!    made.
 //! 3. **Default-reject (the allowlist's `_` arm).** Unlike the repo's
 //!    no-`_` accept-map drift-locks, the `DeclKind` enum is owned by
-//!    z3-sys (~250 variants, we use 13), so the fail-safe direction is
-//!    reversed: an unanticipated op must REJECT at runtime, not
-//!    compile-error the guard. A z3 version bump adding variants changes
-//!    nothing — unknown ops stay rejected.
+//!    z3-sys (292 variants in 0.13.1, we use 13), so the fail-safe
+//!    direction is reversed: an unanticipated op must REJECT at runtime,
+//!    not compile-error the guard. A z3 version bump adding variants
+//!    changes nothing — unknown ops stay rejected. A bump that RENUMBERS
+//!    variants is a different hazard: z3-sys is built with `bindgen` so
+//!    the enum comes from the pinned Z3 header (see sigil-compiler's
+//!    Cargo.toml).
 //! 4. **Verdicts are pure; recording is separate.** [`check_fragment`]
 //!    is a deterministic function of the assertion set with no global
 //!    effects. The observation accumulator is fed ONLY by the production
 //!    chokepoints via [`record_observations`], so canary tests never
 //!    pollute the exactness manifest. Recording is order-independent
 //!    because `BTreeSet` union commutes.
+//! 5. **Names are SIGIL's, not the binding's.** Every kind reported to the
+//!    exactness manifest or carried by a violation goes through
+//!    `decl_kind_name` / `sort_kind_name`, so the manifest vocabulary
+//!    (`EQ`, `BAND`, `BV`) does not move when z3-sys changes its `Debug`
+//!    spelling (it went from `EQ` in 0.8 to `Eq` in 0.13).
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -132,9 +140,9 @@ impl fmt::Display for FragmentViolation {
 #[derive(Debug, Default, Clone)]
 pub struct FragmentReport {
     pub assertions_checked: usize,
-    /// Debug-names of every DeclKind seen ("EQ", "BAND", ...).
+    /// `decl_kind_name` of every DeclKind seen ("EQ", "BAND", ...).
     pub observed_decl_kinds: BTreeSet<String>,
-    /// Debug-names of every SortKind seen ("Bool", "Int", "BV").
+    /// `sort_kind_name` of every SortKind seen ("Bool", "Int", "BV").
     pub observed_sort_kinds: BTreeSet<String>,
 }
 
@@ -153,7 +161,7 @@ struct AssertionScan {
 /// theory-mix check runs after each assertion's walk completes. Which
 /// layer rejects a multi-violation formula is deliberately NOT a
 /// contract (AG-Z1) — only that rejection is deterministic.
-pub fn check_fragment(solver: &Solver<'_>) -> Result<FragmentReport, FragmentViolation> {
+pub fn check_fragment(solver: &Solver) -> Result<FragmentReport, FragmentViolation> {
     let mut report = FragmentReport::default();
     let mut visited_total: usize = 0;
 
@@ -201,19 +209,58 @@ pub fn allowed_decl_kind_names() -> BTreeSet<String> {
     .collect()
 }
 
+/// SIGIL-owned name of a declaration kind: Z3's `Z3_decl_kind` enumerator
+/// without its `Z3_OP_` prefix (`EQ`, `BAND`, `UNINTERPRETED`, `BUREM_I`).
+/// This is the vocabulary of the exactness manifest, the inventory tables
+/// and every violation message. The binding's CamelCase variant is split
+/// back into its C words, which reproduces the C name for all 292 z3-sys
+/// 0.13.1 variants; `kind_names_keep_the_manifest_vocabulary` pins the ones
+/// this module's contract depends on.
+fn decl_kind_name(kind: DeclKind) -> String {
+    screaming_snake(&format!("{kind:?}"))
+}
+
+/// SIGIL-owned name of a sort kind, in the manifest's spelling (`Bool`,
+/// `Int`, `BV`, `Real`). z3-sys 0.13 re-cased only `BV` and `RE`; every
+/// other variant's `Debug` output is already that spelling.
+fn sort_kind_name(kind: SortKind) -> String {
+    match kind {
+        SortKind::Bv => "BV".to_string(),
+        SortKind::Re => "RE".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// `BuremI` → `BUREM_I`: an underscore before each capital that follows a
+/// lowercase letter or digit, then upper-case everything.
+fn screaming_snake(camel: &str) -> String {
+    let mut out = String::with_capacity(camel.len() + 4);
+    let mut prev: Option<char> = None;
+    for c in camel.chars() {
+        if c.is_ascii_uppercase()
+            && prev.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+        {
+            out.push('_');
+        }
+        out.push(c.to_ascii_uppercase());
+        prev = Some(c);
+    }
+    out
+}
+
 /// Iterative worklist walk of one assertion (ET-Z8: no recursion; the
 /// shared `visited_total` enforces [`NODE_CEILING`] across the whole
 /// call). The seen-set is per-assertion so the mix flags of THIS
 /// assertion register every subterm even when assertions share DAG
 /// nodes; within one assertion, shared nodes are visited once.
 fn walk_assertion(
-    root: &Dynamic<'_>,
+    root: &Dynamic,
     visited_total: &mut usize,
     report: &mut FragmentReport,
 ) -> Result<AssertionScan, FragmentViolation> {
     let mut scan = AssertionScan::default();
-    let mut seen: HashSet<Dynamic<'_>> = HashSet::new();
-    let mut worklist: Vec<Dynamic<'_>> = vec![root.clone()];
+    let mut seen: HashSet<Dynamic> = HashSet::new();
+    let mut worklist: Vec<Dynamic> = vec![root.clone()];
 
     while let Some(node) = worklist.pop() {
         if !seen.insert(node.clone()) {
@@ -252,19 +299,19 @@ fn walk_assertion(
         };
         let decl_kind = decl.kind();
         match decl_kind {
-            DeclKind::EQ
-            | DeclKind::NOT
-            | DeclKind::LE
-            | DeclKind::GE
-            | DeclKind::LT
-            | DeclKind::GT
-            | DeclKind::ANUM
-            | DeclKind::BAND
-            | DeclKind::ULEQ
-            | DeclKind::BNUM
-            | DeclKind::TRUE
-            | DeclKind::FALSE => {}
-            DeclKind::UNINTERPRETED => {
+            DeclKind::Eq
+            | DeclKind::Not
+            | DeclKind::Le
+            | DeclKind::Ge
+            | DeclKind::Lt
+            | DeclKind::Gt
+            | DeclKind::Anum
+            | DeclKind::Band
+            | DeclKind::Uleq
+            | DeclKind::Bnum
+            | DeclKind::True
+            | DeclKind::False => {}
+            DeclKind::Uninterpreted => {
                 let arity = decl.arity();
                 if arity > 0 {
                     return Err(FragmentViolation::UninterpretedFunction {
@@ -279,20 +326,20 @@ fn walk_assertion(
             // and every op a future z3 version adds.
             other => {
                 return Err(FragmentViolation::DisallowedOp {
-                    decl_kind: format!("{other:?}"),
+                    decl_kind: decl_kind_name(other),
                     decl_name: decl.name(),
                     node: snippet(&node),
                 });
             }
         }
-        report.observed_decl_kinds.insert(format!("{decl_kind:?}"));
+        report.observed_decl_kinds.insert(decl_kind_name(decl_kind));
 
         // (3) Sort allowlist: Bool, Int, BV of width exactly 32.
         let sort_kind = node.sort_kind();
         match sort_kind {
             SortKind::Bool => {}
             SortKind::Int => scan.saw_int = true,
-            SortKind::BV => {
+            SortKind::Bv => {
                 let width = node.as_bv().map(|b| b.get_size()).unwrap_or(0);
                 if width != 32 {
                     return Err(FragmentViolation::NonWidth32Bv {
@@ -304,12 +351,12 @@ fn walk_assertion(
             }
             other => {
                 return Err(FragmentViolation::DisallowedSort {
-                    sort: format!("{other:?}"),
+                    sort: sort_kind_name(other),
                     node: snippet(&node),
                 });
             }
         }
-        report.observed_sort_kinds.insert(format!("{sort_kind:?}"));
+        report.observed_sort_kinds.insert(sort_kind_name(sort_kind));
 
         worklist.extend(node.children());
     }
@@ -322,7 +369,7 @@ fn walk_assertion(
 /// skeleton may be shared). The op allowlist already makes a mix
 /// unreachable — no connective or conversion op is admitted — so this
 /// is defense-in-depth in case the allowlist ever grows one.
-fn mix_violation(scan: AssertionScan, root: &Dynamic<'_>) -> Option<FragmentViolation> {
+fn mix_violation(scan: AssertionScan, root: &Dynamic) -> Option<FragmentViolation> {
     if scan.saw_int && scan.saw_bv {
         Some(FragmentViolation::MixedTheories {
             node: snippet(root),
@@ -334,7 +381,7 @@ fn mix_violation(scan: AssertionScan, root: &Dynamic<'_>) -> Option<FragmentViol
 
 /// Truncated rendering of the offending node. Materializes the full
 /// string once on the error path only.
-fn snippet(node: &Dynamic<'_>) -> String {
+fn snippet(node: &Dynamic) -> String {
     let full = node.to_string();
     if full.chars().count() <= SNIPPET_MAX_CHARS {
         full
@@ -391,10 +438,55 @@ pub fn reset_observations_for_test() {
 mod tests {
     use super::*;
     use z3::ast::{BV, Bool, Int};
-    use z3::{Config, Context};
+    use z3::{Config, with_z3_config};
 
-    fn ctx() -> Context {
-        Context::new(&Config::new())
+    /// The names the exactness manifest, the inventory tables and the
+    /// canaries pin, for the variants this module's contract depends on,
+    /// plus multi-word and digit-bearing variants that exercise the
+    /// underscore rule. A z3-sys that re-spells `Debug` again fails here
+    /// before it can move the manifest.
+    #[test]
+    fn kind_names_keep_the_manifest_vocabulary() {
+        let decls = [
+            (DeclKind::Eq, "EQ"),
+            (DeclKind::Not, "NOT"),
+            (DeclKind::Le, "LE"),
+            (DeclKind::Ge, "GE"),
+            (DeclKind::Lt, "LT"),
+            (DeclKind::Gt, "GT"),
+            (DeclKind::Anum, "ANUM"),
+            (DeclKind::Band, "BAND"),
+            (DeclKind::Uleq, "ULEQ"),
+            (DeclKind::Bnum, "BNUM"),
+            (DeclKind::True, "TRUE"),
+            (DeclKind::False, "FALSE"),
+            (DeclKind::Uninterpreted, "UNINTERPRETED"),
+            (DeclKind::Select, "SELECT"),
+            (DeclKind::And, "AND"),
+            (DeclKind::BuremI, "BUREM_I"),
+            (DeclKind::Bv2int, "BV2INT"),
+            (
+                DeclKind::FpaRmNearestTiesToEven,
+                "FPA_RM_NEAREST_TIES_TO_EVEN",
+            ),
+        ];
+        for (kind, name) in decls {
+            assert_eq!(decl_kind_name(kind), name);
+        }
+        let allowed: BTreeSet<String> = decls[..13]
+            .iter()
+            .map(|(k, _)| decl_kind_name(*k))
+            .collect();
+        assert_eq!(allowed, allowed_decl_kind_names());
+        for (kind, name) in [
+            (SortKind::Bool, "Bool"),
+            (SortKind::Int, "Int"),
+            (SortKind::Bv, "BV"),
+            (SortKind::Real, "Real"),
+            (SortKind::Re, "RE"),
+        ] {
+            assert_eq!(sort_kind_name(kind), name);
+        }
     }
 
     /// The mix detector itself, on synthetic flags — it is unreachable
@@ -402,38 +494,40 @@ mod tests {
     /// is exactly why it gets a direct unit test (ET-Z5).
     #[test]
     fn mix_detector_fires_on_both_theories() {
-        let c = ctx();
-        let root = Dynamic::from_ast(&Bool::new_const(&c, "b"));
-        let both = AssertionScan {
-            saw_int: true,
-            saw_bv: true,
-        };
-        assert!(matches!(
-            mix_violation(both, &root),
-            Some(FragmentViolation::MixedTheories { .. })
-        ));
-        for (saw_int, saw_bv) in [(true, false), (false, true), (false, false)] {
-            assert!(mix_violation(AssertionScan { saw_int, saw_bv }, &root).is_none());
-        }
+        with_z3_config(&Config::new(), || {
+            let root = Dynamic::from_ast(&Bool::new_const("b"));
+            let both = AssertionScan {
+                saw_int: true,
+                saw_bv: true,
+            };
+            assert!(matches!(
+                mix_violation(both, &root),
+                Some(FragmentViolation::MixedTheories { .. })
+            ));
+            for (saw_int, saw_bv) in [(true, false), (false, true), (false, false)] {
+                assert!(mix_violation(AssertionScan { saw_int, saw_bv }, &root).is_none());
+            }
+        });
     }
 
     /// The walk's sort flags register per assertion: an Int query sets
     /// saw_int only; a BV<32> query sets saw_bv only.
     #[test]
     fn walk_collects_per_assertion_sort_flags() {
-        let c = ctx();
-        let mut report = FragmentReport::default();
-        let mut visited = 0usize;
+        with_z3_config(&Config::new(), || {
+            let mut report = FragmentReport::default();
+            let mut visited = 0usize;
 
-        let x = Int::new_const(&c, "x");
-        let int_root = Dynamic::from_ast(&x.gt(&Int::from_i64(&c, 5)));
-        let scan = walk_assertion(&int_root, &mut visited, &mut report).expect("in-fragment");
-        assert!(scan.saw_int && !scan.saw_bv);
+            let x = Int::new_const("x");
+            let int_root = Dynamic::from_ast(&x.gt(Int::from_i64(5)));
+            let scan = walk_assertion(&int_root, &mut visited, &mut report).expect("in-fragment");
+            assert!(scan.saw_int && !scan.saw_bv);
 
-        let b = BV::new_const(&c, "b", 32);
-        let bv_root = Dynamic::from_ast(&b._eq(&BV::from_u64(&c, 3, 32)));
-        let scan = walk_assertion(&bv_root, &mut visited, &mut report).expect("in-fragment");
-        assert!(scan.saw_bv && !scan.saw_int);
+            let b = BV::new_const("b", 32);
+            let bv_root = Dynamic::from_ast(&b.eq(BV::from_u64(3, 32)));
+            let scan = walk_assertion(&bv_root, &mut visited, &mut report).expect("in-fragment");
+            assert!(scan.saw_bv && !scan.saw_int);
+        });
     }
 
     /// Verdict purity: two walks of the same solver yield identical
@@ -448,15 +542,16 @@ mod tests {
     /// recording population is fully known.)
     #[test]
     fn check_fragment_is_pure_and_deterministic() {
-        let c = ctx();
-        let solver = Solver::new(&c);
-        let x = Int::new_const(&c, "x");
-        solver.assert(&x.le(&Int::from_i64(&c, 7)));
+        with_z3_config(&Config::new(), || {
+            let solver = Solver::new();
+            let x = Int::new_const("x");
+            solver.assert(x.le(Int::from_i64(7)));
 
-        let a = check_fragment(&solver).expect("in-fragment");
-        let b = check_fragment(&solver).expect("in-fragment");
-        assert_eq!(a.observed_decl_kinds, b.observed_decl_kinds);
-        assert_eq!(a.observed_sort_kinds, b.observed_sort_kinds);
-        assert_eq!(a.assertions_checked, b.assertions_checked);
+            let a = check_fragment(&solver).expect("in-fragment");
+            let b = check_fragment(&solver).expect("in-fragment");
+            assert_eq!(a.observed_decl_kinds, b.observed_decl_kinds);
+            assert_eq!(a.observed_sort_kinds, b.observed_sort_kinds);
+            assert_eq!(a.assertions_checked, b.assertions_checked);
+        });
     }
 }

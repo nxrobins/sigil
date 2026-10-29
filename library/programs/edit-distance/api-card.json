@@ -1,0 +1,35 @@
+{
+  "allocation_requests": "two four-byte-cell rows and one decimal output",
+  "contract_hash": "sha256:c15ebf59172fd7d36f4dafbf74917d390170da6d82b02583caf569c9b3dc965a",
+  "dependencies": [
+    "sigil/bytes",
+    "sigil/fmt"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "input_search": "bytes_scan::find_byte from explicit bytes public.5; -1 absent, lower negatives refuse",
+  "input_separator": "first LF byte; remaining LF bytes are right-string data",
+  "no_separator": "entire input is left string; right string is empty",
+  "operations": {
+    "delete": 1,
+    "insert": 1,
+    "substitute": 1
+  },
+  "ownership": "ephemeral runtime consumes output bytes before discarding store",
+  "package": "edit-distance/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "result": "i64@Public",
+  "result_bytes": "decimal ASCII byte-level Levenshtein distance",
+  "result_encoding": "pointer * 4294967296 + length",
+  "row_access": "bounds-checked bytes::read_u32_le/write_u32_le; negative status refuses execution",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "transposition": "not a separate operation",
+  "unicode": "byte comparison, not code-point comparison",
+  "version": "0.1.0-public.2"
+}

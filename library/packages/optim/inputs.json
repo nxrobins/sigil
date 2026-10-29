@@ -1,0 +1,10 @@
+{
+  "files": {
+    "API.md": "sha256:168243a02d874777a28a22c30b0fe51db8644c767ee61741abdeac81f75ac927",
+    "README.md": "sha256:cf334bc785341897fd6e005f88bd9483fbf7a4fd935dd9b9c5415a132edf2fc0",
+    "api-card.json": "sha256:b669114f79ce7b66e4d9f231e2eec4be7c938394328bd7e735995bb712a02ad4",
+    "source-provenance.json": "sha256:34d8d5971abb753657630db8852e7c822d9cd1160127b70fa683aefaccacac20",
+    "src/optim.sigil": "sha256:36e93163d5389f1798d4d984a8c759ed43a3da17832c3c2c1fb4d00fdc73bc9d"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

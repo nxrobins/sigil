@@ -132,8 +132,14 @@ A trailing comma in a ≥2 tuple (`(a, b,)`) is accepted.
 The epic's adversarial Constraint Matrix produced nine existential threats; each, as it
 landed (every one has a Boring Limit + a Fail-Fast):
 
-- **ET-1 — honest element types.** `(i64, bool)` etc. work; a non-`i64` *integer* element
-  (the pre-existing call-width gap) errors at type-check, never a silent wrong-width store.
+- **ET-1 — honest element types.** `(i64, bool)` etc. work, and so does a non-`i64`
+  *integer* element: each element is typed by the slot the tuple is written to
+  (`let t: (i32, i64) = (1, 40)` stores `1` as an `i32`), so the construct lays out exactly
+  the offsets every reader assumes (ET-5). *(Corrected, SR-032: this row said a non-`i64`
+  integer element errors at type-check. It did not. The element defaulted to `i64`, the
+  construct stored it as 8 bytes, and the next element read the high half: the silent
+  wrong-width store this row forbade. Each element is now inferred against its slot, and
+  `construct_slot_width.rs` reads each slot kind back by value.)*
 - **ET-2 — unforgeable, injective identity.** The synthetic `$tuple…` `type_name` carries a
   `$` (outside the identifier grammar) and an arity-tagged recursive mangle; it can never be
   spelled by user code nor collide with a record. A tuple is never keyed in the named-record
@@ -165,9 +171,21 @@ landed (every one has a Boring Limit + a Fail-Fast):
   returned-but-not-immediately-destructured cannot be element-accessed until that lands.
 - **AG-2 — nested destructuring `let ((a, b), c)`.** Bindings are flat; hand-unroll with a
   second `let`.
-- **AG-3 — non-`i64` integer element types.** Inherits the pre-existing `Vec<i32>`/`Vec<bool>`
-  literal-call-width limitation; `(i64, …)` and non-int elements (`bool`, `str`, records,
-  nested tuples) work; a non-`i64` int element errors (ET-1) rather than miscompiling.
+- **AG-3 — non-`i64` integer element types.** No longer an anti-goal: a narrow integer
+  element works wherever the tuple's expected type is visible — a `let` annotation, a return
+  type, a parameter (of a resolved function, a closure, or a generic function, whose argument is
+  narrowed once its instance is known), a record field or an enum payload (of a generic record
+  or enum too, narrowed once its instance is known), an array element, or an assignment's place
+  (ET-1). A value typed by an integer literal it is not, such as a
+  binding `let p = (5, 6);`, keeps its `i64` storage, so it is rejected wherever a narrow slot
+  would take it (T071 for an argument or a part, T041 for a `let`, T045 for an assignment, T049
+  for a return), even where its only narrow part is its last and it would read back right:
+  give the binding its type. An un-annotated tuple (`let t = (1, 2)`) still
+  types its integer literals as `i64`, and a destructure's own annotation
+  (`let (a, b): (i32, i64) = …`) is only cross-checked against the value: the bindings take the
+  value's types. The one shape this leaves open (an unannotated array of mixed-width tuples) is
+  in `tests/attack/KNOWN_GAPS.md`. *(Corrected, SR-032: this row said a non-`i64` int
+  element errors rather than miscompiling. It miscompiled.)*
 - **AG-4 — 1-tuples `(a,)`.** Rejected (the `(a,)`-vs-`(a)` ambiguity + a `"(T,)"`-render
   special-case aren't worth it). A single value is just that value.
 - **AG-5 — duplicate pattern names `let (x, x)`.** Normal `let`-shadowing; no de-dup

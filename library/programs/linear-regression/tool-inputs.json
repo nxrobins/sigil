@@ -1,0 +1,10 @@
+{
+  "files": {
+    "API.md": "sha256:5521f19b2acb2271ee03222150cbddb086e343b501cb6685b0462f99317b8351",
+    "README.md": "sha256:c19107a709d07ec4bd7d0129f25b54af0f6d3dc60656e7fde2c433e8ee6cf129",
+    "api-card.json": "sha256:53a76c13af6f30643cd25d427db06f2d253b2fb9f0eaea5421517d8d12471412",
+    "run.py": "sha256:3cdd60124bb738ca1af9cecd5d56ecc5c95ebac219f0f2db024d465a658cc660",
+    "src/tool.sigil": "sha256:4bb47facbc76f6b1852cd5fbe079c95948a93ab86d17f8816eb070a844c00ae4"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

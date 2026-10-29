@@ -1,0 +1,45 @@
+{
+  "contract_hash": "sha256:f375a79885a7bfa4a93e4655019e1d1539572a19d597517f0883210186cf461b",
+  "determinism": "state_relative",
+  "effects": [],
+  "entry_points": [
+    {
+      "fuel_ceiling": 128,
+      "result": "big-endian u32 value or -400/-413",
+      "signature": "fn read_u32_be(ptr:i64@Public,len:i64@Public,offset:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::read_u32_be"
+    },
+    {
+      "fuel_ceiling": 128,
+      "result": "u32 value or -400/-413",
+      "signature": "fn read_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::read_u32_le"
+    },
+    {
+      "fuel_ceiling": 160,
+      "result": "offset+4 or -400/-413/-422",
+      "signature": "fn write_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public,value:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::write_u32_le"
+    },
+    {
+      "fuel_ceiling": "96 + 12 * count",
+      "result": "dst_offset+count or -400/-413; overlap-safe",
+      "signature": "fn copy_into(dst_ptr:i64@Public,dst_len:i64@Public,dst_offset:i64@Public,src_ptr:i64@Public,src_len:i64@Public,src_offset:i64@Public,count:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::copy_into"
+    }
+  ],
+  "grant_categories": [],
+  "host_imports": [],
+  "modules": [
+    "bytes"
+  ],
+  "omitted": [
+    "bytes_internal",
+    "bytes_secret"
+  ],
+  "ownership": "caller-owned live borrowed Public region; no ownership transfer",
+  "package": "sigil/bytes",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "trusted_surface": [],
+  "version": "0.1.0-public.3"
+}

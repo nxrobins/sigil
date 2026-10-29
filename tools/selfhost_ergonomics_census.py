@@ -176,7 +176,7 @@ def census(root: Path) -> dict[str, object]:
 # establishing a property. Lower a ceiling whenever the real count drops --
 # the script tells you when there is slack.
 RATCHET_CEILINGS = {
-    "exact_empty_else": 2103,
+    "exact_empty_else": 2001,
 }
 
 

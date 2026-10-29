@@ -1,0 +1,55 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:1a0e00b9d448af0126d126d9503dcef7b4a16835a8fc47c841de30e076a3436b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/fmt",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source bracket validator using fmt; not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:5624e7882f37300f128c0f55922ab97b432b3510755dce9bbe13d94cd0a42955",
+    "api_contract_hash": "sha256:c9768873a2e7b34b72d067213df5df9d4bd185bf92b747d94139ac6c8aa30646",
+    "charter_hash": "sha256:6f2bb66d6cc17639763227b93aef9249e2b071832e87d127e44c04b68f869a93",
+    "evidence_manifest_hash": "sha256:11cb5b79c74b29521e0b038c07e8c2131b7f9ed94a6e84eb34eb500b2780948d"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "bracket-match",
+  "version": "0.1.0-public.1"
+}

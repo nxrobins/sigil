@@ -1,0 +1,65 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "autodiff::add(tape:Public,a:Public,b:Public)->Public",
+      "autodiff::backward(tape:Public,output:Public)->Public",
+      "autodiff::constant(tape:Public,value:Public)->Public",
+      "autodiff::gradient_into(tape:Public,variable:Public,out:Public)->Public",
+      "autodiff::mul(tape:Public,a:Public,b:Public)->Public",
+      "autodiff::new_cell()->Public",
+      "autodiff::new_tape(node_capacity:Public,sum_capacity:Public)->Public",
+      "autodiff::relu(tape:Public,a:Public)->Public",
+      "autodiff::replay(tape:Public,variables:Public,values:Public)->Public",
+      "autodiff::reset(tape:Public)->Public",
+      "autodiff::select(tape:Public,condition:Public,yes:Public,no:Public)->Public",
+      "autodiff::sub(tape:Public,a:Public,b:Public)->Public",
+      "autodiff::sum(tape:Public,nodes:Public)->Public",
+      "autodiff::value_into(tape:Public,node:Public,out:Public)->Public",
+      "autodiff::variable(tape:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source bounded scalar reverse-mode tape; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:bb8455d041f44e9a57602e08bfce510ba48aa9f0acbbcdfa1b9d3bad3f3b92c1",
+    "api_contract_hash": "sha256:be0b8f9c1adc7b68f081ebdf7747f912255e29c8ee5c0177fe1363cd267d7c21",
+    "charter_hash": "sha256:e7366cf6a83715e375a1709b97a6d99072dfad14f5e9db460000ec3abd88fe76",
+    "evidence_manifest_hash": "sha256:3b45e522b69a7d39ea0765878c056863f6767657fa3d25b713dea0eb264bfa1a"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "autodiff"
+  ],
+  "name": "autodiff",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

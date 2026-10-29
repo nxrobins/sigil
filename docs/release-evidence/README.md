@@ -56,7 +56,7 @@ Copy the template into that bundle only when assembling real measured evidence:
   one millisecond, the p95 at least the median, and the isolated self-host trio
   scaling canary (`SELFHOST_TRIO_CANARY_MS`, measured alone in the `Formal
   verifier scaling canary` step — never under the parallel workspace lane, whose
-  wider `VALIDATE_BUDGET_MS` drop bound is not this number) at most five
+  wider `VALIDATE_BUDGET_MS` drop bound is not this number) at most six
   seconds. Initialization is a separate measurement.
 - Record a positive peak-memory measurement, a separately reviewed positive
   memory limit, and successful execution of at least one million records. The

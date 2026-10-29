@@ -26,7 +26,7 @@
 //! `docs/specs/type-checker-in-sigil.md` section 2 and exercised by
 //! `crates/sigil-runtime/tests/typecheck_differential.rs`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{
     ast::{Block, Expr, Item, Pattern, Stmt},
@@ -365,6 +365,28 @@ pub fn check_collecting(
             ));
         }
 
+        // R014: an actor cannot be declared in an outer-ring module. `wasm::emit` places an
+        // outer-ring actor's init and handlers in the outer module, and every actor runtime path
+        // bootstraps the inner module alone (`RuntimeHost::bootstrap` is handed `wasm_inner`), so
+        // such an actor compiled and then failed at bootstrap with a missing handler export.
+        // FAIL DIRECTION: closed, at the declaration. It also keeps actor messaging out of the
+        // outer ring at the source, where R009 refuses it again before emission.
+        if matches!(ast_module.ring, crate::ast::Ring::Outer) {
+            for item in &ast_module.items {
+                if let Item::ActorDef(actor) = item {
+                    diagnostics.push(Diagnostic::error(
+                        codes::R014,
+                        format!(
+                            "actor `{}` is declared in outer-ring module `{}`: the actor runtime \
+                             hosts only inner-ring modules, so it could never run",
+                            actor.name, ast_module.name
+                        ),
+                        Some(actor.span),
+                    ));
+                }
+            }
+        }
+
         // I16: clone from workspace_sigs instead of recomputing. The
         // clone is bounded and cheap; the work we're saving is
         // collect_function_sigs's per-fn type resolution.
@@ -374,6 +396,7 @@ pub fn check_collecting(
             .cloned()
             .unwrap_or_default();
         let mut functions = Vec::new();
+        let mut externs = Vec::new();
         let context =
             TypeCheckContext::new(&function_sigs, &actor_sigs, &ast_module.name, &universe);
 
@@ -834,6 +857,12 @@ pub fn check_collecting(
                             Some(def.span),
                         ));
                     }
+                    // Recorded for the ring pass, which holds the declaration to this
+                    // module's trust (R008); a declaration has no body to type here.
+                    externs.push(TypedExternDecl {
+                        name: def.name.clone(),
+                        span: def.span,
+                    });
                 }
                 Item::FnDef(_) // generic fns — compiled on-demand during monomorphization
                 | Item::UseDecl(_)
@@ -880,8 +909,12 @@ pub fn check_collecting(
             trusted: ast_module.trusted,
             span: resolved_module.span,
             functions,
+            externs,
         });
     }
+
+    // Every body is checked: close the speculation bookkeeping (fails closed).
+    tracker.finish_speculations(&mut diagnostics);
 
     // Drain monomorphized outputs: lifted closures into the module that
     // DEFINED them, generic instances into `modules[0]` (see SCOPE below).
@@ -1174,8 +1207,11 @@ pub fn collect_function_sigs_call_count() -> usize {
 
 // --- Closure capture analysis: recursive free variable detection ---
 
-pub(super) fn find_free_vars(block: &Block, bound_init: &HashSet<String>) -> HashSet<String> {
-    let mut free = HashSet::new();
+/// The names a block reads but does not bind. A `BTreeSet`, so iteration is in name order:
+/// `infer_closure_expr` lays a closure's `__env` out in this order, and a hashed set handed
+/// a closure with two or more captures different Wasm bytes on every compile (SHP-P0).
+pub(super) fn find_free_vars(block: &Block, bound_init: &HashSet<String>) -> BTreeSet<String> {
+    let mut free = BTreeSet::new();
     let mut bound = bound_init.clone();
 
     for stmt in &block.statements {
@@ -1259,8 +1295,8 @@ pub(super) fn find_free_vars(block: &Block, bound_init: &HashSet<String>) -> Has
 }
 
 #[allow(clippy::collapsible_if)]
-fn find_free_vars_in_expr(expr: &Expr, bound: &HashSet<String>) -> HashSet<String> {
-    let mut free = HashSet::new();
+fn find_free_vars_in_expr(expr: &Expr, bound: &HashSet<String>) -> BTreeSet<String> {
+    let mut free = BTreeSet::new();
     match expr {
         Expr::Path(p) => {
             if let Some(root) = p.path.segments.first() {

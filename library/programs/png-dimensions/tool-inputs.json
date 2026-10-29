@@ -1,0 +1,11 @@
+{
+  "files": {
+    ".gitignore": "sha256:4b5473a3e1d11aab072481048fcecbf26e32dc481bc9369bcc244ca1426252d0",
+    "API.md": "sha256:c010bdaf2b3b4a9900ac0c4d1b50f6c7baeccd3e49b74c5dfc9e5061195ed2c0",
+    "README.md": "sha256:304b7a3185175475a151e9b83f3c9e1cd88eb24f1e08f91a6418306f70cc3b85",
+    "api-card.json": "sha256:861a39582bab705044ced8121aa94ef24875dec9bae2215fcbea41c0b2259db6",
+    "fixtures/one-pixel.png.hex": "sha256:d83c4f83ac8a14240f89d0e23c90f9b5713ea89cdbc7f1bb8e0590e8f53fb2aa",
+    "src/tool.sigil": "sha256:9c783d7b8c732a679a9ac2a6d827808a6db5940e28c49d628649698ae4658d4e"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

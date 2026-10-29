@@ -1,0 +1,31 @@
+// Opaque checkpoint transport; application validation stays in the inner search.
+#[ring(outer)] #[trusted] module tool;
+use sigil::storage;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 @Internal ! { Alloc, KvIO, FFI, Unsafe } {
+    if input_len < 8 { return -400; } else {}
+    if input_len > 16396 { return -413; } else {}
+    if load8(input_ptr) != 65 || load8(input_ptr + 1) != 75 || load8(input_ptr + 2) != 86 || load8(input_ptr + 4) != 1 || load8(input_ptr + 5) != 0 || load8(input_ptr + 6) != 0 || load8(input_ptr + 7) != 0 { return -422; } else {}
+    let ns = alloc(12);
+    store8(ns,97);store8(ns+1,117);store8(ns+2,116);store8(ns+3,111);
+    store8(ns+4,114);store8(ns+5,101);store8(ns+6,115);store8(ns+7,101);
+    store8(ns+8,97);store8(ns+9,114);store8(ns+10,99);store8(ns+11,104);
+    let key = alloc(10);
+    store8(key,99);store8(key+1,104);store8(key+2,101);store8(key+3,99);
+    store8(key+4,107);store8(key+5,112);store8(key+6,111);store8(key+7,105);
+    store8(key+8,110);store8(key+9,116);
+    if load8(input_ptr + 3) == 82 {
+        if input_len != 8 { return -422; } else {}
+        let loaded: i64 @Internal = storage::load(ns,12,key,10);
+        if loaded < 0 { return loaded; } else {}
+        if loaded % 4294967296 > 8192 { return -413; } else {}
+        return loaded;
+    } else {}
+    if load8(input_ptr + 3) != 80 || input_len < 12 { return -422; } else {}
+    let previous: i64 @Internal = load8(input_ptr+8)+256*load8(input_ptr+9)+65536*load8(input_ptr+10)+16777216*load8(input_ptr+11);
+    if previous > 8192 || previous > input_len - 12 { return -413; } else {}
+    let next: i64 @Internal = input_len - 12 - previous;
+    if next == 0 { return -400; } else {}
+    if next > 8192 { return -413; } else {}
+    return storage::publish(ns,12,key,10,input_ptr+12,previous,input_ptr+12+previous,next);
+}

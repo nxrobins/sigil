@@ -1,0 +1,52 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "bytes::copy_into(dst_ptr:Public,dst_len:Public,dst_offset:Public,src_ptr:Public,src_len:Public,src_offset:Public,count:Public)->Public",
+      "bytes::read_u32_be(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::read_u32_le(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::write_u32_le(ptr:Public,len:Public,offset:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid borrowed linear-memory region"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source Public byte access and overlap-safe copying; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:60bfdffcb8cd99952511333d18ff0813782b9ef60d57de1be5b17bc7a48d9073",
+    "api_contract_hash": "sha256:f375a79885a7bfa4a93e4655019e1d1539572a19d597517f0883210186cf461b",
+    "charter_hash": "sha256:10c3f541899a046c10e4ae1df5261e6ee42ce56ad9953b9b065746463dcedbe2",
+    "evidence_manifest_hash": "sha256:c8cbbcb7d7b4453f10a23429156eb5b85f9e91bfffa450c75f2002d3ef04c990"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "bytes"
+  ],
+  "name": "bytes",
+  "namespace": "sigil",
+  "version": "0.1.0-public.3"
+}

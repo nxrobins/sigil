@@ -60,3 +60,23 @@ debug = "line-tables-only"
 # `sigil-runtime::ephemeral` now also collapses the per-fixture recompile.)
 [profile.dev.package."*"]
 opt-level = 2
+
+# ...and `sigil-runtime` itself, the one workspace crate whose own code sits on
+# the guest-execution hot path. The compiled SIGIL compilers the differential
+# suites execute call the host for every fuel charge (`sigil.fuel_decrement`: each
+# call site, loop iteration, allocation and compared `str ==` byte, about one per
+# 34 wasm instructions) and for every allocation (`sigil.alloc`). wasmtime's
+# `func_wrap` shims for those imports are generic over the closure, so they are
+# monomorphized INSIDE this crate, where `package."*"` above (external crates
+# only) never reached them: at opt-level 0 each wasm-to-host round trip cost about
+# 86 ns plus 17 ns of closure body, 77% of the guest time of the with-driver
+# artifact compiling its own source. Measured 2026-10-08 (local, GNU target, the
+# executions of tests/pipeline_differential.rs): that self-compile 41.9 s -> 6.1 s,
+# the Stage-1 emit lane 19.9 s -> 3.2 s. Opt-level 2 gave 4.8 s / 2.5 s for an
+# incremental rebuild of every sigil-runtime unit of 105 s instead of 60 s, so 1.
+# With CARGO_INCREMENTAL=0, as CI builds, that rebuild went 47 s -> 62 s. The
+# override covers this package's integration-test targets too. Debug assertions
+# and overflow checks stay on at any opt-level, so no test changes meaning; only
+# the host code the tests drive runs faster.
+[profile.dev.package.sigil-runtime]
+opt-level = 1

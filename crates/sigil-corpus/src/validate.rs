@@ -362,7 +362,7 @@ mod tests {
 
     /// SC-P4 (no assertion of absence without an anti-stub) for the arming
     /// detector: it must tell armed, unarmed and malformed apart, or the canary's
-    /// five-second bound could be skipped without anyone noticing.
+    /// bound could be skipped without anyone noticing.
     #[test]
     fn scaling_canary_arming_is_fail_closed() {
         assert_eq!(scaling_canary_armed_from(None), Ok(false));
@@ -376,7 +376,7 @@ mod tests {
     }
 
     /// WHY THIS TEST EXISTS. The selfhost trio is the corpus's largest validation
-    /// unit AND the linked Lean verifier's scaling canary: a fixed five-second
+    /// unit AND the linked Lean verifier's scaling canary: a fixed wall-clock
     /// bound on it caught two accidental O(n²) verifier scans. It asserts TWO
     /// bounds with different owners:
     ///
@@ -387,7 +387,7 @@ mod tests {
     ///   within `SELFHOST_TRIO_CANARY_MS`. The `Formal verifier scaling canary`
     ///   step in `ci.yml` arms it and runs this test ALONE, so the clock measures
     ///   the verifier and nothing else. The parallel workspace `test` lane runs
-    ///   the same test unarmed: on PR #765 the trio passed the five-second bound
+    ///   the same test unarmed: on PR #765 the trio passed the then five-second bound
     ///   twice in the isolated step and failed it only under that lane's load —
     ///   contention, not a regression — and a tight bound asserted where it is
     ///   not measured is a flake, not evidence.

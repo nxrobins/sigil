@@ -42,7 +42,10 @@ The differential suite covers:
 - module `use` aliases;
 - N007 unresolved, malformed, or self-use errors;
 - N009 cyclic module dependencies;
-- N001 through N006 collision and shadowing errors;
+- N001 through N006 collision and shadowing errors, N005 on every parameter list production
+  checks: an `fn` item's, an actor init's and handler's, and each member's of an effect (its
+  operations), a trait (its method signatures) and an impl block (its methods), each list on its
+  own;
 - N011 invalid module names;
 - the N011-before-N012 precedence that makes N012 unreachable under the current lowercase module
   grammar;
@@ -50,7 +53,10 @@ The differential suite covers:
 - every `stdlib/sigil/*.sigil` unit as a clean resolution corpus.
 
 The error corpus isolates one reachable code per fixture. This avoids claiming parity for cascade
-ordering after multiple simultaneous name errors. The oracle side always calls the production
+ordering after multiple simultaneous name errors. The member-list corpus compares exact code
+multisets, and two of its fixtures carry N002 beside N005: a duplicate-named declaration's lists
+go unchecked, as production's resolver skips the rest of such an item — a multiset claim, not an
+order. Each of its rejects has an accept twin. The oracle side always calls the production
 parser and resolver; it does not reimplement either algorithm in the harness.
 
 ## Invariants

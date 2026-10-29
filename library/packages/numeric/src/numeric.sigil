@@ -1,0 +1,308 @@
+// Private CPU f64 matrices: bounded shapes and preallocated outputs, no host authority.
+module numeric;
+use sigil::vec;
+
+record Matrix { data: Vec<f64>, rows: i64, cols: i64, error: i64 }
+record Scalar { value: f64 }
+
+fn finite(value: f64) -> bool {
+    // IEEE finite values subtract from themselves to zero; NaN/infinities do not.
+    return value - value == 0.0;
+}
+
+fn size_status(rows: i64, cols: i64) -> i64 {
+    if rows < 1 || cols < 1 { return -400; } else {}
+    if rows > 4096 || cols > 4096 { return -413; } else {}
+    if rows > 4096 / cols { return -413; } else {}
+    return rows * cols;
+}
+
+fn count_float(count: i64) -> f64 {
+    // Counts are shape-checked to 1..4096. This exact bounded conversion avoids
+    // introducing a new compiler cast or a raw floating-point memory intrinsic.
+    let mut result = 0.0;
+    let mut i = 0;
+    while i < count { result = result + 1.0; i = i + 1; }
+    return result;
+}
+
+fn failed(code: i64) -> Matrix ! { Alloc } {
+    let data: Vec<f64> = Vec::new();
+    return Matrix { data: data, rows: 0, cols: 0, error: code };
+}
+
+pub fn zeros(rows: i64, cols: i64) -> Matrix ! { Alloc } {
+    let size = size_status(rows, cols);
+    if size < 0 { return failed(size); } else {}
+    let data: Vec<f64> = Vec::with_capacity(size);
+    let mut i = 0;
+    while i < size { data.push(0.0); i = i + 1; }
+    return Matrix { data: data, rows: rows, cols: cols, error: 0 };
+}
+
+pub fn new_scalar() -> Scalar ! { Alloc } {
+    return Scalar { value: 0.0 };
+}
+
+fn shape_status(a: Matrix @ReadOnly) -> i64 {
+    if a.error < 0 { return a.error; } else {}
+    if a.error != 0 { return -400; } else {}
+    let count = size_status(a.rows, a.cols);
+    if count < 0 { return count; } else {}
+    if a.data.count != count || a.data.slots < count || a.data.buf < 0 { return -400; } else {}
+    if a.data.slots > 4096 || a.data.buf > 2147483647 { return -413; } else {}
+    if count * 8 > 2147483647 - a.data.buf { return -413; } else {}
+    return 0;
+}
+
+fn readable(a: Matrix @ReadOnly) -> i64 {
+    let status = shape_status(a);
+    if status < 0 { return status; } else {}
+    let mut i = 0;
+    while i < a.data.count {
+        if !finite(a.data.get(i)) { return -422; } else {}
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn same_shape(a: Matrix @ReadOnly, b: Matrix @ReadOnly) -> bool {
+    return a.rows == b.rows && a.cols == b.cols;
+}
+
+fn overlap(a: Matrix @ReadOnly, b: Matrix @ReadOnly) -> bool {
+    return a.data.buf < b.data.buf + b.data.count * 8 && b.data.buf < a.data.buf + a.data.count * 8;
+}
+
+pub fn set(a: Matrix @Mut, row: i64, col: i64, value: f64) -> i64 {
+    let status = shape_status(a);
+    if status < 0 { return status; } else {}
+    if row < 0 || col < 0 || row >= a.rows || col >= a.cols { return -400; } else {}
+    if !finite(value) { return -422; } else {}
+    a.data.set(row * a.cols + col, value);
+    return 0;
+}
+
+pub fn get_into(a: Matrix @ReadOnly, row: i64, col: i64, out: Scalar @Mut) -> i64 {
+    let status = readable(a);
+    if status < 0 { return status; } else {}
+    if row < 0 || col < 0 || row >= a.rows || col >= a.cols { return -400; } else {}
+    out.value = a.data.get(row * a.cols + col);
+    return 0;
+}
+
+fn pair_status(a: Matrix @ReadOnly, b: Matrix @ReadOnly) -> i64 {
+    let first = readable(a);
+    if first < 0 { return first; } else {}
+    let second = readable(b);
+    if second < 0 { return second; } else {}
+    if !same_shape(a, b) { return -422; } else {}
+    return 0;
+}
+
+fn output_status(a: Matrix @ReadOnly, out: Matrix @ReadOnly) -> i64 {
+    let status = shape_status(out);
+    if status < 0 { return status; } else {}
+    if !same_shape(a, out) { return -422; } else {}
+    if overlap(a, out) { return -400; } else {}
+    return 0;
+}
+
+fn binary_value(a: f64, b: f64, operation: i64) -> f64 {
+    if operation == 0 { return a + b; } else {}
+    if operation == 1 { return a - b; } else {}
+    return a * b;
+}
+
+fn binary_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Matrix @Mut, operation: i64) -> i64 {
+    let inputs = pair_status(a, b);
+    if inputs < 0 { return inputs; } else {}
+    let destination = output_status(a, out);
+    if destination < 0 { return destination; } else {}
+    if overlap(b, out) { return -400; } else {}
+    let mut i = 0;
+    // Two passes preserve the old output even when a late arithmetic result overflows.
+    while i < a.data.count {
+        if !finite(binary_value(a.data.get(i), b.data.get(i), operation)) { return -422; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < a.data.count {
+        out.data.set(i, binary_value(a.data.get(i), b.data.get(i), operation));
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn add_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    return binary_into(a, b, out, 0);
+}
+
+pub fn sub_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    return binary_into(a, b, out, 1);
+}
+
+pub fn mul_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    return binary_into(a, b, out, 2);
+}
+
+pub fn scale_into(a: Matrix @ReadOnly, factor: f64, out: Matrix @Mut) -> i64 {
+    let input = readable(a);
+    if input < 0 { return input; } else {}
+    let destination = output_status(a, out);
+    if destination < 0 { return destination; } else {}
+    if !finite(factor) { return -422; } else {}
+    let mut i = 0;
+    while i < a.data.count {
+        if !finite(a.data.get(i) * factor) { return -422; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < a.data.count { out.data.set(i, a.data.get(i) * factor); i = i + 1; }
+    return 0;
+}
+
+pub fn relu_into(a: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    let input = readable(a);
+    if input < 0 { return input; } else {}
+    let destination = output_status(a, out);
+    if destination < 0 { return destination; } else {}
+    let mut i = 0;
+    while i < a.data.count {
+        let mut value = a.data.get(i);
+        if value < 0.0 { value = 0.0; } else {}
+        out.data.set(i, value);
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn sum_into(a: Matrix @ReadOnly, out: Scalar @Mut) -> i64 {
+    let input = readable(a);
+    if input < 0 { return input; } else {}
+    let mut value = 0.0;
+    let mut i = 0;
+    while i < a.data.count { value = value + a.data.get(i); i = i + 1; }
+    if !finite(value) { return -422; } else {}
+    out.value = value;
+    return 0;
+}
+
+pub fn mean_into(a: Matrix @ReadOnly, out: Scalar @Mut) -> i64 {
+    let status = sum_into(a, out);
+    if status < 0 { return status; } else {}
+    out.value = out.value / count_float(a.data.count);
+    return 0;
+}
+
+pub fn dot_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Scalar @Mut) -> i64 {
+    let inputs = pair_status(a, b);
+    if inputs < 0 { return inputs; } else {}
+    let mut value = 0.0;
+    let mut i = 0;
+    while i < a.data.count { value = value + a.data.get(i) * b.data.get(i); i = i + 1; }
+    if !finite(value) { return -422; } else {}
+    out.value = value;
+    return 0;
+}
+
+pub fn transpose_into(a: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    let input = readable(a);
+    if input < 0 { return input; } else {}
+    let destination = shape_status(out);
+    if destination < 0 { return destination; } else {}
+    if out.rows != a.cols || out.cols != a.rows { return -422; } else {}
+    if overlap(a, out) { return -400; } else {}
+    let mut i = 0;
+    while i < a.data.count {
+        out.data.set((i % a.cols) * out.cols + i / a.cols, a.data.get(i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn product_cell(a: Matrix @ReadOnly, b: Matrix @ReadOnly, row: i64, col: i64) -> f64 {
+    let mut value = 0.0;
+    let mut k = 0;
+    while k < a.cols {
+        value = value + a.data.get(row * a.cols + k) * b.data.get(k * b.cols + col);
+        k = k + 1;
+    }
+    return value;
+}
+
+pub fn matmul_into(a: Matrix @ReadOnly, b: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    let first = readable(a);
+    if first < 0 { return first; } else {}
+    let second = readable(b);
+    if second < 0 { return second; } else {}
+    let destination = shape_status(out);
+    if destination < 0 { return destination; } else {}
+    if a.cols != b.rows || out.rows != a.rows || out.cols != b.cols { return -422; } else {}
+    if overlap(a, out) || overlap(b, out) { return -400; } else {}
+    let mut i = 0;
+    while i < out.data.count {
+        if !finite(product_cell(a, b, i / out.cols, i % out.cols)) { return -422; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < out.data.count {
+        out.data.set(i, product_cell(a, b, i / out.cols, i % out.cols));
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn mse_into(prediction: Matrix @ReadOnly, target: Matrix @ReadOnly, out: Scalar @Mut) -> i64 {
+    let inputs = pair_status(prediction, target);
+    if inputs < 0 { return inputs; } else {}
+    let mut value = 0.0;
+    let mut i = 0;
+    while i < prediction.data.count {
+        let difference = prediction.data.get(i) - target.data.get(i);
+        value = value + difference * difference;
+        i = i + 1;
+    }
+    value = value / count_float(prediction.data.count);
+    if !finite(value) { return -422; } else {}
+    out.value = value;
+    return 0;
+}
+
+pub fn mse_grad_into(prediction: Matrix @ReadOnly, target: Matrix @ReadOnly, out: Matrix @Mut) -> i64 {
+    let inputs = pair_status(prediction, target);
+    if inputs < 0 { return inputs; } else {}
+    let destination = output_status(prediction, out);
+    if destination < 0 { return destination; } else {}
+    if overlap(target, out) { return -400; } else {}
+    let factor = 2.0 / count_float(prediction.data.count);
+    let mut i = 0;
+    while i < prediction.data.count {
+        if !finite(factor * (prediction.data.get(i) - target.data.get(i))) { return -422; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < prediction.data.count {
+        out.data.set(i, factor * (prediction.data.get(i) - target.data.get(i)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn sgd_step(weights: Matrix @Mut, gradient: Matrix @ReadOnly, rate: f64) -> i64 {
+    let inputs = pair_status(weights, gradient);
+    if inputs < 0 { return inputs; } else {}
+    if overlap(weights, gradient) { return -400; } else {}
+    if !finite(rate) || rate < 0.0 { return -422; } else {}
+    let mut i = 0;
+    while i < weights.data.count {
+        if !finite(weights.data.get(i) - rate * gradient.data.get(i)) { return -422; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < weights.data.count {
+        weights.data.set(i, weights.data.get(i) - rate * gradient.data.get(i));
+        i = i + 1;
+    }
+    return 0;
+}

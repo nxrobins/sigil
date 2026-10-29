@@ -1,0 +1,6 @@
+// R009: an outer-ring function mints a capability it never binds, but the outer-ring module has no `cap_mint` host import.
+#[ring(outer)] module tool;
+cap type Admin { mint_file }
+cap type FileAccess mintable_by Admin { read, write }
+record File { id: i64 }
+fn make(f: File, admin: &Admin) -> i64 { mint FileAccess for f; return 0; }

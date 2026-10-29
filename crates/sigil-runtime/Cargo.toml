@@ -14,7 +14,7 @@ trace = ["dep:tracing"]
 # compiled SIGIL program drive the SMT solver across the WASM boundary. Pulls
 # in the native z3 crate; OFF by default so the deployed runtime's TCB carries
 # no solver unless explicitly built with it. Mirrors sigil-compiler's `solver`.
-solver = ["dep:z3"]
+solver = ["dep:z3", "dep:z3-sys"]
 # The DDC comparison (docs/CLAIMS.md claim 40): executing the whole certified source under the
 # independent Python interpreter takes ~8 min under CPython (~2 min under PyPy, which the lane
 # uses), which pushed the `test` lane past its 30-minute timeout when it ran inside it.
@@ -38,10 +38,22 @@ sigil-abi = { workspace = true }
 # in `http_fetch` so every hop is re-validated against the grants (finding P1).
 ureq = { version = "3", features = ["platform-verifier"] }
 url = "2.5"
-# 43.0.1 fixes a cluster of RUSTSEC-2026 wasmtime advisories, including the
-# critical Cranelift/Winch sandbox-escape ones (RUSTSEC-2026-0095/0096) that are
-# directly load-bearing for this project's wasm sandbox. Do not float below it.
-wasmtime = "47.0.4"
+# 48.0.6 fixes RUSTSEC-2026-0353..0359 and 0361..0364 (component lifecycle,
+# resource accounting, recursive types and exception-tag alignment). Keep the
+# private judge and both standalone locks aligned with this security floor.
+# 48.0.5 is 48.0.4 re-released (it only repairs that release's publishing), and
+# 48.0.4 fixes RUSTSEC-2026-0325 (a mis-typed tag import can corrupt the GC
+# heap), RUSTSEC-2026-0326 (GC values live across `try_call` can go unrooted)
+# and the critical RUSTSEC-2026-0327 (an unvalidated component async-lifted
+# callback result count overflows a native stack buffer). 48.0.3 fixed
+# RUSTSEC-2026-0315: `call_ref` and exception `catch` could drop fuel
+# accounting, and fuel is how this runtime bounds untrusted code (pinned by
+# `work_behind_call_ref_is_charged_fuel`); the same release cleared
+# RUSTSEC-2026-0316, which concerns the component model's hostcall fuel. This
+# runtime runs core modules only. 47.0.4 and 43.0.1 were earlier floors (see the
+# supply-chain job in ci.yml), the latter for the critical Cranelift/Winch
+# sandbox-escape advisories (RUSTSEC-2026-0095/0096). Do not float below it.
+wasmtime = "48.0.6"
 sha2 = "0.10"
 wasmparser = "0.246"
 # Match Module::new's binary-or-text input support before inspecting security
@@ -51,7 +63,11 @@ getrandom = "0.2"
 tracing = { version = "0.1", optional = true }
 # Optional: only compiled under `--features solver` (see [features]). Version
 # pinned to match sigil-compiler for cross-build verdict reproducibility.
-z3 = { version = "0.12", optional = true }
+z3 = { version = "0.21.1", optional = true }
+# Never used directly; turns on z3-sys's `bindgen` so enum values come from the
+# pinned Z3 header rather than a pre-generated snapshot. Same rationale as the
+# identical entry in sigil-compiler's Cargo.toml.
+z3-sys = { version = "0.13.1", optional = true, features = ["bindgen"] }
 
 # Unix-only: `O_NOFOLLOW` / `ELOOP` constants for the no-follow FsWrite open
 # (fs grant-escape hardening). Only constants are referenced — no unsafe
@@ -76,6 +92,11 @@ sigil-test-utils = { workspace = true }
 # copies the rest byte-for-byte; the reencoder must match the wasmparser
 # generation above or the two crates' operator enums disagree.
 wasm-encoder = { version = "0.246.2", features = ["wasmparser"] }
+# The SHP-0 gate's X corpus (`tests/selfhost_backend_parity.rs`): Rust's own tokenizer and
+# literal decoder find the SIGIL programs in the test sources, so the gate carries no
+# hand-written Rust lexer to get wrong. Test-only; never on the runtime path.
+proc-macro2 = "1"
+syn = "2"
 
 # Solver-only integration test (mirrors sigil-compiler's gating): a whole-file
 # `#![cfg(feature = "solver")]` binary that would otherwise compile and link to

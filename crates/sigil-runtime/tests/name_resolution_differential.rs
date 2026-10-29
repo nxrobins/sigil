@@ -560,3 +560,184 @@ fn sh_nr_2_clean_fixtures_injective() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SH-NR-2, the member parameter lists: N005 on an effect's operations, a trait's
+// method signatures and an impl block's methods. Production checks every parameter
+// list a declaration holds, each list on its own (`resolve_module_items`: the
+// `Item::EffectDecl`, `Item::TraitDef` and `Item::ImplDef` arms call
+// `check_duplicate_params` once per member, the impl arm outside the name guard,
+// since an impl block has no name). The self-hosted resolver checked an `fn` item's
+// list and an actor's only, so a duplicate on an operation, a signature or a method
+// passed the whole self-hosted chain (`OK:` with a module) where production refuses
+// it — fail-open. Codes only, compared as sorted multisets like the rest of the
+// SH-NR-2 corpus (ET-NR2-3).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Reject fixtures: (label, source, the oracle's sorted code multiset). The oracle's
+/// answer is pinned, so a fixture cannot drift to a different refusal, and the
+/// self-hosted answer must equal it. Every fixture is a live divergent witness: built
+/// from the parent commit's `name_resolution.sigil`, the self-hosted resolver answers
+/// each one short of the oracle: no code at all, or the `N002` alone on the two
+/// duplicate-named pairs.
+const CORPUS_MEMBER_PARAMS_ERR: &[(&str, &str, &[&str])] = &[
+    (
+        "an effect operation",
+        "module a;\neffect Log { fn note(x: i64, x: i64) -> i64; }\n",
+        &["N005"],
+    ),
+    (
+        "a trait method signature",
+        "module a;\ntrait T { fn m(x: i64, x: i64) -> i64; }\n",
+        &["N005"],
+    ),
+    // Every operation and every signature is checked, not only the first.
+    (
+        "the second effect operation",
+        "module a;\neffect Log { fn open(x: i64) -> i64; fn note(x: i64, y: i64, x: i64); }\n",
+        &["N005"],
+    ),
+    (
+        "the second trait method signature",
+        "module a;\ntrait T { fn a(x: i64) -> i64; fn m(y: i64, y: i64); }\n",
+        &["N005"],
+    ),
+    // One code per repeat, as production emits them.
+    (
+        "a parameter written three times",
+        "module a;\neffect Log { fn note(x: i64, x: i64, x: i64) -> i64; }\n",
+        &["N005", "N005"],
+    ),
+    // `@in r` rides the parameter node's text (`x;r`); the name compared is `x`.
+    (
+        "a duplicate carrying a region annotation",
+        "module a;\neffect Log { fn note(x: Vec<i64> @in r, x: i64, r: Region) -> i64; }\n",
+        &["N005"],
+    ),
+    // A duplicate-named declaration stops at its N002: production `continue`s past the
+    // rest of the item, so the second declaration's lists are never checked — a
+    // resolver that checked them would answer a second `N005`. Two codes, compared as a
+    // multiset: no claim about their order.
+    (
+        "two effects of one name",
+        "module a;\neffect Log { fn note(x: i64, x: i64) -> i64; }\neffect Log { fn note(y: i64, y: i64) -> i64; }\n",
+        &["N002", "N005"],
+    ),
+    (
+        "two traits of one name",
+        "module a;\ntrait T { fn m(x: i64, x: i64) -> i64; }\ntrait T { fn m(y: i64, y: i64) -> i64; }\n",
+        &["N002", "N005"],
+    ),
+    // An impl method's list, the receiver included, and an associated fn's.
+    (
+        "an impl method",
+        "module a;\nrecord P { v: i64 }\nimpl P { fn get(self: P, x: i64, x: i64) -> i64 { return x; } }\n",
+        &["N005"],
+    ),
+    (
+        "an associated fn",
+        "module a;\nrecord P { v: i64 }\nimpl P { fn mk(x: i64, x: i64) -> P { return P { v: x }; } }\n",
+        &["N005"],
+    ),
+    (
+        "the second impl method",
+        "module a;\nrecord P { v: i64 }\nimpl P { fn a(self: P) -> i64 { return 0; } fn b(self: P, y: i64, y: i64) -> i64 { return y; } }\n",
+        &["N005"],
+    ),
+    (
+        "a trait impl's method",
+        "module a;\nrecord P { v: i64 }\ntrait T { fn m(self: P, x: i64, y: i64) -> i64; }\nimpl T for P { fn m(self: P, x: i64, x: i64) -> i64 { return x; } }\n",
+        &["N005"],
+    ),
+    // Impl blocks are nameless, so no N002 skips one: two blocks for one type are both
+    // checked — a resolver that checked only the first would answer one `N005`.
+    (
+        "two impl blocks for one type",
+        "module a;\nrecord P { v: i64 }\nimpl P { fn a(x: i64, x: i64) -> i64 { return x; } }\nimpl P { fn b(y: i64, y: i64) -> i64 { return y; } }\n",
+        &["N005", "N005"],
+    ),
+];
+
+/// The accept twins (§4.6): each reject above made legal, so a resolver that refused
+/// every operation, signature or method list fails here. One name in two operations,
+/// two signatures, two methods or two declarations is two lists, not a duplicate.
+const CORPUS_MEMBER_PARAMS_CLEAN: &[&str] = &[
+    "module a;\neffect Log { fn note(x: i64, y: i64) -> i64; }\n",
+    "module a;\ntrait T { fn m(x: i64, y: i64) -> i64; }\n",
+    "module a;\neffect Log { fn open(x: i64) -> i64; fn note(x: i64, y: i64, z: i64); }\n",
+    "module a;\ntrait T { fn a(x: i64) -> i64; fn m(x: i64, y: i64); }\n",
+    "module a;\neffect Log { fn note(x: i64, y: i64, z: i64) -> i64; }\n",
+    "module a;\neffect Log { fn note(x: Vec<i64> @in r, y: i64, r: Region) -> i64; }\n",
+    "module a;\neffect Log { fn note(x: i64, y: i64) -> i64; }\neffect Audit { fn note(x: i64, y: i64) -> i64; }\n",
+    "module a;\ntrait T { fn m(x: i64, y: i64) -> i64; }\ntrait U { fn m(x: i64, y: i64) -> i64; }\n",
+    "module a;\nrecord P { v: i64 }\nimpl P { fn get(self: P, x: i64, y: i64) -> i64 { return x; } }\n",
+    "module a;\nrecord P { v: i64 }\nimpl P { fn mk(x: i64, y: i64) -> P { return P { v: x }; } }\n",
+    "module a;\nrecord P { v: i64 }\nimpl P { fn a(self: P, y: i64) -> i64 { return y; } fn b(self: P, y: i64) -> i64 { return y; } }\n",
+    "module a;\nrecord P { v: i64 }\ntrait T { fn m(self: P, x: i64, y: i64) -> i64; }\nimpl T for P { fn m(self: P, x: i64, y: i64) -> i64 { return x; } }\n",
+    "module a;\nrecord P { v: i64 }\nimpl P { fn a(x: i64) -> i64 { return x; } }\nimpl P { fn b(x: i64) -> i64 { return x; } }\n",
+];
+
+/// A fixture production cannot parse resolves whatever partial AST the parser kept, and
+/// `oracle_diags` ignores parse diagnostics; so every fixture here must parse clean.
+fn assert_oracle_parse_clean(src: &str) {
+    let source = SourceFile::new("<nr-diff>", src);
+    let (_ast, diags) = parser::parse(&source);
+    let codes: Vec<String> = diags.iter().map(|d| d.code().to_string()).collect();
+    assert!(
+        codes.is_empty(),
+        "the fixture must parse clean in production, got {codes:?}:\n{src}"
+    );
+}
+
+/// DONE-LINE GATE (the member lists): N005 on effect operations, trait method signatures
+/// and impl methods at exact-multiset parity, the N002 precedence included. Every
+/// divergent fixture is reported together, so one run names them all.
+#[test]
+fn sh_nr_2_duplicate_member_params_match_oracle() {
+    let mut drift: Vec<String> = Vec::new();
+    for (label, src, want) in CORPUS_MEMBER_PARAMS_ERR {
+        assert_oracle_parse_clean(src);
+        let oracle = oracle_diags(src);
+        let pinned: Vec<String> = want.iter().map(|c| (*c).to_string()).collect();
+        assert_eq!(
+            oracle, pinned,
+            "SH-NR-2 {label}: the oracle's answer moved:\n{src}"
+        );
+        let sigil = sigil_diags(src);
+        if sigil != oracle {
+            drift.push(format!(
+                "  {label}: self-hosted {sigil:?}, oracle {oracle:?}"
+            ));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "SH-NR-2: self-hosted diag codes must match the oracle; {} of {} fixtures diverge:\n{}",
+        drift.len(),
+        CORPUS_MEMBER_PARAMS_ERR.len(),
+        drift.join("\n")
+    );
+}
+
+/// The accept twins resolve clean on both sides, with recs that match the oracle.
+#[test]
+fn sh_nr_2_member_param_twins_resolve_clean() {
+    for src in CORPUS_MEMBER_PARAMS_CLEAN {
+        assert_oracle_parse_clean(src);
+        assert!(
+            oracle_diags(src).is_empty(),
+            "SH-NR-2 twin: the fixture must resolve clean in the oracle:\n{src}"
+        );
+        assert!(
+            sigil_diags(src).is_empty(),
+            "SH-NR-2 twin: self-hosted emitted diagnostics on a clean fixture:\n{src}"
+        );
+        let recs = parse_recs(&oracle_recs_multi(src));
+        assert_injective(&recs, src);
+        assert_eq!(
+            parse_recs(&sigil_records(src)),
+            recs,
+            "SH-NR-2 twin: recs must match the oracle:\n{src}"
+        );
+    }
+}

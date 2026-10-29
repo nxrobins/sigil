@@ -3,12 +3,7 @@
 //! Provides a sandboxed, one-shot execution environment with fuel metering
 //! and no actor/message/capability infrastructure.
 
-use std::{
-    fmt,
-    io::Read,
-    sync::{Mutex, OnceLock},
-    time::Duration,
-};
+use std::{fmt, io::Read, time::Duration};
 
 use wasmtime::{
     Caller, Config, Engine, Error as WasmtimeError, Linker, Module, Result as WasmtimeResult,
@@ -45,8 +40,18 @@ const MAX_MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 /// never calls that import would otherwise loop forever, since the engine had
 /// no fuel/epoch limit at all (finding P1/P2). Wasmtime charges ~1 fuel per
 /// executed operation, so this bounds total executed instructions. Sized far
-/// above any legitimate tool's instruction count.
+/// above any ordinary tool's instruction count; the one legitimate run past it,
+/// the composed self-hosted compiler compiling its own source, carries a budget
+/// of its own (`execute_ephemeral_with_budgets`).
 const MAX_WASM_FUEL: u64 = 10_000_000_000;
+/// Hard ceiling for a caller-supplied per-call wasmtime fuel budget (100 G instructions).
+/// SELF-4, fuel side: `execute_ephemeral_with_budgets` exists so the composed self-hosted
+/// compiler can run under a raised backstop WITHOUT widening `MAX_WASM_FUEL` for every other
+/// caller — its self-compile executed 9.53 G wasm instructions at SHP-5c-1 (measured
+/// 2026-10-07: 95% of the default), so any growth of its source tripped the default backstop
+/// with a trap indistinguishable from a hostile loop. The budget itself must not become an
+/// unbounded wall-remover: a request above this ceiling is rejected loudly, never clamped.
+const MAX_WASM_FUEL_BUDGET: u64 = 100_000_000_000;
 /// Per-socket connect/read/write timeout for blocking HTTP shims.
 const HTTP_IO_TIMEOUT: Duration = Duration::from_secs(2);
 /// Whole-request timeout for blocking HTTP shims.
@@ -885,8 +890,8 @@ fn store_data(fuel_budget: u64, grants: &IoGrants, memory_budget: usize) -> Ephe
     }
 }
 
-/// Compile `wasm_bytes` to a wasmtime `(Engine, Module)`, reusing the most
-/// recently compiled pair when the bytes are byte-identical.
+/// Compile `wasm_bytes` to a wasmtime `(Engine, Module)`, reusing a previously
+/// compiled pair when the bytes are byte-identical.
 ///
 /// Cranelift-compiling a multi-MB module costs ~seconds. The self-hosted
 /// differential test suites call `execute_ephemeral` with the SAME merged tool
@@ -897,26 +902,25 @@ fn store_data(fuel_budget: u64, grants: &IoGrants, memory_budget: usize) -> Ephe
 /// `Store`/`Instance`/`Linker`, so execution stays fully ephemeral (no state
 /// leaks across calls — only the read-only compiled code is shared).
 ///
-/// Bounded to a SINGLE entry (replaced when the bytes differ) so a long-lived
-/// host that runs many distinct tools cannot grow this cache without bound.
+/// Bounded to [`crate::module_cache::MODULE_CACHE_CAPACITY`] entries so a
+/// long-lived host that runs many distinct tools cannot grow this cache without
+/// bound; `module_cache.rs` records why it holds more than one and why compiles
+/// run outside the global lock.
 fn engine_and_module(wasm_bytes: &[u8]) -> Result<(Engine, Module), ToolError> {
-    /// The single cached entry: the exact wasm bytes plus the compiled pair.
-    type CachedModule = (Vec<u8>, Engine, Module);
-    static CACHE: OnceLock<Mutex<Option<CachedModule>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(None));
-    let mut slot = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((bytes, engine, module)) = slot.as_ref()
-        && bytes.as_slice() == wasm_bytes
-    {
-        return Ok((engine.clone(), module.clone()));
-    }
+    static CACHE: crate::module_cache::ModuleCache<(Engine, Module)> =
+        crate::module_cache::ModuleCache::new(crate::module_cache::MODULE_CACHE_CAPACITY);
+    // A cache hit is safe: only modules that passed every check below are
+    // stored, and the key is the entire original input, including all custom
+    // sections.
+    CACHE.get_or_compile(wasm_bytes, || compile_checked(wasm_bytes))
+}
+
+/// The uncached compile behind [`engine_and_module`]: parse, check the host
+/// profile, and compile on a fuel-metered engine.
+fn compile_checked(wasm_bytes: &[u8]) -> Result<(Engine, Module), ToolError> {
     // Preserve Module::new's legacy support for WAT as well as binary Wasm.
     // Inspect the exact normalized binary that will be compiled, so text is
     // neither accidentally rejected nor a way to hide host requirements.
-    // A cache hit above is safe: only checked modules are inserted below, and
-    // the key is the entire original input, including all custom sections.
     let binary = wat::parse_bytes(wasm_bytes).map_err(|error| ToolError::Trapped {
         message: error.to_string(),
     })?;
@@ -942,7 +946,6 @@ fn engine_and_module(wasm_bytes: &[u8]) -> Result<(Engine, Module), ToolError> {
     let module = Module::from_binary(&engine, &binary).map_err(|e| ToolError::Trapped {
         message: e.to_string(),
     })?;
-    *slot = Some((wasm_bytes.to_vec(), engine.clone(), module.clone()));
     Ok((engine, module))
 }
 
@@ -981,6 +984,38 @@ pub fn execute_ephemeral_with_memory_budget(
     memory_budget: usize,
     grants: &IoGrants,
 ) -> Result<ToolResult, ToolError> {
+    execute_ephemeral_with_budgets(
+        wasm_bytes,
+        input,
+        fuel_budget,
+        MAX_WASM_FUEL,
+        memory_budget,
+        grants,
+    )
+}
+
+/// SELF-4: [`execute_ephemeral_with_memory_budget`] with a raised PER-CALL wasmtime fuel
+/// backstop as well. The default backstop (`MAX_WASM_FUEL`) is unchanged for every other
+/// caller — this exists for the composed self-hosted compiler, whose self-compile outgrew it
+/// (see [`MAX_WASM_FUEL_BUDGET`]). The cooperative SIGIL `fuel_budget` is charged and reported
+/// exactly as before; the wasm budget only bounds the engine's executed instruction count. A
+/// wasm budget above [`MAX_WASM_FUEL_BUDGET`] or a memory budget above
+/// [`MAX_MEMORY_BUDGET_BYTES`] is rejected loudly, never clamped.
+pub fn execute_ephemeral_with_budgets(
+    wasm_bytes: &[u8],
+    input: &[u8],
+    fuel_budget: u64,
+    wasm_fuel_budget: u64,
+    memory_budget: usize,
+    grants: &IoGrants,
+) -> Result<ToolResult, ToolError> {
+    if wasm_fuel_budget > MAX_WASM_FUEL_BUDGET {
+        return Err(ToolError::Trapped {
+            message: format!(
+                "wasm fuel budget {wasm_fuel_budget} exceeds the {MAX_WASM_FUEL_BUDGET}-instruction ceiling"
+            ),
+        });
+    }
     if memory_budget > MAX_MEMORY_BUDGET_BYTES {
         return Err(ToolError::Trapped {
             message: format!(
@@ -992,7 +1027,7 @@ pub fn execute_ephemeral_with_memory_budget(
         wasm_bytes,
         input,
         fuel_budget,
-        MAX_WASM_FUEL,
+        wasm_fuel_budget,
         memory_budget,
         grants,
     )
@@ -2350,40 +2385,43 @@ fn z3_solve_smtlib2(query: &str) -> i64 {
 /// never 0/1.
 #[cfg(feature = "solver")]
 fn z3_solve_smtlib2_with_rlimit(query: &str, rlimit: u32) -> i64 {
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
-    let solver = z3::Solver::new(&ctx);
-    let mut params = z3::Params::new(&ctx);
-    params.set_u32("rlimit", rlimit);
-    solver.set_params(&params);
+    // z3 0.21 builds every object in the thread's current context;
+    // `with_z3_config` makes that a fresh one for exactly this call (NC4).
+    // Like the old `Context::new`, it installs no error handler.
+    z3::with_z3_config(&z3::Config::new(), || {
+        let solver = z3::Solver::new();
+        let mut params = z3::Params::new();
+        params.set_u32("rlimit", rlimit);
+        solver.set_params(&params);
 
-    // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
-    // Context installs a null error handler), so it cannot be trusted to
-    // signal failure on its own.
-    solver.from_string(query);
+        // `from_string` returns () and SWALLOWS SMT-LIB2 parse errors (the
+        // Context installs a null error handler), so it cannot be trusted to
+        // signal failure on its own.
+        solver.from_string(query);
 
-    // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
-    // query was malformed or empty. Refuse to let `check()` on an empty
-    // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
-    if solver.get_assertions().is_empty() {
-        return pack_error(400);
-    }
+        // MI3/CM1 — parse-error gate: if nothing parsed into an assertion, the
+        // query was malformed or empty. Refuse to let `check()` on an empty
+        // solver return a spurious Sat. Reject as malformed — NEVER 0/1.
+        if solver.get_assertions().is_empty() {
+            return pack_error(400);
+        }
 
-    // Sanctioned carve-out (census-pinned by the compiler's
-    // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
-    // solves queries handed to it by running SIGIL programs under an
-    // explicit Z3 grant, a different trust domain from the compiler's
-    // verifier. The compile-time fragment guard's allowlist does not
-    // govern it; its soundness contract is NC1 (non-verdict outcomes
-    // are never read as sat/unsat — see docs/z3-runtime-capability.md).
-    #[allow(clippy::disallowed_methods)]
-    let result = solver.check();
-    match result {
-        z3::SatResult::Sat => 1,
-        z3::SatResult::Unsat => 0,
-        // NC1 — "don't know" is never "proven": a distinct negative code.
-        z3::SatResult::Unknown => pack_error(408),
-    }
+        // Sanctioned carve-out (census-pinned by the compiler's
+        // tests/z3_guard_fences.rs): this is the RUNTIME Cap<Z3> shim — it
+        // solves queries handed to it by running SIGIL programs under an
+        // explicit Z3 grant, a different trust domain from the compiler's
+        // verifier. The compile-time fragment guard's allowlist does not
+        // govern it; its soundness contract is NC1 (non-verdict outcomes
+        // are never read as sat/unsat — see docs/z3-runtime-capability.md).
+        #[allow(clippy::disallowed_methods)]
+        let result = solver.check();
+        match result {
+            z3::SatResult::Sat => 1,
+            z3::SatResult::Unsat => 0,
+            // NC1 — "don't know" is never "proven": a distinct negative code.
+            z3::SatResult::Unknown => pack_error(408),
+        }
+    })
 }
 
 #[cfg(all(test, feature = "solver"))]
@@ -2513,6 +2551,67 @@ mod tests {
             &IoGrants::none(),
         )
         .expect("the raised budget admits the same input");
+    }
+
+    /// SELF-4, fuel side: a wasm budget above the ceiling is rejected LOUDLY (never clamped),
+    /// and the budget passed is the one the engine runs under — a counting loop traps on a
+    /// budget below its instruction count and completes on one above it — so the seam cannot
+    /// silently fall back to the default backstop in either direction.
+    #[test]
+    fn wasm_fuel_budget_ceiling_and_plumbing() {
+        // 100,000 iterations of a 4-instruction loop body: far over a 1,000 budget, far
+        // under a 10,000,000 one.
+        let module = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (global (export "BUMP_PTR") (mut i32) (i32.const 1024))
+              (func (export "tool__tool_main") (param i32 i32) (result i64)
+                (local $n i32)
+                (local.set $n (i32.const 100000))
+                (loop $l
+                  (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                  (br_if $l (i32.ne (local.get $n) (i32.const 0))))
+                (i64.const 0)))
+            "#,
+        )
+        .expect("counting WAT should compile");
+        let err = execute_ephemeral_with_budgets(
+            &module,
+            b"",
+            1_000,
+            MAX_WASM_FUEL_BUDGET + 1,
+            MAX_GUEST_MEMORY_BYTES,
+            &IoGrants::none(),
+        )
+        .expect_err("a wasm budget above the ceiling must be rejected");
+        assert!(
+            format!("{err:?}").contains("ceiling"),
+            "the rejection names the ceiling: {err:?}"
+        );
+        match execute_ephemeral_with_budgets(
+            &module,
+            b"",
+            1_000,
+            1_000,
+            MAX_GUEST_MEMORY_BYTES,
+            &IoGrants::none(),
+        ) {
+            Err(ToolError::Trapped { message }) => assert!(
+                message.contains("fuel"),
+                "the loop trips the budget it was given, not something else: {message}"
+            ),
+            other => panic!("a 1,000-instruction budget must trap the loop, got {other:?}"),
+        }
+        execute_ephemeral_with_budgets(
+            &module,
+            b"",
+            1_000,
+            10_000_000,
+            MAX_GUEST_MEMORY_BYTES,
+            &IoGrants::none(),
+        )
+        .expect("the loop completes under a budget that covers it");
     }
 
     /// The declared ephemeral profile and the real linker must agree name for name and type
@@ -3057,6 +3156,63 @@ pub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { NetIO, Alloc, FFI, U
             Err(ToolError::Trapped { .. }) => {}
             other => panic!("infinite loop must trap on the fuel backstop, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn work_behind_call_ref_is_charged_fuel() {
+        // RUSTSEC-2026-0315, fixed in wasmtime 48.0.3: `call_ref` (and exception `catch`) could
+        // drop fuel accounting, so work reached through `call_ref` went uncharged. This engine's
+        // default config enables function references, so a hostile module could run far past its
+        // fuel cap. Measured on this module and engine config: 1,000 `call_ref` calls into a
+        // callee that loops 1,000 times consumed 10,002 fuel on wasmtime 47.0.4 and 8,011,002 on
+        // 48.0.3. The bound below, one unit per callee iteration, sits far under the honest
+        // charge and far over the affected one, so a wasmtime that reintroduces the bug fails
+        // here rather than passing the plain-loop backstop tests above.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (type $work_t (func))
+              (memory (export "memory") 1)
+              (global (export "BUMP_PTR") (mut i32) (i32.const 1024))
+              (elem declare func $work)
+              (func $work (type $work_t)
+                (local $i i32)
+                (loop $l
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br_if $l (i32.lt_u (local.get $i) (i32.const 1000)))))
+              (func (export "tool__tool_main") (param i32 i32) (result i64)
+                (local $n i32)
+                (loop $calls
+                  (call_ref $work_t (ref.func $work))
+                  (local.set $n (i32.add (local.get $n) (i32.const 1)))
+                  (br_if $calls (i32.lt_u (local.get $n) (i32.const 1000))))
+                (i64.const 0)))
+            "#,
+        )
+        .expect("call_ref WAT should compile");
+
+        let (engine, module) =
+            engine_and_module(&wasm).expect("the runtime's engine should accept call_ref");
+        let mut store = Store::new(&engine, ());
+        let cap: u64 = 100_000_000;
+        store
+            .set_fuel(cap)
+            .expect("the runtime's engine consumes fuel");
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("a module with no imports should instantiate");
+        let main = instance
+            .get_typed_func::<(i32, i32), i64>(&mut store, "tool__tool_main")
+            .expect("tool_main should be exported");
+        main.call(&mut store, (0, 0))
+            .expect("the work fits well inside the cap");
+        let consumed = cap
+            - store
+                .get_fuel()
+                .expect("the runtime's engine consumes fuel");
+        assert!(
+            consumed >= 1_000_000,
+            "work behind call_ref went uncharged: {consumed} fuel for 1,000,000 callee iterations"
+        );
     }
 
     #[test]

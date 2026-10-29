@@ -20,6 +20,8 @@ use crate::json_envelope::OutputFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandKind {
+    PackageInit,
+    PackageRefresh,
     PackageLock,
     PackageEvidence,
     Check,
@@ -93,6 +95,8 @@ mod typed_command_shape_tests {
 impl CommandKind {
     pub(crate) fn json_name(self) -> &'static str {
         match self {
+            Self::PackageInit => "package-init",
+            Self::PackageRefresh => "package-refresh",
             Self::PackageLock => "package-lock",
             Self::PackageEvidence => "package-evidence",
             Self::Check => "check",
@@ -125,6 +129,9 @@ pub(crate) struct CompileCommand {
     pub(crate) project_root: Option<String>,
     /// Explicit local package root. Never inferred from the current directory.
     pub(crate) package_root: Option<PathBuf>,
+    /// Bounded public, host-free tool input; accepted only by package run.
+    pub(crate) package_input: Option<String>,
+    pub(crate) package_fuel: Option<u64>,
     /// ACTOR-LIVE AL-4: run as a resident service, feeding stdin lines to the entry actor.
     pub(crate) serve: bool,
     /// The entry-actor handler each stdin line routes to (`--on`); when `None`, the sole
@@ -213,8 +220,19 @@ pub(crate) struct ExplainCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
+    PackageRefresh {
+        root: PathBuf,
+        json: bool,
+    },
+    PackageInit {
+        root: PathBuf,
+        namespace: String,
+        dependencies: Vec<sigil_compiler::package::LocalPackageDependency>,
+        json: bool,
+    },
     PackageLock {
         root: PathBuf,
+        dependencies: Vec<sigil_compiler::package::LocalPackageDependency>,
         json: bool,
     },
     PackageEvidence {
@@ -258,6 +276,8 @@ impl Command {
 
     pub(crate) fn kind(&self) -> CommandKind {
         match self {
+            Self::PackageInit { .. } => CommandKind::PackageInit,
+            Self::PackageRefresh { .. } => CommandKind::PackageRefresh,
             Self::PackageLock { .. } => CommandKind::PackageLock,
             Self::PackageEvidence { .. } => CommandKind::PackageEvidence,
             Self::Check(_) => CommandKind::Check,
@@ -276,7 +296,10 @@ impl Command {
 
     pub(crate) fn output_format(&self) -> OutputFormat {
         let json = match self {
-            Self::PackageLock { json, .. } | Self::PackageEvidence { json, .. } => *json,
+            Self::PackageInit { json, .. }
+            | Self::PackageRefresh { json, .. }
+            | Self::PackageLock { json, .. }
+            | Self::PackageEvidence { json, .. } => *json,
             Self::Check(args) | Self::Run(args) => args.json,
             Self::Forge(args) => args.json,
             Self::RegistryAdd(args) => args.json,
@@ -392,7 +415,14 @@ impl<'a> ArgCursor<'a> {
 
 pub(crate) fn parse_args(args: &[String]) -> anyhow::Result<Command> {
     match args.first().map(String::as_str) {
-        Some("package-lock" | "package-evidence") => parse_package_artifacts(args),
+        Some("package-init" | "package-refresh")
+            if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) =>
+        {
+            parse_info_command(&args[1..], CommandKind::Help)
+        }
+        Some("package-init" | "package-refresh" | "package-lock" | "package-evidence") => {
+            parse_package_artifacts(args)
+        }
         None => Ok(Command::Check(CompileCommand {
             source_name: "<inline>".to_owned(),
             source_text: "module sigil;".to_owned(),
@@ -425,9 +455,13 @@ pub(crate) fn parse_args(args: &[String]) -> anyhow::Result<Command> {
 
 fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
     let evidence = args[0] == "package-evidence";
+    let init = args[0] == "package-init";
+    let refresh = args[0] == "package-refresh";
     let mut root = None;
+    let mut namespace = None;
     let mut output_dir = None;
     let mut host_profile = None;
+    let mut dependencies = Vec::new();
     let mut json = false;
     let mut index = 1;
     while index < args.len() {
@@ -440,7 +474,10 @@ fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
             index += 1;
             continue;
         }
-        if !matches!(flag, "--root" | "--output-dir" | "--host-profile") {
+        if !matches!(
+            flag,
+            "--root" | "--output-dir" | "--host-profile" | "--dependency" | "--namespace"
+        ) {
             bail!("{}: unexpected argument `{flag}`", args[0]);
         }
         let value = args
@@ -448,6 +485,28 @@ fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
             .filter(|v| !v.is_empty() && !v.starts_with("--"))
             .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
         match flag {
+            "--namespace" if init => {
+                if namespace.replace(value.clone()).is_some() {
+                    bail!("duplicate --namespace");
+                }
+            }
+            "--dependency" if !evidence && !refresh => {
+                let (package, path) = value
+                    .split_once('=')
+                    .filter(|(id, path)| !id.is_empty() && !path.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("--dependency requires PACKAGE=PATH"))?;
+                if dependencies.iter().any(
+                    |dependency: &sigil_compiler::package::LocalPackageDependency| {
+                        dependency.package == package
+                    },
+                ) {
+                    bail!("duplicate --dependency package `{package}`");
+                }
+                dependencies.push(sigil_compiler::package::LocalPackageDependency {
+                    package: package.to_owned(),
+                    path: PathBuf::from(path),
+                });
+            }
             "--root" => {
                 if root.replace(PathBuf::from(value)).is_some() {
                     bail!("duplicate --root");
@@ -471,7 +530,16 @@ fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
         index += 2;
     }
     let root = root.ok_or_else(|| anyhow::anyhow!("--root is required"))?;
-    if evidence {
+    if refresh {
+        Ok(Command::PackageRefresh { root, json })
+    } else if init {
+        Ok(Command::PackageInit {
+            root,
+            namespace: namespace.ok_or_else(|| anyhow::anyhow!("--namespace is required"))?,
+            dependencies,
+            json,
+        })
+    } else if evidence {
         Ok(Command::PackageEvidence {
             root,
             output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("--output-dir is required"))?,
@@ -479,7 +547,11 @@ fn parse_package_artifacts(args: &[String]) -> anyhow::Result<Command> {
             host_profile,
         })
     } else {
-        Ok(Command::PackageLock { root, json })
+        Ok(Command::PackageLock {
+            root,
+            dependencies,
+            json,
+        })
     }
 }
 
@@ -882,6 +954,8 @@ fn parse_path_command(
     // The CLI reads Solidity project files; frontend import resolution stays in-memory.
     let mut project_root: Option<String> = None;
     let mut package_root: Option<PathBuf> = None;
+    let mut package_input = None;
+    let mut package_fuel = None;
     let mut serve = false;
     let mut serve_handler: Option<String> = None;
     let mut persistent_cap: Option<u32> = None;
@@ -889,6 +963,25 @@ fn parse_path_command(
     let mut cursor = ArgCursor::new(args, 1);
     while let Some(arg) = cursor.next() {
         match arg {
+            "--input" => {
+                let input = cursor.require("--input requires text")?.to_owned();
+                if input.len() > 1024 * 1024 {
+                    bail!("--input exceeds the 1 MiB package tool limit");
+                }
+                if package_input.replace(input).is_some() {
+                    bail!("duplicate --input");
+                }
+            }
+            "--fuel" => {
+                let value = cursor.require("--fuel requires a positive integer")?;
+                let fuel = value.parse::<u64>().context("invalid --fuel")?;
+                if !(1..=10_000_000).contains(&fuel) {
+                    bail!("--fuel must be between 1 and 10000000");
+                }
+                if package_fuel.replace(fuel).is_some() {
+                    bail!("duplicate --fuel");
+                }
+            }
             "--host-profile" => {
                 let name =
                     cursor.require("--host-profile requires a profile name (`ephemeral`)")?;
@@ -1021,9 +1114,16 @@ fn parse_path_command(
         &cert_provenance_policy,
     )?;
 
+    if (package_input.is_some() || package_fuel.is_some())
+        && (kind != CommandKind::Run || package_root.is_none())
+    {
+        bail!("--input and --fuel are supported only by `run --package`");
+    }
     if let Some(package_root) = package_root {
-        if kind != CommandKind::Check {
-            bail!("--package is supported only with `check`");
+        if kind == CommandKind::Run && (wasm_out_path.is_some() || dump_wat) {
+            bail!(
+                "package run does not accept --emit-wasm or --wat; use check --package to inspect or save the build"
+            );
         }
         if !paths.is_empty() {
             bail!("--package is mutually exclusive with source file paths");
@@ -1039,18 +1139,24 @@ fn parse_path_command(
                 "--package cannot be combined with --from, --project-root, --entry, --serve, --on, or --persistent-cap"
             );
         }
-        return Ok(Command::Check(CompileCommand {
-            source_name: format!("<package:{}>", package_root.display()),
-            package_root: Some(package_root),
-            dump_wat,
-            json,
-            wasm_out_path,
-            cert_path,
-            cert_signing,
-            build_deadline,
-            host_profile: host_profile.clone(),
-            ..CompileCommand::default()
-        }));
+        return Ok(compile_command(
+            kind,
+            CompileCommand {
+                source_name: format!("<package:{}>", package_root.display()),
+                package_root: Some(package_root),
+                dump_wat,
+                json,
+                wasm_out_path,
+                cert_path,
+                cert_signing,
+                cert_provenance_policy,
+                package_input,
+                package_fuel,
+                build_deadline,
+                host_profile: host_profile.clone(),
+                ..CompileCommand::default()
+            },
+        ));
     }
 
     // `--serve` (and its `--on`) only apply to `run` — `check` never starts the runtime.

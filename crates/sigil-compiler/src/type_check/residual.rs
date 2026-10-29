@@ -439,6 +439,7 @@ mod tests {
                 ring: Ring::Inner,
                 trusted: false,
                 span: sp(),
+                externs: Vec::new(),
                 functions: vec![TypedFunction {
                     ret_flow: false,
                     name: "f".into(),

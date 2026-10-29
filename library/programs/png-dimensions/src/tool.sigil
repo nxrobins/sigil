@@ -1,0 +1,62 @@
+// Private PNG dimension inspector: exactly 24 header bytes as hex, no file authority.
+module tool;
+use sigil::bytes;
+use sigil::fmt;
+use sigil::bytes_out;
+
+fn hex_digit(b: i64) -> i64 {
+    if b >= 48 {
+        if b <= 57 { return b - 48; } else {}
+    } else {}
+    if b >= 65 {
+        if b <= 70 { return b - 55; } else {}
+    } else {}
+    if b >= 97 {
+        if b <= 102 { return b - 87; } else {}
+    } else {}
+    return -400;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    // Fixed-size input makes the inspection bounded independently of image size.
+    // Reject malformed transport before any load; negative results refuse closed.
+    if input_len != 48 { return -400; } else {}
+    let header = alloc(24);
+    let mut i = 0;
+    while i < 24 {
+        let high = hex_digit(load8(input_ptr + i * 2));
+        if high < 0 { return high; } else {}
+        let low = hex_digit(load8(input_ptr + i * 2 + 1));
+        if low < 0 { return low; } else {}
+        store8(header + i, high * 16 + low);
+        i = i + 1;
+    }
+
+    let signature_a = bytes::read_u32_be(header, 24, 0);
+    if signature_a < 0 { return signature_a; } else {}
+    let signature_b = bytes::read_u32_be(header, 24, 4);
+    if signature_b < 0 { return signature_b; } else {}
+    if signature_a != 2303741511 { return -401; } else {}
+    if signature_b != 218765834 { return -401; } else {}
+    let chunk_len = bytes::read_u32_be(header, 24, 8);
+    if chunk_len < 0 { return chunk_len; } else {}
+    if chunk_len != 13 { return -401; } else {}
+    let chunk_type = bytes::read_u32_be(header, 24, 12);
+    if chunk_type < 0 { return chunk_type; } else {}
+    if chunk_type != 1229472850 { return -401; } else {}
+    let width = bytes::read_u32_be(header, 24, 16);
+    if width < 0 { return width; } else {}
+    let height = bytes::read_u32_be(header, 24, 20);
+    if height < 0 { return height; } else {}
+    if width == 0 { return -422; } else {}
+    if height == 0 { return -422; } else {}
+    if width > 2147483647 { return -422; } else {}
+    if height > 2147483647 { return -422; } else {}
+
+    // Each allowed dimension has at most ten decimal digits, plus the separator.
+    let out = bytes_out::new(21);
+    bytes_out::append_output(out, fmt::decimal_i64(width));
+    bytes_out::push_byte(out, 120);
+    bytes_out::append_output(out, fmt::decimal_i64(height));
+    return bytes_out::finish(out);
+}

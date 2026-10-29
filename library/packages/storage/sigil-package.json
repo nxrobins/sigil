@@ -1,0 +1,73 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc",
+      "FFI",
+      "KvIO",
+      "Unsafe"
+    ],
+    "grant_categories": [
+      "ffi"
+    ],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "trusted_outer"
+    ],
+    "stable_errors": [
+      "-400",
+      "-403",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-500"
+    ],
+    "taint_contracts": [
+      "storage::load(ns:Internal,ns_len:Internal,key:Internal,key_len:Internal)->Internal",
+      "storage::publish(ns:Internal,ns_len:Internal,key:Internal,key_len:Internal,expected:Internal,expected_len:Internal,next:Internal,next_len:Internal)->Internal"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": [
+      "module:storage"
+    ]
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:5ff2bd0c86a9d8239135d7972238a8ff81cc772dace91ab8b02764404bb77a2a",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/kv",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source storage package; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:4568e1f837a485f5b0b08145ec65da9f2d2fb0ee6663a6d95b91c9332063cd56",
+    "api_contract_hash": "sha256:2ebb0b4d65a537c7d4607579f65dbe70028b68c0f30cfdc7c086a688fe0db22c",
+    "charter_hash": "sha256:a9c90ee62d7f41bd9f68b787f9332a7fb1349ca367c4cd37fd93e07438c78913",
+    "evidence_manifest_hash": "sha256:827fd0a936d7ee281edea9692fc8f1b79fc2bd250e14d36c17577c0507f83ccd"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "storage"
+  ],
+  "name": "storage",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

@@ -206,6 +206,46 @@ fn f() -> i64 {
     );
 }
 
+/// The loop variable shadows an enclosing `let mut` of its name inside the body, so assigning
+/// to it there is T042 all the same. The body's mutable set was inherited by name and never
+/// pruned of the variable, so with `let mut i` in scope `i = 99` passed, and in a range loop
+/// `a[i]` kept the bounds check the fact had elided: a read and a write past the array (the
+/// third review of SR-035). The for-in element variable follows the same rule. The outer
+/// binding stays assignable after the loop (runtime `range_for.rs`,
+/// `rf_outer_mut_binding_survives_the_loop`).
+#[test]
+fn loop_variable_shadowing_an_outer_mut_binding_is_still_immutable() {
+    let exact_codes = |label: &str, source: &str| -> Vec<String> {
+        let err = compile_named_module(format!("range_for_{label}.sigil"), source)
+            .err()
+            .unwrap_or_else(|| panic!("{label}: an assignment to the loop variable compiled"));
+        let mut codes: Vec<String> = err
+            .diagnostics()
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    };
+    assert_eq!(
+        exact_codes(
+            "range_outer_mut",
+            "module main;\nfn f() -> i64 {\n    let mut i: i64 = 0;\n    for i in 0..3 {\n        i = 99;\n    }\n    return i;\n}\n"
+        ),
+        ["T042"],
+        "a range loop's variable under an enclosing `let mut i`"
+    );
+    assert_eq!(
+        exact_codes(
+            "for_in_outer_mut",
+            "module main;\nfn g() -> i64 {\n    let arr: [i64; 3] = [1, 2, 3];\n    let mut x: i64 = 0;\n    for x in arr {\n        x = 5;\n    }\n    return x;\n}\n"
+        ),
+        ["T042"],
+        "a for-in element variable under an enclosing `let mut x`"
+    );
+}
+
 #[test]
 fn secret_bound_rejected_t022() {
     // The bounds ARE the iteration count — a @SecretCT bound is

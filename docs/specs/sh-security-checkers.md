@@ -68,26 +68,99 @@ filters both sides to the compared set, so the shadow lags the oracle on those t
 disagreeing with it.
 
 The covered corpus exercises scalar flow, per-field record flow, selected closure captures,
-declassification, calls, returns, indexing, arithmetic, allocation sizes, and the algorithmic
-constant-time restrictions represented by those codes. The self-host checker preserves the four
-labels `Public < Internal < Secret < SecretCT` and mirrors the production ordering where multiple
+declassification, calls, returns, indexing, arithmetic, allocation sizes, the algorithmic
+constant-time restrictions represented by those codes, and, since SHP-5a, production's
+control-flow join model (branch and arm merges, `break`/`continue`/`return` divergence, the
+continuation taint, block shadow restores, the loop-head fixpoint) and its M6 region model
+(`alloc` regions, aliases through `+`/`-` chains, raw stores through any operand), and, since
+SHP-5c-1, the `split`/`draw` quantity rule and production's intraprocedural heap floors, and,
+since SHP-5c-2, its call-site summaries (below).
+Nonpublic bindings under control flow are therefore checked, not refused; the join model is
+pinned exact against the oracle on hand-written fixtures and on a generated surface
+(`joinmodel_surface_agrees_exactly`), the floors on a reject and a clean twin per rule. The
+self-host checker preserves the four labels
+`Public < Internal < Secret < SecretCT` and mirrors the production ordering where multiple
 covered diagnostics can fire.
 
 The following shapes emit `SH_TAINT_UNSUPPORTED` and make the composed self-host pipeline reject:
 
-- early exits whose continuation taint is not modeled;
-- guarded matches and unsupported control-flow joins;
+- a tuple let whose value carries a nonpublic pc;
+- guarded matches;
 - actor handlers, spawn, and send/ask boundaries;
-- closure values outside the covered capture cases; and
+- closure values outside the covered capture cases;
+- a function naming more than 62 `alloc` regions (the region mask's width);
+- a type alias, and any shape the heap-floor typing cannot classify at a non-public label
+  (SHP-5c-1, below);
+- a call whose callee the shadow cannot name, or whose summary carries a fact its typing
+  cannot decide, while a label makes the summaries live (SHP-5c-2, below);
+- a region body outside the scalar-only rule that stands in for production's escape lattice
+  (SHP-5c-3, below); and
 - unknown or unmapped syntax.
 
-This explicit poison boundary is load-bearing. Production control-flow joins, actor boundaries,
-and complete closure-value taint remain enforced by `taint_check.rs` but are not claimed as an
-independent self-host model.
+This explicit poison boundary is load-bearing. Actor boundaries and complete closure-value
+taint remain enforced by `taint_check.rs` but are not claimed as an independent self-host
+model.
+
+Since SHP-5c-1 the shadow reads the amount of a `split` or `draw` (`@SecretCT` is T027, any
+other non-public label T001; the capability itself is `@Public`, as are `restrict` and `mint`)
+and carries production's intraprocedural heap floors: a function's raw-load and typed-read
+floors, monotone and path-insensitive, raised by an extern call or a callee whose effect row
+names FFI (S1), by a heap-resident value at a non-public label — a parameter at entry, any
+materialisation thereafter (S2) — by a raw store at the join of its operands and the pc (S4,
+S6) and by a projected-place write and its index taint (S6, S7), and joined into every raw load
+and every typed read (an element, field or slice projection, a `?`, an intrinsic, a heap-typed
+local, a `str` literal or f-string: S11). Production keys two of those rules on types; the
+shadow recovers them from syntax (`tt_edesc`, a type descriptor per binding and expression)
+and refuses, rather than guesses, what it cannot classify wherever a non-public label would
+make a floor rule read it: a type alias (refused outright), a generic record's field, a call to
+a function the program does not declare, an expression over a borrowed operand. At `@Public`
+the typing is inert, so an all-public program — the self-compile — is neither typed nor
+refused.
+
+Since SHP-5c-2 the shadow carries production's call-site summaries. Every fn and impl-method
+row of its table holds the summary of its body — whether a call to it can have written
+linear memory at an existing address (a raw store, a slot write, a projected-place
+assignment), built a heap-resident value into fresh cells, read memory raw or typed; the
+bound on the labels it mints itself (every annotation in it, `@Internal` if it calls the
+host); and the parameter slots a raw write reachable from it can go through — a syntactic
+scan of the body (its rooted-slot map a fixpoint, as production's) closed over the call
+graph within production's bound. A call site then joins the floors the callee reads into
+its result (S8), raises the caller's floors by what the callee writes at the site's taint
+joined with the callee's bound (S5) and taints the regions of the arguments it writes
+through (S5, region side); a lowered method call — a user type's or the stdlib's impl
+method, an associated function, a module's function, the `str` and int methods the type
+checker routes to stdlib functions — resolves to its row, with each argument (the receiver
+first) checked against its declared label; a `@Flow` parameter accepts every label but
+`@SecretCT`. Two facts of the scan are three-valued (a materialisation and a typed read are
+typed by the descriptors) and a row is reliable only when every callee it reaches is one the
+shadow names; a site whose callee the shadow cannot name (a call through a local, a `grant`
+of a closure held in a local), a site that consults an unreliable row, and an unknown fact
+that would decide a floor all refuse — production applies its program-wide bound there,
+which the shadow cannot reproduce. The pass runs only when a label (an effect operation's
+parameter label included: production's bound folds it in, and the shadow reads it off the
+operation's own parameter nodes), a flow signature, an extern, an FFI row or a
+`declassify_ct` can make a value non-public; the all-public self-compile skips it. Nothing
+production derives from the heap floors is oracle-only now (SR-022 keeps the mechanisation
+gap).
+
+Since SHP-5c-3 the shadow checks the slot intrinsics and region statements. `slot_put` and
+`slot_take` are the checked write a slot is (`intrinsic_memory`), `slot_new` is inert, and each
+call's value is the join of its operands, with a call's explicit type arguments skipped. A
+`region name(limit) { body }` statement is checked as a block of its function at the same pc:
+a `@SecretCT` limit is T029 (the allocation size is observable through the heap layout), the
+name is bound to a public scalar handle, the body's environment is a copy of the enclosing one
+(a write through an outer binding carries its label out; an outer name cannot be rebound there,
+production's T042, which the type checker mirrors). Production's escape lattice (T254) is not
+mirrored: the scalar-only rule stands in for it, admitting a body whose every let binds a
+scalar and whose every expression constructs no heap value and hands no non-scalar to a call
+(a bare name bound before the body is not born in the region, whatever its type), and refusing
+every other body, so no region program reads clean where the lattice rejects it.
 
 **Evidence:** `crates/sigil-runtime/tests/taint_check_differential.rs`,
-`pipeline_differential.rs`, the `sh_taint_unsupported_shapes_are_explicit` canary, and the
-SND-TAINT/constant-time rows in `docs/SOUNDNESS_MATRIX.md`.
+`pipeline_differential.rs`, the `sh_taint_unsupported_shapes_are_explicit`,
+`sh_taint_program_bound_sites_refuse_only_while_live` and
+`sh_taint_region_overflow_is_explicit` canaries, and the SND-TAINT/constant-time rows in
+`docs/SOUNDNESS_MATRIX.md`.
 
 ## Change rule
 

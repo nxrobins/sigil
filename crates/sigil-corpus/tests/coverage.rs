@@ -4,7 +4,7 @@
 
 use sigil_compiler::registry::CODES;
 use sigil_corpus::extract::ExtractCtx;
-use sigil_corpus::{build, corpus_paths};
+use sigil_corpus::{BuildResult, build, corpus_paths};
 
 fn ctx() -> ExtractCtx {
     ExtractCtx {
@@ -14,9 +14,19 @@ fn ctx() -> ExtractCtx {
     }
 }
 
+/// The corpus, built ONCE for the three tests below. Each used to call `build` itself, and a build
+/// compiles every candidate program (about 3,700, nearly 30 s locally). `build` is deterministic
+/// (`determinism.rs` builds twice and compares, so it keeps its own raw calls), so three builds
+/// computed the same result three times. A build that panics leaves the cell empty, and the next
+/// test builds again rather than inheriting a half-built value.
+fn built() -> &'static BuildResult {
+    static BUILT: std::sync::OnceLock<BuildResult> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| build(&ctx()).expect("build"))
+}
+
 #[test]
 fn every_registry_code_has_a_reference_record() {
-    let b = build(&ctx()).expect("build");
+    let b = built();
     for entry in CODES {
         let id = format!("error_corpus:{}", entry.code.as_str());
         assert!(
@@ -29,7 +39,7 @@ fn every_registry_code_has_a_reference_record() {
 
 #[test]
 fn ledger_reconciles_and_extractors_are_present() {
-    let b = build(&ctx()).expect("build");
+    let b = built();
     // ET-C6 conservation (build also asserts this internally).
     assert_eq!(
         b.proposed,
@@ -55,7 +65,7 @@ fn ledger_reconciles_and_extractors_are_present() {
 #[test]
 fn no_validated_intent_record_is_unvalidated() {
     use sigil_corpus::schema::ValidationKind;
-    let b = build(&ctx()).expect("build");
+    let b = built();
     for r in b.records.values() {
         if matches!(
             r.validated.how,

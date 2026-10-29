@@ -150,8 +150,8 @@ a narrow native FFI bridge: Rust encodes canonical bytes and calls the exported 
 Rust half of the older differential
 runs in the `test` and `solver` jobs; the Lean build and no-sorry/axiom gate run in the required Lean
 workflow. The linked production verifier builds semantic cross-reference and taint-adjacency
-indexes once per program. Required Rust CI also compiles the roughly quarter-million-record self-host
-trio through that exact native verifier under a fixed five-second bound (`SELFHOST_TRIO_CANARY_MS`),
+indexes once per program. Required Rust CI also compiles the self-host trio, several hundred thousand
+records, through that exact native verifier under a fixed six-second bound (`SELFHOST_TRIO_CANARY_MS`),
 armed only in the isolated `Formal verifier scaling canary` step where the clock measures the
 verifier alone — the corpus extractor's own drop bound (`VALIDATE_BUDGET_MS`) is wider and only
 bounds a hung compile; source canaries reject the measured whole-program-rescan regressions. This

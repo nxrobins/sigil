@@ -1,0 +1,211 @@
+// Immutable bounded JSON records; classified inputs keep their labels and old records survive refusal.
+module records;
+use sigil::json;
+
+record JsonRecord { ptr: i64, length: i64, limit: i64, fields: i64, error: i64 }
+record WordValue { value: u64, error: i64 }
+
+fn failed(code: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    return JsonRecord { ptr: 0, length: 0, limit: 0, fields: 0, error: code };
+}
+fn span(ptr: i64 @Flow, len: i64 @Flow, maximum: i64 @Flow) -> i64 @Flow {
+    if ptr < 0 || len < 0 { return -400; } else {}
+    if ptr > 2147483647 || len > maximum || len > 2147483647 - ptr { return -413; } else {}
+    return 0;
+}
+fn ascii(ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let mut i = 0;
+    while i < len { if load8(ptr + i) > 127 { return -422; } else {} i = i + 1; }
+    return 0;
+}
+fn key_status(ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let checked = span(ptr, len, 64);
+    if checked < 0 { return checked; } else {}
+    if len == 0 { return -400; } else {}
+    let mut i = 0;
+    while i < len {
+        let byte = load8(ptr + i);
+        if !(byte >= 97 && byte <= 122) && byte != 95 && !(i > 0 && byte >= 48 && byte <= 57) { return -422; } else {}
+        i = i + 1;
+    }
+    return 0;
+}
+fn checked(doc: JsonRecord @Flow @ReadOnly) -> i64 @Flow {
+    if doc.error < 0 { return doc.error; } else {}
+    if doc.error != 0 || doc.length < 2 || doc.limit < 2 || doc.fields < 0 { return -400; } else {}
+    if doc.limit > 32768 || doc.fields > 32 || doc.length > doc.limit { return -413; } else {}
+    let valid = span(doc.ptr, doc.length, 32768);
+    if valid < 0 { return valid; } else {}
+    if load8(doc.ptr) != 123 || load8(doc.ptr + doc.length - 1) != 125 { return -400; } else {}
+    return json::validate(doc.ptr, doc.length);
+}
+// Private copying only targets fresh allocations. The existing Public mutable
+// bytes builder cannot consume classified KV values without narrowing labels.
+fn copy_fresh(dst: i64 @Flow, src: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let mut i = 0;
+    while i < len { store8(dst + i, load8(src + i)); i = i + 1; }
+    return len;
+}
+
+pub fn new(limit: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    if limit < 2 { return failed(-400); } else {}
+    if limit > 32768 { return failed(-413); } else {}
+    let ptr = alloc(2); store8(ptr, 123); store8(ptr + 1, 125);
+    return JsonRecord { ptr: ptr, length: 2, limit: limit, fields: 0, error: 0 };
+}
+
+pub fn put_json(doc: JsonRecord @Flow @ReadOnly, key: i64 @Flow, key_len: i64 @Flow, value: i64 @Flow, value_len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let valid = checked(doc);
+    if valid < 0 { return failed(valid); } else {}
+    let name = key_status(key, key_len);
+    if name < 0 { return failed(name); } else {}
+    let extent = span(value, value_len, 16384);
+    if extent < 0 { return failed(extent); } else {}
+    let text = ascii(value, value_len);
+    if text < 0 { return failed(text); } else {}
+    let grammar = json::validate(value, value_len);
+    if grammar < 0 { return failed(grammar); } else {}
+    if doc.fields == 32 { return failed(-413); } else {}
+    // Extraction checks decoded key equality; a duplicate never replaces old data.
+    let previous = json::parse_field(doc.ptr, doc.length, key, key_len);
+    if previous >= 0 { return failed(-409); } else {}
+    if previous != -404 { return failed(previous); } else {}
+    let mut comma = 0;
+    if doc.fields > 0 { comma = 1; } else {}
+    let total = doc.length + comma + key_len + 3 + value_len;
+    if total > doc.limit { return failed(-413); } else {}
+    let ptr = alloc(total);
+    let copied = copy_fresh(ptr, doc.ptr, doc.length - 1);
+    let mut at = copied;
+    if comma == 1 { store8(ptr + at, 44); at = at + 1; } else {}
+    store8(ptr + at, 34); at = at + 1;
+    let copied_key = copy_fresh(ptr + at, key, key_len); at = at + copied_key;
+    store8(ptr + at, 34); store8(ptr + at + 1, 58); at = at + 2;
+    let copied_value = copy_fresh(ptr + at, value, value_len); at = at + copied_value;
+    store8(ptr + at, 125);
+    return JsonRecord { ptr: ptr, length: total, limit: doc.limit, fields: doc.fields + 1, error: 0 };
+}
+
+pub fn put_string(doc: JsonRecord @Flow @ReadOnly, key: i64 @Flow, key_len: i64 @Flow, value: i64 @Flow, value_len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let valid = checked(doc); if valid < 0 { return failed(valid); } else {}
+    let extent = span(value, value_len, 2048); if extent < 0 { return failed(extent); } else {}
+    let text = ascii(value, value_len); if text < 0 { return failed(text); } else {}
+    let encoded = json::escape_string(value, value_len);
+    if encoded < 0 { return failed(encoded); } else {}
+    let ptr = encoded / 4294967296;
+    return put_json(doc, key, key_len, ptr, encoded - ptr * 4294967296);
+}
+
+fn digit(value: i64 @Flow) -> i64 @Flow {
+    if value < 10 { return value + 48; } else {}
+    return value + 87;
+}
+fn nibble(value: i64 @Flow) -> i64 @Flow {
+    if value >= 48 && value <= 57 { return value - 48; } else {}
+    if value >= 97 && value <= 102 { return value - 87; } else {}
+    return -422;
+}
+
+pub fn hex(ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let valid = span(ptr, len, 8191); if valid < 0 { return valid; } else {}
+    let out = alloc(2 * len + 2); store8(out, 34);
+    let mut i = 0;
+    while i < len {
+        let byte = load8(ptr + i);
+        store8(out + 1 + 2 * i, digit(byte / 16)); store8(out + 2 + 2 * i, digit(byte % 16));
+        i = i + 1;
+    }
+    store8(out + 1 + 2 * len, 34);
+    return out * 4294967296 + 2 * len + 2;
+}
+
+pub fn unhex(ptr: i64 @Flow, len: i64 @Flow, maximum: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    if maximum < 0 { return -400; } else {}
+    if maximum > 8191 { return -413; } else {}
+    let valid = span(ptr, len, 16382); if valid < 0 { return valid; } else {}
+    if len % 2 != 0 { return -422; } else {}
+    if len / 2 > maximum { return -413; } else {}
+    let mut i = 0;
+    while i < len { if nibble(load8(ptr + i)) < 0 { return -422; } else {} i = i + 1; }
+    let out = alloc(len / 2);
+    i = 0;
+    while i < len {
+        store8(out + i / 2, nibble(load8(ptr + i)) * 16 + nibble(load8(ptr + i + 1)));
+        i = i + 2;
+    }
+    return out * 4294967296 + len / 2;
+}
+
+pub fn put_hex(doc: JsonRecord @Flow @ReadOnly, key: i64 @Flow, key_len: i64 @Flow, value: i64 @Flow, value_len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let valid = checked(doc); if valid < 0 { return failed(valid); } else {}
+    let encoded = hex(value, value_len); if encoded < 0 { return failed(encoded); } else {}
+    let ptr = encoded / 4294967296;
+    return put_json(doc, key, key_len, ptr, encoded - ptr * 4294967296);
+}
+
+pub fn put_u64(doc: JsonRecord @Flow @ReadOnly, key: i64 @Flow, key_len: i64 @Flow, value: u64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let valid = checked(doc); if valid < 0 { return failed(valid); } else {}
+    let out = alloc(18); store8(out, 34); store8(out + 17, 34);
+    let mut remaining = value; let mut i = 16;
+    while i > 0 {
+        store8(out + i, digit((remaining % 16).as_i64()));
+        remaining = remaining / 16; i = i - 1;
+    }
+    return put_json(doc, key, key_len, out, 18);
+}
+
+pub fn read_u64(ptr: i64 @Flow, len: i64 @Flow) -> WordValue @Flow ! { Alloc } {
+    let valid = span(ptr, len, 16);
+    if valid < 0 { return WordValue { value: 0, error: valid }; } else {}
+    if len != 16 { return WordValue { value: 0, error: -422 }; } else {}
+    let mut value: u64 = 0; let mut i = 0;
+    while i < 16 {
+        let next = nibble(load8(ptr + i));
+        if next < 0 { return WordValue { value: 0, error: -422 }; } else {}
+        value = value * 16 + next.as_u64(); i = i + 1;
+    }
+    return WordValue { value: value, error: 0 };
+}
+
+fn finite_words(ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let valid = span(ptr, len, 4096); if valid < 0 { return valid; } else {}
+    if len % 8 != 0 { return -422; } else {}
+    let mut i = 0;
+    while i < len {
+        // IEEE binary64 little-endian exponent 0x7ff identifies both infinities
+        // and every NaN payload. Subnormals and signed zero remain byte-exact.
+        if load8(ptr + i + 7) % 128 == 127 && load8(ptr + i + 6) / 16 == 15 { return -422; } else {}
+        i = i + 8;
+    }
+    return 0;
+}
+
+pub fn put_f64le(doc: JsonRecord @Flow @ReadOnly, key: i64 @Flow, key_len: i64 @Flow, ptr: i64 @Flow, count: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let prior = checked(doc); if prior < 0 { return failed(prior); } else {}
+    if count < 0 { return failed(-400); } else {}
+    if count > 512 { return failed(-413); } else {}
+    let valid = finite_words(ptr, count * 8); if valid < 0 { return failed(valid); } else {}
+    return put_hex(doc, key, key_len, ptr, count * 8);
+}
+
+pub fn read_f64le(ptr: i64 @Flow, len: i64 @Flow, count: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    if count < 0 { return -400; } else {}
+    if count > 512 { return -413; } else {}
+    if len != count * 16 { return -422; } else {}
+    let decoded = unhex(ptr, len, count * 8); if decoded < 0 { return decoded; } else {}
+    let out = decoded / 4294967296;
+    let valid = finite_words(out, count * 8); if valid < 0 { return valid; } else {}
+    return decoded;
+}
+
+pub fn field(ptr: i64 @Flow, len: i64 @Flow, key: i64 @Flow, key_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let extent = span(ptr, len, 32768); if extent < 0 { return extent; } else {}
+    let name = key_status(key, key_len); if name < 0 { return name; } else {}
+    let valid = json::validate(ptr, len); if valid < 0 { return valid; } else {}
+    return json::parse_field(ptr, len, key, key_len);
+}
+
+pub fn finish(doc: JsonRecord @Flow @ReadOnly) -> i64 @Flow {
+    let valid = checked(doc); if valid < 0 { return valid; } else {}
+    return doc.ptr * 4294967296 + doc.length;
+}

@@ -1,0 +1,305 @@
+// The growing autoresearch consumer: bounded fitting through reusable AD and update packages.
+module tool_fit;
+use sigil::autodiff;
+use sigil::numeric;
+use sigil::optim;
+use sigil::records;
+use sigil::bytes;
+use sigil::vec;
+use tool_records;
+
+record Machine { tape: Tape, zero: i64, one: i64, low: i64, high: i64 }
+record Evaluator { machine: Machine, variables: Vec<i64>, registers: Vec<i64>, positions: Vec<i64>, momentum: Vec<i64>, targets: Vec<i64>, curvature: Vec<i64>, result: Matrix }
+
+// Each evaluation rebuilds the graph. Returning a constant at either endpoint
+// gives the declared zero derivative; these primal-dependent decisions must
+// never be reused by replay with different weights.
+fn clip(m: Machine @ReadOnly, cell: TapeCell @Mut, value: i64, low: f64, high: f64, lo: i64, hi: i64) -> i64 {
+    if value < 0 { return value; } else {}
+    let read = autodiff::value_into(m.tape, value, cell);
+    if read < 0 { return read; } else {}
+    if cell.value <= low { return lo; } else {}
+    if cell.value >= high { return hi; } else {}
+    return value;
+}
+
+fn instruction(m: Machine @Mut, cell: TapeCell @Mut, op: i64, a: i64, b: i64) -> i64 {
+    let mut value = 0;
+    if op == 0 || op == 5 { value = autodiff::add(m.tape, a, b); } else {
+        if op == 1 { value = autodiff::sub(m.tape, a, b); } else {
+            if op == 2 || op == 4 || op == 6 { value = autodiff::mul(m.tape, a, b); } else {
+                if op == 3 { value = autodiff::relu(m.tape, a); } else {
+                    if op == 7 { value = autodiff::sub(m.tape, m.zero, a); } else { return -422; }
+                }
+            }
+        }
+    }
+    if op == 6 { return clip(m, cell, value, 0.0, 1.0, m.zero, m.one); } else {}
+    return clip(m, cell, value, 0.0 - 4096.0, 4096.0, m.low, m.high);
+}
+
+
+fn new_evaluator() -> Evaluator ! { Alloc } {
+    let tape = autodiff::new_tape(768, 0);
+    let machine = Machine { tape: tape, zero: 0, one: 0, low: 0, high: 0 };
+    let variables: Vec<i64> = Vec::with_capacity(8);
+    let registers: Vec<i64> = Vec::with_capacity(16);
+    let positions: Vec<i64> = Vec::with_capacity(2);
+    let momentum: Vec<i64> = Vec::with_capacity(2);
+    let targets: Vec<i64> = Vec::with_capacity(2);
+    let curvature: Vec<i64> = Vec::with_capacity(2);
+    let mut i = 0;
+    while i < 8 { variables.push(0); i = i + 1; }
+    i = 0;
+    while i < 16 { registers.push(0); i = i + 1; }
+    i = 0;
+    while i < 2 { positions.push(0); momentum.push(0); targets.push(0); curvature.push(0); i = i + 1; }
+    let result = numeric::zeros(14, 1);
+    return Evaluator { machine: machine, variables: variables, registers: registers,
+        positions: positions, momentum: momentum, targets: targets, curvature: curvature, result: result };
+}
+
+fn evaluate(work: Evaluator @Mut, cell: TapeCell @Mut, body: i64, steps: i64, count: i64, weights: Matrix @ReadOnly) -> i64 {
+    let m = work.machine; let tape = m.tape;
+    let variables = work.variables; let registers = work.registers;
+    let positions = work.positions; let momentum = work.momentum;
+    let targets = work.targets; let curvature = work.curvature;
+    let result = work.result;
+    let reset = autodiff::reset(tape);
+    if reset < 0 { return reset; } else {}
+    let mut complexity = 0.0;
+    let mut i = 0;
+    while i < count { complexity = complexity + 66.0 / 65536.0; i = i + 1; }
+    let zero = autodiff::constant(tape, 0.0);
+    if zero < 0 { return zero; } else {}
+    let one = autodiff::constant(tape, 1.0);
+    if one < 0 { return one; } else {}
+    let low = autodiff::constant(tape, 0.0 - 4096.0);
+    if low < 0 { return low; } else {}
+    let high = autodiff::constant(tape, 4096.0);
+    if high < 0 { return high; } else {}
+    let fifty = autodiff::constant(tape, 50.0);
+    if fifty < 0 { return fifty; } else {}
+    let two = autodiff::constant(tape, 2.0);
+    if two < 0 { return two; } else {}
+    let hundred = autodiff::constant(tape, 100.0);
+    if hundred < 0 { return hundred; } else {}
+    let three = autodiff::constant(tape, 3.0);
+    if three < 0 { return three; } else {}
+    let negative_two = autodiff::constant(tape, 0.0 - 2.0);
+    if negative_two < 0 { return negative_two; } else {}
+    let negative_four = autodiff::constant(tape, 0.0 - 4.0);
+    if negative_four < 0 { return negative_four; } else {}
+    targets.set(0, three); targets.set(1, negative_two);
+    curvature.set(0, two); curvature.set(1, hundred);
+    positions.set(0, negative_four); positions.set(1, three);
+    momentum.set(0, zero); momentum.set(1, zero);
+    i = 0;
+    while i < 16 { registers.set(i, zero); i = i + 1; }
+    i = 0;
+    while i < 8 {
+        let node = autodiff::variable(tape, weights.data.get(i));
+        if node < 0 { return node; } else {}
+        variables.set(i, node); i = i + 1;
+    }
+    m.zero = zero; m.one = one; m.low = low; m.high = high;
+    let mut step = 0;
+    let mut time = 0.0;
+    while step < steps {
+        let clock = autodiff::constant(tape, time / 20.0);
+        if clock < 0 { return clock; } else {}
+        let mut coordinate = 0;
+        while coordinate < 2 {
+            let difference = autodiff::sub(tape, positions.get(coordinate), targets.get(coordinate));
+            if difference < 0 { return difference; } else {}
+            let scaled = autodiff::mul(tape, difference, curvature.get(coordinate));
+            let gradient = clip(m, cell, scaled, 0.0 - 4096.0, 4096.0, low, high);
+            if gradient < 0 { return gradient; } else {}
+            i = 0;
+            while i < 16 { registers.set(i, zero); i = i + 1; }
+            registers.set(0, gradient); registers.set(1, momentum.get(coordinate));
+            registers.set(2, clock); registers.set(3, one);
+            registers.set(15, momentum.get(coordinate));
+            i = 0;
+            while i < count {
+                let at = body + 72 + i * 4;
+                let op = load8(at); let dst = load8(at + 1);
+                let a = registers.get(load8(at + 2)); let bi = load8(at + 3);
+                let mut b = zero;
+                if op == 4 || op == 5 || op == 6 { b = variables.get(bi); } else {
+                    if op <= 2 { b = registers.get(bi); } else {}
+                }
+                let value = instruction(m, cell, op, a, b);
+                if value < 0 { return value; } else {}
+                registers.set(dst, value); i = i + 1;
+            }
+            let update = autodiff::add(tape, positions.get(coordinate), registers.get(14));
+            let next = clip(m, cell, update, 0.0 - 4096.0, 4096.0, low, high);
+            if next < 0 { return next; } else {}
+            positions.set(coordinate, next); momentum.set(coordinate, registers.get(15));
+            coordinate = coordinate + 1;
+        }
+        step = step + 1; time = time + 1.0;
+    }
+    let error0 = autodiff::sub(tape, positions.get(0), three);
+    if error0 < 0 { return error0; } else {}
+    let error1 = autodiff::sub(tape, positions.get(1), negative_two);
+    if error1 < 0 { return error1; } else {}
+    let loss0 = autodiff::mul(tape, error0, error0);
+    if loss0 < 0 { return loss0; } else {}
+    let loss1 = autodiff::mul(tape, error1, error1);
+    if loss1 < 0 { return loss1; } else {}
+    let weighted = autodiff::mul(tape, fifty, loss1);
+    if weighted < 0 { return weighted; } else {}
+    let loss = autodiff::add(tape, loss0, weighted);
+    if loss < 0 { return loss; } else {}
+    let backward = autodiff::backward(tape, loss);
+    if backward < 0 { return backward; } else {}
+    let read_loss = autodiff::value_into(tape, loss, cell);
+    if read_loss < 0 { return read_loss; } else {}
+    result.data.set(0, cell.value); result.data.set(1, cell.value + complexity);
+    i = 0;
+    while i < 2 {
+        let position = autodiff::value_into(tape, positions.get(i), cell);
+        if position < 0 { return position; } else {}
+        result.data.set(2 + i, cell.value);
+        let carried = autodiff::value_into(tape, momentum.get(i), cell);
+        if carried < 0 { return carried; } else {}
+        result.data.set(4 + i, cell.value); i = i + 1;
+    }
+    i = 0;
+    while i < 8 {
+        let read = autodiff::gradient_into(tape, variables.get(i), cell);
+        if read < 0 { return read; } else {}
+        result.data.set(6 + i, cell.value); i = i + 1;
+    }
+
+    return 0;
+}
+
+pub fn run(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    if input_len > 256 { return -413; } else {}
+    if input_len < 168 || input_len % 2 != 0 { return -422; } else {}
+    let decoded = records::unhex(input_ptr, input_len, 128);
+    if decoded < 0 { return decoded; } else {}
+    let request = decoded / 4294967296; let size = decoded % 4294967296;
+    let version = load8(request + 4);
+    if load8(request) != 65 || load8(request + 1) != 70 || load8(request + 2) != 73 || load8(request + 3) != 84 || (version != 1 && version != 2) || load8(request + 6) != 0 || load8(request + 7) != 0 { return -422; } else {}
+    let rounds = load8(request + 5);
+    if rounds > 6 { return -413; } else {}
+    let body = request + 8;
+    if load8(body) != 65 || load8(body + 1) != 67 || load8(body + 2) != 80 || load8(body + 3) != 85 || load8(body + 4) != 1 || load8(body + 7) != 1 { return -422; } else {}
+    let steps = load8(body + 5); let count = load8(body + 6);
+    if steps > 20 || count > 12 { return -413; } else {}
+    if count < 1 || size != 80 + count * 4 { return -422; } else {}
+    // Bound total graph work before constructing anything. The largest candidate
+    // supports three fitting rounds under the unchanged engine-fuel budget.
+    if (rounds + 1) * (24 + steps * (7 + 2 * count)) > 2600 { return -413; } else {}
+    let mut i = 0;
+    while i < count {
+        let at = body + 72 + 4 * i;
+        let op = load8(at); let dst = load8(at + 1);
+        let a = load8(at + 2); let b = load8(at + 3);
+        if op > 7 || dst < 4 || dst > 15 || a > 15 { return -422; } else {}
+        if op == 4 || op == 5 || op == 6 {
+            if b > 7 { return -422; } else {}
+        } else { if b > 15 { return -422; } else {} }
+        i = i + 1;
+    }
+    let weights = numeric::zeros(8, 1);
+    let gradient = numeric::zeros(8, 1);
+    let accepted_result = numeric::zeros(14, 1);
+    let scalar = numeric::new_scalar();
+    let trial = optim::new_trial(8, 1);
+    let work = new_evaluator();
+    let tape_cell = autodiff::new_cell();
+    if weights.error < 0 || gradient.error < 0 || accepted_result.error < 0 || trial.error < 0 || work.machine.tape.error < 0 { return -413; } else {}
+    let loaded = bytes::copy_into(weights.data.buf, 64, 0, request, size, 16, 64);
+    if loaded < 0 { return loaded; } else {}
+    i = 0;
+    while i < 8 {
+        let value = weights.data.get(i);
+        if value - value != 0.0 || value < 0.0 - 4096.0 || value > 4096.0 { return -422; } else {}
+        i = i + 1;
+    }
+    let header: Vec<i64> = Vec::with_capacity(8);
+    let summary: Vec<f64> = Vec::with_capacity(3);
+    let decisions: Vec<i64> = Vec::with_capacity(6);
+    let trace: Vec<f64> = Vec::with_capacity(66);
+    i = 0; while i < 8 { header.push(0); i = i + 1; }
+    i = 0; while i < 3 { summary.push(0.0); i = i + 1; }
+    i = 0; while i < 6 { decisions.push(-1); i = i + 1; }
+    i = 0; while i < 66 { trace.push(0.0); i = i + 1; }
+    let output = alloc(968);
+    let before = alloc(0);
+    let initial = evaluate(work, tape_cell, body, steps, count, weights);
+    if initial < 0 { return initial; } else {}
+    let copied = numeric::scale_into(work.result, 1.0, accepted_result);
+    if copied < 0 { return copied; } else {}
+    summary.set(0, accepted_result.data.get(0)); summary.set(1, accepted_result.data.get(1));
+    let mut step_size = 3277.0 / 65536.0;
+    let mut attempted = 0; let mut accepted = 0; let mut rejected = 0; let mut stopped = 0;
+    while attempted < rounds && stopped == 0 {
+        let mut any = false;
+        i = 0;
+        while i < 8 {
+            let value = accepted_result.data.get(6 + i);
+            if value != 0.0 { any = true; } else {}
+            let wrote = numeric::set(gradient, i, 0, value);
+            if wrote < 0 { return wrote; } else {}
+            i = i + 1;
+        }
+        if any {
+            let opened = optim::begin_sign(trial, weights, gradient, step_size, 0.0 - 4096.0, 4096.0, scalar);
+            if opened < 0 { return opened; } else {}
+            let tested = evaluate(work, tape_cell, body, steps, count, trial.proposed);
+            if tested < 0 { return tested; } else {}
+            let base_fitness = accepted_result.data.get(1);
+            let proposal_fitness = work.result.data.get(1);
+            trace.set(attempted * 11, step_size);
+            trace.set(attempted * 11 + 1, base_fitness);
+            trace.set(attempted * 11 + 2, proposal_fitness);
+            i = 0;
+            while i < 8 { trace.set(attempted * 11 + 3 + i, gradient.data.get(i)); i = i + 1; }
+            if proposal_fitness < base_fitness {
+                let committed = optim::commit_into(trial, weights, scalar);
+                if committed < 0 { return committed; } else {}
+                let copied_next = numeric::scale_into(work.result, 1.0, accepted_result);
+                if copied_next < 0 { return copied_next; } else {}
+                decisions.set(attempted, 1); accepted = accepted + 1;
+                step_size = step_size * 1.5;
+                if step_size > 13107.0 / 65536.0 { step_size = 13107.0 / 65536.0; } else {}
+            } else {
+                let rolled_back = optim::rollback(trial);
+                if rolled_back < 0 { return rolled_back; } else {}
+                decisions.set(attempted, 0); rejected = rejected + 1;
+                step_size = step_size / 2.0;
+            }
+            attempted = attempted + 1;
+        } else { stopped = 1; }
+    }
+    if alloc(0) != before { return -500; } else {}
+    summary.set(2, step_size);
+    header.set(0, 1); header.set(1, steps); header.set(2, count); header.set(3, rounds);
+    header.set(4, attempted); header.set(5, accepted); header.set(6, rejected); header.set(7, stopped);
+    // Encoding happens after the allocation-free numerical phase. AFIT v1
+    // remains the regression wire format; v2 delegates construction to records.
+    if version == 2 {
+        return tool_records::emit(request, size, header.buf, summary.buf, weights.data.buf, accepted_result.data.buf, decisions.buf, trace.buf);
+    } else {}
+    let head = bytes::copy_into(output, 968, 0, header.buf, 64, 0, 64);
+    if head < 0 { return head; } else {}
+    let summarized = bytes::copy_into(output, 968, 64, summary.buf, 24, 0, 24);
+    if summarized < 0 { return summarized; } else {}
+    let fitted = bytes::copy_into(output, 968, 88, weights.data.buf, 64, 0, 64);
+    if fitted < 0 { return fitted; } else {}
+    let scored = bytes::copy_into(output, 968, 152, accepted_result.data.buf, 112, 0, 112);
+    if scored < 0 { return scored; } else {}
+    let decided = bytes::copy_into(output, 968, 264, decisions.buf, 48, 0, 48);
+    if decided < 0 { return decided; } else {}
+    let traced = bytes::copy_into(output, 968, 312, trace.buf, 528, 0, 528);
+    if traced < 0 { return traced; } else {}
+    let echoed = bytes::copy_into(output, 968, 840, request, size, 0, size);
+    if echoed < 0 { return echoed; } else {}
+    return output * 4294967296 + 840 + size;
+}

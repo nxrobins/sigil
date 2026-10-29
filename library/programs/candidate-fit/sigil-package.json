@@ -1,0 +1,66 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:30538666e65979510ea22ebd4f4171fd6364846aeeb336930d9e99f89f103a0b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/autodiff",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:d047ae5c1c990af0641e0adde538713e9629f0ad7e13aa056da4bbe3229ef0d7",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/numeric",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source bounded eight-constant candidate fitting using numeric and autodiff; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:fa6ea84ad0d2bca4b38043ad7518a6f634dce6f4e39bb696c6dc896a7b592ecf",
+    "api_contract_hash": "sha256:949dcb9e9cda0e3c61d7dcf0ee666c555fce589b96da04b1bd1f17f0c80799a1",
+    "charter_hash": "sha256:e23397c98aa350bbebdaa9dfad058c56d48ede7182a6089c130b436ee8e09960",
+    "evidence_manifest_hash": "sha256:50e0e8a3bf94507a952bd93f8d1c5e28b07c019e95a18bbd7650ffc9eb490e75"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "candidate-fit",
+  "version": "0.1.0-public.1"
+}

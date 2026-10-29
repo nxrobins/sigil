@@ -1,0 +1,10 @@
+// R008: an outer-ring module without #[trusted] declares an extern, binding a host function that only a trusted module may bind
+// expect-error: R008
+#[ring(outer)]
+module shell;
+extern "C" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe }; // MUTATION_SITE
+
+// The mutant (marked line deleted) must still be a valid outer-ring module.
+pub fn benign() -> i64 {
+    return 0;
+}

@@ -7,7 +7,9 @@
 //! prefix in pinned index order; local function index = import count plus
 //! position in the function vector; ffi imports, then the conditional
 //! `alloc_persistent`, appended AFTER the fixed prefix so a state-free
-//! module is byte-unchanged (AGG2b-2); string literals deduplicated by
+//! module is byte-unchanged (AGG2b-2); a `call_indirect` signature that no
+//! local function carries, appended once after the function types, so a
+//! module without one is byte-unchanged; string literals deduplicated by
 //! content and packed from offset 1024, with the bump pointer starting at
 //! the 8-aligned end of static data. The self-hosted emitter
 //! (`selfhost/air.sigil`) must reproduce these bytes exactly on its
@@ -19,7 +21,10 @@
 //!
 //! Emission is total and emits no diagnostics; a malformed input (an import
 //! missing from the active set, an unsupported op/type pairing) is an
-//! `ICE:`-prefixed panic, never plausible wrong bytes. Pinned by
+//! `ICE:`-prefixed panic, never plausible wrong bytes. The pipeline refuses
+//! an outer-ring statement whose import the reduced set lacks before it gets
+//! here (R009, read from `outer_ring_missing_import`), so that ICE is
+//! reachable only from hand-built AIR. Pinned by
 //! `sigil-runtime/tests/air_differential.rs` (byte-exact differential),
 //! `tests/determinism_lock.rs` (run-over-run byte equality), and
 //! `tests/taint_ct_audit.rs` (the constant-time opcode audit).
@@ -164,7 +169,8 @@ enum ImportSet {
     /// type carries no status back to the guest and needs none — a trap
     /// unwinds it without its cooperation.
     Full,
-    /// Reduced set for outer ring: fuel_decrement, alloc only.
+    /// Reduced set for outer ring: fuel_decrement, alloc only. A statement that needs one of
+    /// the other fixed imports is refused before emission (R009, `outer_ring_missing_import`).
     Reduced,
 }
 
@@ -248,6 +254,78 @@ fn builtin_import_indices(import_set: ImportSet) -> BuiltinImportIndices {
     }
 }
 
+/// The host import an outer-ring statement would call that the outer module does not have: the
+/// source operation the statement lowers from and the import's name, or `None` when the outer
+/// module can emit the statement.
+///
+/// An outer-ring function is emitted against `ImportSet::Reduced`, which leaves out messaging,
+/// spawn and the capability imports on purpose (`attack_47_two_ring_import_segregation` pins the
+/// outer module's imports). For the statements below, `emit_stmt` has no import index to call, and
+/// its `.expect` is an ICE. `ring_check::check_air_outer_ring_imports` refuses them first, with
+/// R009. Whether an import is missing is read from `builtin_import_indices`, the table `emit_stmt`
+/// calls through, so the gate and the emitter cannot disagree about the outer module's imports.
+/// The match is total, so a new statement kind must say here whether it calls one of those
+/// imports.
+pub(crate) fn outer_ring_missing_import(stmt: &AirStmt) -> Option<(&'static str, &'static str)> {
+    let reduced = builtin_import_indices(ImportSet::Reduced);
+    let (operation, import, index) = match stmt {
+        AirStmt::MessageSend { .. } => ("send", RUNTIME_IMPORT_SEND, reduced.send),
+        AirStmt::MessageAsk { .. } => ("ask", RUNTIME_IMPORT_ASK, reduced.ask),
+        AirStmt::SpawnActor { .. } => ("spawn", RUNTIME_IMPORT_SPAWN, reduced.spawn),
+        AirStmt::CapRestrict { .. } => (
+            ".restrict()",
+            RUNTIME_IMPORT_CAP_RESTRICT,
+            reduced.cap_restrict,
+        ),
+        AirStmt::CapSplit { .. } => (".split()", RUNTIME_IMPORT_CAP_SPLIT, reduced.cap_split),
+        // `CapDraw` calls the same import as `CapSplit` (see its `emit_stmt` arm).
+        AirStmt::CapDraw { .. } => (".draw()", RUNTIME_IMPORT_CAP_SPLIT, reduced.cap_split),
+        AirStmt::CapMint { .. } => ("mint", RUNTIME_IMPORT_CAP_MINT, reduced.cap_mint),
+        // These call no host import, or one that both sets have (`fuel_decrement`, `alloc`), or
+        // one appended to whichever module needs it (`alloc_persistent`, an `ffi.*` import).
+        AirStmt::Assign { .. }
+        | AirStmt::StoreField { .. }
+        | AirStmt::LoadField { .. }
+        | AirStmt::StateRead { .. }
+        | AirStmt::StateWrite { .. }
+        | AirStmt::SecurityRelease { .. }
+        | AirStmt::Call { .. }
+        | AirStmt::FuelDecrement { .. }
+        | AirStmt::ResultTry { .. }
+        | AirStmt::OptionTry { .. }
+        | AirStmt::ArrayOrSliceContains { .. }
+        | AirStmt::StrBytesEq { .. }
+        | AirStmt::SliceOptionElem { .. }
+        | AirStmt::SlotNew { .. }
+        | AirStmt::SlotPut { .. }
+        | AirStmt::SlotTake { .. }
+        | AirStmt::SerializeMessage { .. }
+        | AirStmt::DeserializeMessage { .. }
+        | AirStmt::PromoteBytes { .. }
+        | AirStmt::BumpAlloc { .. }
+        | AirStmt::IntrinsicAlloc { .. }
+        | AirStmt::IntrinsicLoad8 { .. }
+        | AirStmt::IntrinsicStore8 { .. }
+        | AirStmt::IntrinsicCtEq { .. }
+        | AirStmt::IntrinsicCtSelect { .. }
+        | AirStmt::IntrinsicCtLt { .. }
+        | AirStmt::LoadDynamic { .. }
+        | AirStmt::StoreDynamic { .. }
+        | AirStmt::TrapIf { .. }
+        | AirStmt::WrapI64 { .. }
+        | AirStmt::ExtendU32 { .. }
+        | AirStmt::SignExtendI32 { .. }
+        | AirStmt::CallIndirect { .. }
+        | AirStmt::GrantBegin { .. }
+        | AirStmt::GrantEnd { .. }
+        | AirStmt::Borrow { .. }
+        | AirStmt::ExternCall { .. }
+        | AirStmt::RegionBegin { .. }
+        | AirStmt::RegionEnd { .. } => return None,
+    };
+    index.is_none().then_some((operation, import))
+}
+
 fn ffi_signature(
     function: &AirFunction,
     dst: &Option<VarId>,
@@ -260,6 +338,18 @@ fn ffi_signature(
     let results = dst
         .map(|var| vec![wasm_type(function.var_type(var))])
         .unwrap_or_default();
+    (params, results)
+}
+
+/// The wasm signature of a `call_indirect` site: each AIR param lowered in order, and the return
+/// type as the single result, or none for `Unit`. The type-section scan and the `CallIndirect`
+/// arm both derive their key here, so the arm looks up exactly the key the scan registered.
+fn indirect_signature(signature: &(Vec<AirType>, AirType)) -> (Vec<ValType>, Vec<ValType>) {
+    let params = signature.0.iter().map(|ty| wasm_type(*ty)).collect();
+    let results = match signature.1 {
+        AirType::Unit => Vec::new(),
+        ty => vec![wasm_type(ty)],
+    };
     (params, results)
 }
 
@@ -543,6 +633,33 @@ fn emit_module_refs(
         };
         type_map.insert((params.clone(), results.clone()), import_count + i as u32);
         types.ty().function(params, results);
+    }
+    // Every `call_indirect` signature gets a type entry before any code is emitted. The
+    // function types above hold a signature only when a function of THIS module has it, which
+    // is usually the lambda-lifted closure itself. A module that calls a closure-typed
+    // parameter without building a closure of that signature has none: the closure is in the
+    // other ring's module, inside a generic nobody instantiates, or absent altogether, as in
+    //     module m; pub fn h(f: Fn(i64) -> i64) -> i64 { return f(42); }
+    // The `CallIndirect` arm panicked on exactly those modules. Each missing signature is now
+    // APPENDED after the function types, once, in AIR order (function, block, statement; the
+    // walk `collect_ffi_imports` makes), so a module whose every indirect signature already
+    // belongs to a function gains no entry and keeps its bytes.
+    let mut next_type_index = import_count + functions.len() as u32;
+    for function in functions {
+        for block in &function.blocks {
+            for stmt in &block.stmts {
+                let AirStmt::CallIndirect { signature, .. } = stmt else {
+                    continue;
+                };
+                let key = indirect_signature(signature);
+                if type_map.contains_key(&key) {
+                    continue;
+                }
+                types.ty().function(key.0.clone(), key.1.clone());
+                type_map.insert(key, next_type_index);
+                next_type_index += 1;
+            }
+        }
     }
     module.section(&types);
 
@@ -1853,8 +1970,8 @@ fn emit_stmt(
         }
         AirStmt::IntrinsicCtEq { dst, lhs, rhs } => {
             // ct_eq(a, b) = (a ^ b) == 0. One I64Xor + I64Eqz; no branches.
-            body.instruction(&Instruction::LocalGet(wasm_local_index(function, *lhs)));
-            body.instruction(&Instruction::LocalGet(wasm_local_index(function, *rhs)));
+            emit_ct_operand(*lhs, function, body);
+            emit_ct_operand(*rhs, function, body);
             body.instruction(&Instruction::I64Xor);
             body.instruction(&Instruction::I64Eqz);
             body.instruction(&Instruction::LocalSet(wasm_local_index(function, *dst)));
@@ -1869,15 +1986,9 @@ fn emit_stmt(
             //   mask = 0 - (c as i64) — all-ones if c==1, all-zeros if c==0.
             // No conditional branches. Never lowered to Wasm `select`
             // (which some backends compile to a CPU branch).
-            body.instruction(&Instruction::LocalGet(wasm_local_index(
-                function, *else_val,
-            )));
-            body.instruction(&Instruction::LocalGet(wasm_local_index(
-                function, *then_val,
-            )));
-            body.instruction(&Instruction::LocalGet(wasm_local_index(
-                function, *else_val,
-            )));
+            emit_ct_operand(*else_val, function, body);
+            emit_ct_operand(*then_val, function, body);
+            emit_ct_operand(*else_val, function, body);
             body.instruction(&Instruction::I64Xor); // then XOR else
             body.instruction(&Instruction::I64Const(0));
             body.instruction(&Instruction::LocalGet(wasm_local_index(function, *cond)));
@@ -1887,17 +1998,59 @@ fn emit_stmt(
             body.instruction(&Instruction::I64Xor); // else XOR (...)
             body.instruction(&Instruction::LocalSet(wasm_local_index(function, *dst)));
         }
-        AirStmt::IntrinsicCtLt { dst, lhs, rhs } => {
-            // ct_lt(a, b) = ((a - b) >> 63) & 1. Sign-bit extraction;
-            // constant shift amount (63) so the shift is data-independent.
-            body.instruction(&Instruction::LocalGet(wasm_local_index(function, *lhs)));
-            body.instruction(&Instruction::LocalGet(wasm_local_index(function, *rhs)));
-            body.instruction(&Instruction::I64Sub);
+        AirStmt::IntrinsicCtLt {
+            dst,
+            lhs,
+            rhs,
+            unsigned,
+        } => {
+            // ct_lt(a, b) = the sign bit of an overflow-safe less-than word
+            // (Hacker's Delight §2-12), taken by `>> 63` as 0 or 1. The sign
+            // bit of the wrapping `a - b` alone misorders a pair whose true
+            // difference does not fit in 64 bits (i64::MIN < 1 read false) and
+            // reads a u64 as signed; the operands' own sign bits correct both:
+            //   signed (two i64):   (a - b) ^ ((a ^ b) & ((a - b) ^ a))
+            //   unsigned (two u64): (!a & b) | ((!a | b) & (a - b))
+            // Only ALU ops on locals and a constant shift amount, so no
+            // instruction depends on the operands' values. `a - b` and `!a`
+            // are recomputed, not held in a scratch local. The order is the
+            // statement's `unsigned` flag, never the operand locals' types: a
+            // literal binding keeps an i64 local where it checked as u64.
+            let (l, r) = (*lhs, *rhs);
+            if *unsigned {
+                emit_ct_operand(l, function, body);
+                body.instruction(&Instruction::I64Const(-1));
+                body.instruction(&Instruction::I64Xor); // !a
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64And); // !a & b
+                emit_ct_operand(l, function, body);
+                body.instruction(&Instruction::I64Const(-1));
+                body.instruction(&Instruction::I64Xor);
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64Or); // !a | b
+                emit_ct_operand(l, function, body);
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64Sub); // a - b
+                body.instruction(&Instruction::I64And);
+                body.instruction(&Instruction::I64Or);
+            } else {
+                emit_ct_operand(l, function, body);
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64Sub); // a - b
+                emit_ct_operand(l, function, body);
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64Xor); // a ^ b
+                emit_ct_operand(l, function, body);
+                emit_ct_operand(r, function, body);
+                body.instruction(&Instruction::I64Sub);
+                emit_ct_operand(l, function, body);
+                body.instruction(&Instruction::I64Xor); // (a - b) ^ a
+                body.instruction(&Instruction::I64And);
+                body.instruction(&Instruction::I64Xor);
+            }
             body.instruction(&Instruction::I64Const(63));
-            body.instruction(&Instruction::I64ShrS);
+            body.instruction(&Instruction::I64ShrU);
             body.instruction(&Instruction::I32WrapI64);
-            body.instruction(&Instruction::I32Const(1));
-            body.instruction(&Instruction::I32And);
             body.instruction(&Instruction::LocalSet(wasm_local_index(function, *dst)));
         }
         AirStmt::CapRestrict {
@@ -2233,24 +2386,17 @@ fn emit_stmt(
                 function,
                 *table_index,
             )));
-            // Look up the type index from the signature
-            let wasm_params: Vec<ValType> = signature.0.iter().map(|ty| wasm_type(*ty)).collect();
-            let wasm_results: Vec<ValType> = match signature.1 {
-                AirType::Unit => vec![],
-                ty => vec![wasm_type(ty)],
-            };
-            // Find the matching type index (must exist from the type section)
-            let type_idx = type_map
-                .get(&(wasm_params.clone(), wasm_results.clone()))
-                .copied()
-                .unwrap_or_else(|| {
-                    // Register a new type if not found
-                    // This shouldn't happen if types were pre-registered
-                    panic!(
-                        "ICE: call_indirect signature not found in type map: {:?} -> {:?}",
-                        wasm_params, wasm_results
-                    )
-                });
+            // The type index of the signature. `emit_module_refs` registered the signature of
+            // every `CallIndirect` in every function this module emits before emitting any
+            // code, so a miss means that scan broke: fail closed rather than name a wrong type.
+            let key = indirect_signature(signature);
+            let type_idx = type_map.get(&key).copied().unwrap_or_else(|| {
+                panic!(
+                    "ICE: call_indirect signature not found in type map: {:?} -> {:?} (the \
+                     CallIndirect scan in emit_module_refs registers every signature)",
+                    key.0, key.1
+                )
+            });
             body.instruction(&Instruction::CallIndirect {
                 type_index: type_idx,
                 table_index: 0,
@@ -2445,6 +2591,20 @@ fn emit_i32_operand(var: VarId, function: &AirFunction, body: &mut Function) {
     if matches!(function.var_type(var), AirType::I64 | AirType::U64) {
         body.instruction(&Instruction::I32WrapI64);
     }
+}
+
+/// One operand of a `ct_eq` / `ct_lt` / `ct_select` sequence, pushed as given. The sequences are
+/// i64 only, and the type checker admits no narrower operand (`is_ct_operand_type`), so a 4-byte
+/// local here is a broken pass contract: an ICE, never a module that fails validation. The
+/// guard adds no instruction, so every valid module keeps its bytes.
+fn emit_ct_operand(var: VarId, function: &AirFunction, body: &mut Function) {
+    let ty = function.var_type(var);
+    assert!(
+        matches!(ty, AirType::I64 | AirType::U64),
+        "ICE: a ct_* operand reached emission as {ty:?}; the type checker admits only 8-byte \
+         operands (is_ct_operand_type)"
+    );
+    body.instruction(&Instruction::LocalGet(wasm_local_index(function, var)));
 }
 
 fn emit_i64_byte_operand(var: VarId, function: &AirFunction, body: &mut Function) {
@@ -2731,6 +2891,7 @@ mod tests {
     use sigil_abi::host_contract::{HOST_PROFILE_SECTION, HostProfileRequirement};
     use wasmparser::{Operator, Parser, Payload, TypeRef};
 
+    use crate::air::{AirStmt, AirType};
     use crate::compile_module;
 
     use super::{
@@ -2776,6 +2937,50 @@ mod tests {
                 Ok(requirement)
             );
         }
+    }
+
+    /// The `ct_*` emission guard (`emit_ct_operand`) turns a 4-byte operand into an ICE. The
+    /// type checker admits none (`is_ct_operand_type`), so the test plants one: it compiles an
+    /// 8-byte `ct_eq`, re-emits its final AIR unchanged (the same bytes, no panic), then narrows
+    /// the left operand's AIR type to `I32` and emits again.
+    #[test]
+    #[should_panic(expected = "ICE: a ct_* operand reached emission as I32")]
+    fn ct_operand_guard_refuses_a_4_byte_local() {
+        let mut compilation = compile_module(
+            "module m;\npub fn eq(a: i64, b: i64) -> bool { return ct_eq(a, b); }\n",
+        )
+        .expect("an 8-byte ct_eq compiles");
+        assert_eq!(
+            super::emit(&compilation.air).inner,
+            compilation.wasm_inner,
+            "control: the unchanged AIR must re-emit to the same bytes, with no panic"
+        );
+        let function = compilation
+            .air
+            .functions
+            .iter_mut()
+            .find(|f| {
+                f.blocks
+                    .iter()
+                    .flat_map(|b| &b.stmts)
+                    .any(|s| matches!(s, AirStmt::IntrinsicCtEq { .. }))
+            })
+            .expect("one function lowers the ct_eq");
+        let lhs = function
+            .blocks
+            .iter()
+            .flat_map(|b| &b.stmts)
+            .find_map(|s| match s {
+                AirStmt::IntrinsicCtEq { lhs, .. } => Some(*lhs),
+                _ => None,
+            })
+            .expect("the function found above holds the ct_eq");
+        for (var, ty) in function.params.iter_mut().chain(function.locals.iter_mut()) {
+            if *var == lhs {
+                *ty = AirType::I32;
+            }
+        }
+        super::emit(&compilation.air);
     }
 
     #[test]

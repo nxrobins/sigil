@@ -1,0 +1,33 @@
+// expect-error: T211
+// Z3 corpus #104: axis-1 — DBC-0a: a `let` that shadows a narrowed name starts with no fact.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `if input > 0` narrows the parameter `input`; the arm's `let input: i64 = 0 - 7` is a new
+// binding of the same name, and it starts with no fact (DBC0-1), so `need_positive(input)` is
+// refused with T211, in both build configurations. Before DBC-0a the outer binding's fact
+// reached the shadowing one (SR-037, probe P12).
+//
+// MUTATION CONTRACT
+//
+// Deleting the inner `let` leaves the narrowed parameter as the argument, and the call is
+// discharged: the program compiles cleanly.
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+fn probe(input: i64) -> i64 {
+    if input > 0 {
+        let input: i64 = 0 - 7;  // MUTATION_SITE
+        return need_positive(input);
+    }
+    return 1;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return probe(5);
+    }
+}

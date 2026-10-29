@@ -81,6 +81,7 @@ TypedProgram {
                     },
                 },
             ],
+            externs: [],
         },
     ],
     records: {},

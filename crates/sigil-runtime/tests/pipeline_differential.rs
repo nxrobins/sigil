@@ -16,7 +16,8 @@
 //!
 //! The protocol (frozen, X-B3): `REJECT:{stage}:{codes}` (stage ∈ {nr, tc, ring, effect, taint,
 //! cap, own}; codes = that lane's CORE-filtered `;`-joined stream) or `OK:{hex}` (the W-lane
-//! lowercase-hex whole-module transport). Comparison is STRUCTURED per stage — each lane's shipped
+//! lowercase-hex whole-module transport; a program with an outer-ring module answers in the
+//! superset form `OK:{inner}|{outer}`, SHP-2b). Comparison is STRUCTURED per stage — each lane's shipped
 //! convention (sorted-dedup SETS for nr/tc/ring/effect/taint, ordered lists for cap/own, the FULL
 //! hex string for accepts) — never weaker than the lane that shipped it.
 
@@ -153,16 +154,17 @@ fn oracle_compile(label: &str, src: &str) -> String {
         }
     }
 
-    // All gates clean: the W-lane byte target.
+    // All gates clean: the W-lane byte target. A program with an outer-ring module emits two
+    // modules, carried in the protocol's superset form `OK:{inner}|{outer}` (SHP-2b); a
+    // single-ring answer is unchanged.
     let (mem_p, _) = memory::lower(lowered);
     let (fuel_p, _) = fuel::insert(mem_p);
     let out = wasm::emit(&fuel_p);
-    assert!(
-        out.outer.is_none(),
-        "SH-BOOT {label}: X-W7 — unexpected outer-ring module:\n{src}"
-    );
-    let hex: String = out.inner.iter().map(|b| format!("{b:02x}")).collect();
-    format!("OK:{hex}")
+    let hex = |m: &[u8]| -> String { m.iter().map(|b| format!("{b:02x}")).collect() };
+    match &out.outer {
+        None => format!("OK:{}", hex(&out.inner)),
+        Some(outer) => format!("OK:{}|{}", hex(&out.inner), hex(outer)),
+    }
 }
 
 /// Split a protocol string into (kind, stage, payload). `OK` has stage "".
@@ -216,6 +218,258 @@ fn protocol_eq(a: &str, b: &str) -> Result<(), String> {
         return Err(format!("codes {na:?} != {nb:?}"));
     }
     Ok(())
+}
+
+// ── Shared certified-scale computations: a content-keyed memo ────────────────────────────────
+//
+// Measured 2026-10-04 (local build, `--test-threads=1`, every execution traced with the name of
+// the test that ran it): the suite took 659 s, 551 s of it executing compiled modules, and 172 s
+// of that re-ran a computation another test had already run — identical module bytes on an
+// identical input. Four computations account for all of it, each 15-30 s per run: the stage-1
+// emit over the runnable library (five runs), A′ over the same input (four), the committed seed
+// over it (two), and the seed over the with-driver source (two, the second being
+// `hb1_stub_free_executable_fixed_point`'s run of the byte-identical oracle-built artifact).
+// The Rust oracle also compiled the three certified inputs fourteen times, and the stage-1 emit
+// and census tools were built seven times from two distinct sources.
+//
+// The helpers below run each such computation once per test process and hand every caller the
+// same result. Every key is the computation's CONTENT, never its caller: the SHA-256 of the exact
+// module bytes and of the exact input, plus both budgets, for an execution; the SHA-256 of the
+// exact source for a compile. Execution here is deterministic — no grants and so no I/O, a fresh
+// store per run, a fixed fuel and memory budget — so two calls share a result only when they
+// would compute the same thing. That is why the seed may share a run with the oracle-built
+// artifact: the two are equal bytes, which `seed_is_the_oracle_emit_of_the_certified_source`
+// asserts, and a stale seed would get its own key and its own run.
+//
+// NEVER FOR A DETERMINISM CHECK. A test that compares two runs of one computation would compare a
+// cached value with itself and pass whatever the code did. The `*_deterministic` tests and the
+// raw helpers they call (`oracle_compile`, `sh_compile_out`, `sh_mono_out`) stay unmemoized, and
+// `Memo::get_or_compute` panics when the calling thread is named for one — or is unnamed, and so
+// cannot be told apart from one. libtest names each test's thread after the test, and
+// `parallel_map` names its workers after the test that spawned them;
+// `memo_refuses_a_determinism_test_caller` proves each refusal fires and that the naming premise
+// holds.
+
+/// A process-wide memo with one `OnceLock` per key, so concurrent tests that need the same value
+/// wait for a single computation instead of each running it. A computation that panics leaves its
+/// cell empty: the next caller recomputes rather than inheriting a half-built value.
+struct Memo<T> {
+    cells: std::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Arc<std::sync::OnceLock<T>>>,
+    >,
+}
+
+impl<T: Clone> Memo<T> {
+    const fn new() -> Self {
+        Self {
+            cells: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    fn get_or_compute(&self, key: String, compute: impl FnOnce() -> T) -> T {
+        let thread = std::thread::current();
+        let Some(caller) = thread.name() else {
+            panic!(
+                "a memoized value was requested from an unnamed thread, so the determinism guard \
+                 cannot tell which test it serves. Spawn workers with `parallel_map`, which names \
+                 each one after its test."
+            );
+        };
+        assert!(
+            !caller.contains("determinis"),
+            "a memoized value reached `{caller}`: a determinism check would compare one cached \
+             value with itself and pass vacuously. Call the raw, unmemoized helper there."
+        );
+        let cell = {
+            let mut cells = self
+                .cells
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::sync::Arc::clone(cells.entry(key).or_default())
+        };
+        cell.get_or_init(compute).clone()
+    }
+}
+
+/// SELF-4: the execution budget of one run of the composed compiler on certified-scale source
+/// (its own, or a mutant of it) — the cooperative SIGIL fuel, the wasmtime instruction backstop
+/// and the linear memory. Measured 2026-10-07 (SHP-5c-2) with the runtime's fuel readout: the
+/// committed SHP-5c-1 seed compiling its own source executes 9.53 G wasm instructions, 95% of
+/// the runtime's 10 G default backstop (`MAX_WASM_FUEL`), and the SHP-5c-2 self-compile 10.38 G;
+/// so such a run carries its own wasm budget (about four times the measurement, 2.5x under the
+/// runtime's 100 G ceiling), and every run on an ordinary program keeps the default backstop
+/// (`WasmBudget`). A self-compile that outgrows THIS budget traps as "all fuel consumed", the
+/// same words as a hostile loop: re-measure before raising it.
+const SELF_FUEL: u64 = 10_000_000_000;
+const SELF_WASM_FUEL: u64 = 40_000_000_000;
+const SELF_MEMORY: usize = 512 * 1024 * 1024;
+
+/// The wasm instruction budget of one memoised run: the runtime's default backstop for a run on
+/// an ordinary program, `SELF_WASM_FUEL` for a run of the composed compiler on certified-scale
+/// source. Every call site names one; there is no default.
+#[derive(Clone, Copy, Debug)]
+enum WasmBudget {
+    Default,
+    SelfCompile,
+}
+
+/// Execute `wasm` on `input` with no grants under the given budgets, once per distinct (module,
+/// input, fuel, memory, wasm budget). Returns the tool's output bytes, or the run's error
+/// rendered with `Debug` so every sharing caller's `expect` reports the same failure.
+fn memo_execute(
+    wasm: &[u8],
+    input: &[u8],
+    fuel: u64,
+    memory: usize,
+    budget: WasmBudget,
+) -> Result<Vec<u8>, String> {
+    static RUNS: Memo<Result<Vec<u8>, String>> = Memo::new();
+    let key = format!(
+        "{}:{}:{fuel}:{memory}:{budget:?}",
+        sha256_hex(wasm),
+        sha256_hex(input)
+    );
+    RUNS.get_or_compute(key, || {
+        let grants = sigil_runtime::grants::IoGrants::none();
+        match budget {
+            WasmBudget::Default => sigil_runtime::execute_ephemeral_with_memory_budget(
+                wasm, input, fuel, memory, &grants,
+            ),
+            WasmBudget::SelfCompile => sigil_runtime::execute_ephemeral_with_budgets(
+                wasm,
+                input,
+                fuel,
+                SELF_WASM_FUEL,
+                memory,
+                &grants,
+            ),
+        }
+        .map(|result| result.output)
+        .map_err(|error| format!("{error:?}"))
+    })
+}
+
+/// `sigil_compiler::compile_tool`, once per distinct source; returns the module bytes.
+fn memo_compile_tool(source: &str) -> Result<Vec<u8>, String> {
+    static BUILDS: Memo<Result<Vec<u8>, String>> = Memo::new();
+    BUILDS.get_or_compute(sha256_hex(source.as_bytes()), || {
+        sigil_compiler::compile_tool(source)
+            .map(|result| result.wasm)
+            .map_err(|error| format!("{error:?}"))
+    })
+}
+
+/// `oracle_compile`, once per distinct source. `label` only names the fixture in a parse-failure
+/// panic, so the first caller's label is the one such a panic reports.
+fn memo_oracle_compile(label: &str, src: &str) -> String {
+    static VERDICTS: Memo<String> = Memo::new();
+    VERDICTS.get_or_compute(sha256_hex(src.as_bytes()), || oracle_compile(label, src))
+}
+
+/// The memo's refusal is what keeps the determinism tests honest, so prove it (SC-P4): a caller on
+/// a thread named for a determinism test is refused, an unnamed caller is refused, workers that
+/// `parallel_map` spawns inherit their test's name and with it the refusal, and an ordinary caller
+/// is served. And prove the premise the refusal stands on — libtest runs each test on a thread
+/// named after the test — because without it the guard would never see a determinism test at all.
+#[test]
+fn memo_refuses_a_determinism_test_caller() {
+    assert_eq!(
+        std::thread::current().name(),
+        Some("memo_refuses_a_determinism_test_caller"),
+        "the memo's guard reads the test thread's name; if test threads are no longer named after \
+         their tests, a determinism test could reach a memoized value unrefused"
+    );
+    let memo: Memo<u32> = Memo::new();
+    std::thread::scope(|scope| {
+        let planted = std::thread::Builder::new()
+            .name("planted_deterministic_probe".to_string())
+            .spawn_scoped(scope, || memo.get_or_compute("probe".to_string(), || 1))
+            .expect("spawn the planted caller");
+        assert!(
+            planted.join().is_err(),
+            "a caller on a thread named for a determinism test must be refused"
+        );
+        let unnamed = scope.spawn(|| memo.get_or_compute("probe".to_string(), || 1));
+        assert!(
+            unnamed.join().is_err(),
+            "an unnamed caller must be refused: the guard cannot tell which test it serves"
+        );
+        let planted_parent = std::thread::Builder::new()
+            .name("planted_deterministic_parent".to_string())
+            .spawn_scoped(scope, || {
+                parallel_map(&[0u8, 1], |_| {
+                    memo.get_or_compute("probe".to_string(), || 1)
+                })
+            })
+            .expect("spawn the planted parent");
+        assert!(
+            planted_parent.join().is_err(),
+            "parallel_map's workers must inherit a determinism test's name, and its refusal"
+        );
+        let control_parent = std::thread::Builder::new()
+            .name("planted_capstone_parent".to_string())
+            .spawn_scoped(scope, || {
+                parallel_map(&[0u8, 1], |_| {
+                    memo.get_or_compute("probe".to_string(), || 1)
+                })
+            })
+            .expect("spawn the control parent");
+        assert_eq!(
+            control_parent
+                .join()
+                .expect("parallel_map's workers serve an ordinary test"),
+            vec![1, 1],
+            "parallel_map returns every worker's result, in input order"
+        );
+        let control = std::thread::Builder::new()
+            .name("planted_capstone_probe".to_string())
+            .spawn_scoped(scope, || memo.get_or_compute("probe".to_string(), || 1))
+            .expect("spawn the control caller");
+        assert_eq!(
+            control.join().expect("an ordinary caller is served"),
+            1,
+            "the control caller receives the computed value"
+        );
+    });
+}
+
+/// Run `work` on every item at once, one scoped worker thread per item, and return the results in
+/// input order. The two certified-scale mutant suites use it: their five runs each are independent
+/// and take seconds apiece, so running them one after another made those two tests the suite's
+/// longest (measured 2026-10-05 on a local build, each test run alone: 75 s and 83 s).
+///
+/// Each worker is named `{test}::{index}` after the thread that called this, so the memo's
+/// determinism guard still knows which test a computation serves; an unnamed caller spawns unnamed
+/// workers, which that guard refuses. A worker's panic is re-raised on the calling thread with its
+/// original payload, earliest item first. Every run finishes before the caller asserts anything, so
+/// a failed run is reported ahead of an earlier item's failed assertion, where a sequential loop
+/// would have stopped at the assertion.
+fn parallel_map<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let parent = std::thread::current().name().map(str::to_owned);
+    std::thread::scope(|scope| {
+        let work = &work;
+        let workers: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let mut builder = std::thread::Builder::new();
+                if let Some(parent) = &parent {
+                    builder = builder.name(format!("{parent}::{index}"));
+                }
+                builder
+                    .spawn_scoped(scope, move || work(item))
+                    .expect("spawn a worker thread")
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
 }
 
 // ── BOOT-0 Phase-0: the first-fail gate-order pins ──────────────────────────────────────
@@ -657,6 +911,912 @@ fn boot1_deterministic() {
     }
 }
 
+// ── SHP-2a: extern declarations, and the ring checks the oracle's type check applies ──────────
+//
+// The self-hosted type checker registers an `extern "ABI" fn` signature, so a call to one types
+// like any call where it used to fire T062, and it reports the four codes the oracle's type
+// check emits for externs and rings (docs/specs/self-host-backend-parity.md, SHP-2a). Each
+// fixture pins the oracle's EXACT answer, then requires the self-hosted compiler's answer to be
+// the same string, so the two cannot agree on a shared wrong code.
+const SHP2A_CORPUS: &[(&str, &str, &str)] = &[
+    // T160: an extern whose effect row lacks FFI.
+    (
+        "x_extern_no_ffi",
+        "#[ring(outer)] #[trusted] module m;\nextern \"C\" fn get(p: i64) -> i64 ! { Unsafe };\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:T160;",
+    ),
+    // T161: an extern whose effect row lacks Unsafe.
+    (
+        "x_extern_no_unsafe",
+        "#[ring(outer)] #[trusted] module m;\nextern \"C\" fn get(p: i64) -> i64 ! { FFI };\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:T161;",
+    ),
+    // Both, in the oracle's order, for an extern written with no row at all.
+    (
+        "x_extern_no_row",
+        "#[ring(outer)] #[trusted] module m;\nextern \"C\" fn get(p: i64) -> i64;\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:T160;T161;",
+    ),
+    // R006: `#[trusted]` on a module that is not `#[ring(outer)]`.
+    (
+        "x_trusted_inner",
+        "#[ring(inner)] #[trusted] module m;\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:R006;",
+    ),
+    // E003: an inner-ring fn whose row names FFI.
+    (
+        "x_inner_ffi_row",
+        "module m;\nfn f() -> i64 ! { FFI } { return 0; }\n",
+        "REJECT:tc:E003;",
+    ),
+    // E003 for Unsafe too, once per fn however many privileged effects its row names.
+    (
+        "x_inner_privileged_rows",
+        "module m;\nfn f() -> i64 ! { FFI, Unsafe } { return 0; }\nfn g() -> i64 ! { Unsafe } { return 1; }\n",
+        "REJECT:tc:E003;E003;",
+    ),
+    // An inner-ring call to a declared extern now types, so the ring gate's R003 is reached.
+    (
+        "x_inner_extern_call",
+        "module m;\nextern \"C\" fn get(p: i64) -> i64 ! { FFI, Unsafe };\nfn f() -> i64 { return get(1); }\n",
+        "REJECT:ring:R003;",
+    ),
+    // An extern that is never called adds nothing to the module: the oracle imports only the
+    // externs a call reaches.
+    (
+        "x_inner_extern_uncalled",
+        "module m;\nextern \"C\" fn get(p: i64) -> i64 ! { FFI, Unsafe };\nfn f(a: i64) -> i64 { return a + 1; }\n",
+        "OK",
+    ),
+];
+
+#[test]
+fn shp2a_extern_and_ring_checks_match_the_oracle() {
+    for (label, src, want) in SHP2A_CORPUS {
+        let oracle = oracle_compile(label, src);
+        if *want == "OK" {
+            assert_eq!(
+                split_protocol(&oracle).0,
+                "OK",
+                "SHP-2a {label}: the oracle must accept:\n{oracle}"
+            );
+        } else {
+            assert_eq!(
+                oracle, *want,
+                "SHP-2a {label}: the oracle's exact answer moved"
+            );
+        }
+        let shadow = sh_compile_out(src);
+        assert_eq!(
+            shadow, oracle,
+            "SHP-2a {label}: the self-hosted compiler must give the oracle's exact answer\n{src}"
+        );
+    }
+}
+
+// ── SHP-5c-3: slots and regions through the type checker ──────────────────────────────────────
+//
+// The self-hosted type checker types the slot intrinsics (`slot_new::<C>()`, `slot_put`,
+// `slot_take`), the `Slot<C>` and `Region` types, and `region` statements as the oracle does
+// (docs/specs/self-host-backend-parity.md, SHP-5c-3). Each reject row pins the oracle's EXACT
+// answer and requires the self-hosted compiler's answer to be the same string; each accept
+// row must be byte-identical (the slot and region emitter arms of the same slice).
+const SHP5C3_CORPUS: &[(&str, &str, &str)] = &[
+    // T191: the slot's type argument is not a capability type.
+    (
+        "r_slot_new_not_a_cap",
+        "module m;\nfn f() -> i64 { let s = slot_new::<i64>(); return 0; }\n",
+        "REJECT:tc:T191;",
+    ),
+    // T192: no type argument at all.
+    (
+        "r_slot_new_no_type_arg",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let s = slot_new(); return 0; }\n",
+        "REJECT:tc:T192;",
+    ),
+    // T074: the intrinsic arity, at `slot_new` and at `slot_take`.
+    (
+        "r_slot_new_with_an_argument",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(c); return 0; }\n",
+        "REJECT:tc:T074;",
+    ),
+    (
+        "r_slot_take_two_arguments",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(); let t: Fuel = slot_take(s, c); return 0; }\n",
+        "REJECT:tc:T074;",
+    ),
+    // T075: a non-slot where a slot is expected, a non-cap or another cap where the slot's
+    // cap is expected.
+    (
+        "r_slot_put_into_an_int",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { slot_put(1, c); return 0; }\n",
+        "REJECT:tc:T075;",
+    ),
+    (
+        "r_slot_put_an_int",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let s = slot_new::<Fuel>(); slot_put(s, 5); return 0; }\n",
+        "REJECT:tc:T075;",
+    ),
+    (
+        "r_slot_put_another_cap",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn f(n: Net) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, n); return 0; }\n",
+        "REJECT:tc:T075;",
+    ),
+    (
+        "r_slot_take_from_an_int",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let t: Fuel = slot_take(7); return 0; }\n",
+        "REJECT:tc:T075;",
+    ),
+    // T195: deadline covariance at the put — a shorter-lived cap, a different parametric arity.
+    (
+        "r_slot_put_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2025)) -> i64 { let s = slot_new::<Approval(2030)>(); slot_put(s, c); return 0; }\n",
+        "REJECT:tc:T195;",
+    ),
+    (
+        "r_slot_put_other_arity_position",
+        "module m;\ncap type Limited(deadline_ms: i64, max_uses: i64) {}\nfn f(c: Limited(2030, 5)) -> i64 { let s = slot_new::<Limited(2030, 6)>(); slot_put(s, c); return 0; }\n",
+        "REJECT:tc:T195;",
+    ),
+    // T043: a slot or a cap place is linear — never reassigned.
+    (
+        "r_slot_reassigned",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let mut s: Slot<Fuel> = slot_new::<Fuel>(); s = slot_new::<Fuel>(); return 0; }\n",
+        "REJECT:tc:T043;",
+    ),
+    (
+        "r_cap_reassigned",
+        "module m;\ncap type Fuel { burn }\nfn f(a: Fuel, b: Fuel) -> i64 { let mut c: Fuel = a; c = b; return 0; }\n",
+        "REJECT:tc:T043;",
+    ),
+    // T193: `Slot` is a reserved type name.
+    (
+        "r_record_named_slot",
+        "module m;\nrecord Slot { x: i64 }\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:T193;",
+    ),
+    // T068: control flow in a region body — a loop, a return.
+    (
+        "r_region_for",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { for i in 0..3 { } }; return 0; }\n",
+        "REJECT:tc:T068;",
+    ),
+    (
+        "r_region_return",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { let x: i64 = 1; return x; }; return 0; }\n",
+        "REJECT:tc:T068;",
+    ),
+    // T111: a region limit that is not an integer.
+    (
+        "r_region_bool_limit",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(true) { let x: i64 = 1; }; return 0; }\n",
+        "REJECT:tc:T111;",
+    ),
+    // T041: a region handle is not an integer.
+    (
+        "r_region_handle_into_an_int",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { let h: i64 = scratch; }; return 0; }\n",
+        "REJECT:tc:T041;",
+    ),
+    // T042: a region body's mutable set starts empty — an outer `let mut` is not rebound there.
+    (
+        "r_region_rebinds_an_outer_mut",
+        "module m;\nfn f() -> i64 ! { Alloc } { let mut acc: i64 = 0; region scratch(64) { acc = 1; }; return acc; }\n",
+        "REJECT:tc:T042;",
+    ),
+    // Accepts: the slot shapes of the gated corpus and the region statements this slice emits.
+    (
+        "a_region_body_local_mut_rebound",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { let mut n: i64 = 1; n = n + 1; }; return 0; }\n",
+        "OK",
+    ),
+    (
+        "a_slot_round_trip",
+        "module main;\ncap type Fuel { burn }\nfn boot(seed: Fuel) -> i64 {\n    let s = slot_new::<Fuel>();\n    slot_put(s, seed);\n    let extracted: Fuel = slot_take(s);\n    let _consumed = extracted.draw(1);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_take_into_a_call",
+        "module main;\ncap type Fuel { burn }\nfn consume(f: Fuel) -> i64 { return 1; }\nfn boot(seed: Fuel) -> i64 {\n    let s = slot_new::<Fuel>();\n    slot_put(s, seed);\n    return consume(slot_take(s));\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_put_in_both_branches",
+        "module main;\ncap type Fuel { burn }\nfn boot(cond: i64, c1: Fuel, c2: Fuel) -> i64 {\n    let s = slot_new::<Fuel>();\n    if cond == 1 {\n        slot_put(s, c1);\n    } else {\n        slot_put(s, c2);\n    }\n    let _taken: Fuel = slot_take(s);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_rotation",
+        "module main;\ncap type Fuel { burn }\nfn boot(c1: Fuel, c2: Fuel) -> i64 {\n    let s = slot_new::<Fuel>();\n    slot_put(s, c1);\n    let _first: Fuel = slot_take(s);\n    slot_put(s, c2);\n    let _second: Fuel = slot_take(s);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_parametric_cap",
+        "module main;\ncap type Approval(deadline_ms: i64) {}\nfn boot(c: Approval(2030)) -> i64 {\n    let s = slot_new::<Approval(2030)>();\n    slot_put(s, c);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_two_parameter_cap",
+        "module main;\ncap type Limited(deadline_ms: i64, max_uses: i64) {}\nfn boot(c: Limited(2030, 5)) -> i64 {\n    let s = slot_new::<Limited(2030, 5)>();\n    slot_put(s, c);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_take_without_a_put",
+        "module tool;\ncap type Foo { x }\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {\n    let s = slot_new::<Foo>();\n    let taken = slot_take(s);\n    let _consumed = taken.draw(1);\n    return 0;\n}\n",
+        "OK",
+    ),
+    (
+        "a_slot_param_and_annotated_let",
+        "module m;\ncap type Fuel { burn }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Fuel) -> i64 { let s: Slot<Fuel> = slot_new::<Fuel>(); return fill(s, c); }\n",
+        "OK",
+    ),
+    (
+        "a_slot_copy_and_take_into_put",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(); let s2 = s; let t = slot_new::<Fuel>(); slot_put(s2, c); slot_put(t, slot_take(s)); return 0; }\n",
+        "OK",
+    ),
+    (
+        "a_region_scalar_body",
+        "module m;\nfn f() -> i64 ! { Alloc } { region scratch(64) { let inner: i64 = 42; let used: i64 = inner + 1; }; return 1; }\n",
+        "OK",
+    ),
+    (
+        "a_region_handle_to_a_region_param",
+        "module m;\nfn g(r: Region) -> i64 { return 0; }\nfn f() -> i64 ! { Alloc } { region buf(64) { let x: i64 = g(buf); }; return 0; }\n",
+        "OK",
+    ),
+    (
+        "a_region_handle_let",
+        "module m;\nfn f() -> i64 ! { Alloc } { region buf(64) { let h: Region = buf; }; return 0; }\n",
+        "OK",
+    ),
+];
+
+#[test]
+fn shp5c3_slot_and_region_programs_match_the_oracle() {
+    for (label, src, want) in SHP5C3_CORPUS {
+        let oracle = oracle_compile(label, src);
+        if *want == "OK" {
+            assert_eq!(
+                split_protocol(&oracle).0,
+                "OK",
+                "SHP-5c-3 {label}: the oracle must accept:\n{oracle}"
+            );
+        } else {
+            assert_eq!(
+                oracle, *want,
+                "SHP-5c-3 {label}: the oracle's exact answer moved"
+            );
+        }
+        let shadow = sh_compile_out(src);
+        assert_eq!(
+            shadow, oracle,
+            "SHP-5c-3 {label}: the self-hosted compiler must give the oracle's exact answer\n{src}"
+        );
+    }
+}
+
+/// `@in r` naming a parameter that is not a `Region` is the oracle's PARSER diagnostic P024.
+/// Since the SHP-5c-2 third review the self-hosted parser refuses such a list itself
+/// (`parser_region_dangling`, pinned by presence in parser_differential.rs), so the composed
+/// chain never reaches its type checker's P024, the backstop: the parser's bail leaves the
+/// tree without the names its body refers to, and the chain refuses at name resolution with
+/// that cascade. Not a corpus row: `oracle_compile` requires a parse-clean fixture.
+#[test]
+fn shp5c3_in_region_annotation_without_a_region_param_is_p024() {
+    let src = "module m;\nrecord Box { v: i64 }\nfn g(w: Box @in r) -> i64 { return 0; }\n";
+    let source = SourceFile::new("<boot-diff>", src);
+    let (_ast, pdiags) = parser::parse(&source);
+    let codes: Vec<String> = pdiags.iter().map(|d| d.code().to_string()).collect();
+    assert_eq!(
+        codes,
+        vec!["P024".to_string()],
+        "the oracle's parser must say P024"
+    );
+    let shadow = sh_compile_out(src);
+    let (kind, stage, rest) = split_protocol(&shadow);
+    let shadow_codes: std::collections::BTreeSet<&str> =
+        rest.split(';').filter(|c| !c.is_empty()).collect();
+    assert_eq!(
+        (kind.as_str(), stage.as_str(), shadow_codes),
+        ("REJECT", "nr", std::collections::BTreeSet::from(["N002"])),
+        "the self-hosted chain must refuse the dangling `@in` by its parser's bail: {shadow}"
+    );
+}
+
+/// The slice's own refusals on programs the oracle accepts or rejects otherwise: an explicit
+/// instantiation of a user generic (the oracle accepts; this checker infers, so it refuses),
+/// a `Slot<C>` annotation whose value is not that slot (the oracle's T046, which the composed
+/// pipeline drops by name, so the marker carries the refusal). Each must be a REFUSAL, never
+/// an accept and never a different code the oracle did not give.
+#[test]
+fn shp5c3_refusals_are_marked_not_clean() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "explicit instantiation of a user generic",
+            "module t;\nfn id<T>(x: T) -> T { return x; }\nfn f() -> i64 { let a: i64 = id::<i64>(1); return a; }\n",
+            "OK",
+        ),
+        (
+            "slot annotation over an int",
+            "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let s: Slot<Fuel> = 5; return 0; }\n",
+            "REJECT:tc:T046;",
+        ),
+        (
+            "slot annotation over a slot of another cap",
+            "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn f() -> i64 { let s: Slot<Fuel> = slot_new::<Net>(); return 0; }\n",
+            "REJECT:tc:T046;",
+        ),
+    ];
+    for (label, src, want) in cases {
+        let oracle = oracle_compile(label, src);
+        if *want == "OK" {
+            assert_eq!(
+                split_protocol(&oracle).0,
+                "OK",
+                "SHP-5c-3 {label}: the oracle accepts"
+            );
+        } else {
+            assert_eq!(
+                oracle, *want,
+                "SHP-5c-3 {label}: the oracle's exact answer moved"
+            );
+        }
+        let shadow = sh_compile_out(src);
+        assert_eq!(
+            shadow, "REJECT:tc:SH_TC_UNSUPPORTED;",
+            "SHP-5c-3 {label}: the self-hosted compiler must refuse with its marker\n{src}"
+        );
+    }
+}
+
+// ── SHP-5c-3 review: capability, slot and region values at their boundaries ───────────────────
+//
+// A capability, slot or region value crosses a call, an annotated let or a return only where
+// production's `type_compatible` admits it, and no record field, enum payload or array literal
+// carries a capability (production's T183, T184, T186). The self-hosted type checker gives the
+// oracle's exact code where it is one it claims (T041, T049, T183, T184, T186, T195) and its
+// refusal marker otherwise — production's T071 is dropped by the composed pipeline's filter, so
+// a mismatch there must refuse. A restricted capability handed straight to a sink is C003 in
+// the capability shadow. Each row pins the oracle's exact answer ("OK" for an accepted program)
+// and the self-hosted compiler's ("=" for the oracle's own: byte-identical, or the same codes).
+const SHP5C3_FLOW_CORPUS: &[(&str, &str, &str, &str)] = &[
+    // Exact: a capability carried by a record field (a cap, a slot of one, a `Vec` of them) is T183, by an
+    // enum payload T184, by an array literal's element (a tuple holding one included) T186.
+    (
+        "x_record_cap_field",
+        "module m;\ncap type Fuel { burn }\nrecord R { c: Fuel }\nfn f(c: Fuel) -> i64 { let r: R = R { c: c }; return 0; }\n",
+        "REJECT:tc:T183;",
+        "=",
+    ),
+    (
+        "x_record_slot_field",
+        "module m;\ncap type Fuel { burn }\nrecord R { s: Slot<Fuel> }\nfn f() -> i64 { let r: R = R { s: slot_new::<Fuel>() }; return 0; }\n",
+        "REJECT:tc:T183;",
+        "=",
+    ),
+    (
+        "x_record_vec_of_caps",
+        "module m;\ncap type Fuel { burn }\nrecord R { v: Vec<Fuel> }\nfn f() -> i64 { return 0; }\n",
+        "REJECT:tc:T183;",
+        "=",
+    ),
+    (
+        "x_enum_cap_payload",
+        "module m;\ncap type Fuel { burn }\nenum E { A(Fuel), B }\nfn f(c: Fuel) -> i64 { let e: E = E::A(c); return 0; }\n",
+        "REJECT:tc:T184;",
+        "=",
+    ),
+    (
+        "x_enum_slot_payload",
+        "module m;\ncap type Fuel { burn }\nenum E { A(Slot<Fuel>), B }\nfn f() -> i64 { let e: E = E::A(slot_new::<Fuel>()); return 0; }\n",
+        "REJECT:tc:T184;",
+        "=",
+    ),
+    (
+        "x_array_of_caps",
+        "module m;\ncap type Fuel { burn }\nfn f(a: Fuel, b: Fuel) -> i64 { let xs: [Fuel; 2] = [a, b]; return 0; }\n",
+        "REJECT:tc:T186;",
+        "=",
+    ),
+    (
+        "x_array_of_slots",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let a: [Slot<Fuel>; 2] = [slot_new::<Fuel>(), slot_new::<Fuel>()]; return 0; }\n",
+        "REJECT:tc:T186;",
+        "=",
+    ),
+    (
+        "x_array_of_tuples_holding_caps",
+        "module m;\ncap type Fuel { burn }\nfn f(a: Fuel, b: Fuel) -> i64 { let xs: [(Fuel, i64); 2] = [(a, 1), (b, 2)]; return 0; }\n",
+        "REJECT:tc:T186;",
+        "=",
+    ),
+    // Exact: a capability of another cap type under an annotation is T041, returned T049; one whose
+    // deadline falls below the declared one is T195 at an argument, an annotation or a return.
+    (
+        "x_cap_arg_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn g(c: Approval(2030)) -> i64 { return 1; }\nfn f(c: Approval(2025)) -> i64 { return g(c); }\n",
+        "REJECT:tc:T195;",
+        "=",
+    ),
+    (
+        "x_cap_let_other_cap",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn f(n: Net) -> i64 { let c2: Fuel = n; return 0; }\n",
+        "REJECT:tc:T041;",
+        "=",
+    ),
+    (
+        "x_cap_let_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2025)) -> i64 { let d: Approval(2030) = c; return 0; }\n",
+        "REJECT:tc:T195;",
+        "=",
+    ),
+    (
+        "x_cap_return_other_cap",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn f(n: Net) -> Fuel { return n; }\n",
+        "REJECT:tc:T049;",
+        "=",
+    ),
+    (
+        "x_cap_return_through_a_let",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn f(n: Net) -> Fuel { let x: Net = n; return x; }\n",
+        "REJECT:tc:T049;",
+        "=",
+    ),
+    (
+        "x_parametric_return_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2025)) -> Approval(2030) { return c; }\n",
+        "REJECT:tc:T195;",
+        "=",
+    ),
+    // Exact: a restricted capability handed straight to a full-authority sink — an argument, a
+    // return, an unannotated let's — is C003.
+    (
+        "x_inline_restrict_arg",
+        "module m;\ncap type Fuel { burn, query }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { return g(c.restrict(burn)); }\n",
+        "REJECT:cap:C003;",
+        "=",
+    ),
+    (
+        "x_inline_restrict_return",
+        "module m;\ncap type Fuel { burn, query }\nfn pass(f: Fuel) -> Fuel { return f.restrict(burn); }\n",
+        "REJECT:cap:C003;",
+        "=",
+    ),
+    (
+        "x_unannotated_restrict_arg",
+        "module m;\ncap type Fuel { burn, query }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { let r = c.restrict(burn); return g(r); }\n",
+        "REJECT:cap:C003;",
+        "=",
+    ),
+    // Exact: a `restrict_deadline` on a non-parametric or a multi-parameter cap, or one that would
+    // extend its cap's deadline (inline, chained or returned), is T200; its narrowed result flows like
+    // any cap of that deadline (T195 into a parameter that outlives it).
+    (
+        "x_restrict_deadline_extends",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn boot(c: Approval(2030)) -> i64 { let n = c.restrict_deadline(2040); return 0; }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_non_parametric",
+        "module m;\ncap type Fuel { burn }\nfn boot(c: Fuel) -> i64 { let n = c.restrict_deadline(2040); return 0; }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_multi_parameter",
+        "module m;\ncap type Limited(deadline_ms: i64, max_uses: i64) {}\nfn boot(c: Limited(2030, 5)) -> i64 { let n = c.restrict_deadline(2025); return 0; }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_inline_arg_extends",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn use_2028(c: Approval(2028)) -> i64 { return 1; }\nfn boot(c: Approval(2030)) -> i64 { return use_2028(c.restrict_deadline(2040)); }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_chain_extends",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn boot(c: Approval(2030)) -> i64 { let a = c.restrict_deadline(2025); let b = a.restrict_deadline(2027); return 0; }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_return_extends",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2030)) -> Approval(2030) { return c.restrict_deadline(2040); }\n",
+        "REJECT:tc:T200;",
+        "=",
+    ),
+    (
+        "x_restrict_deadline_into_longer_param",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn use_2028(c: Approval(2028)) -> i64 { return 1; }\nfn boot(c: Approval(2030)) -> i64 { let n = c.restrict_deadline(2025); return use_2028(n); }\n",
+        "REJECT:tc:T195;",
+        "=",
+    ),
+    // Refused (production's T071, which the composed pipeline drops, or a code this checker does not
+    // claim): a capability, slot or region value crossing a call into a parameter of another kind,
+    // cap type or deadline, into an annotation of another type, or a `Region` return type.
+    (
+        "r_handle_to_i64_param",
+        "module m;\nfn g(x: i64) -> i64 { return x; }\nfn f() -> i64 ! { Alloc } { region scratch(64) { let y: i64 = g(scratch); }; return 0; }\n",
+        "REJECT:tc:T254;T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_unannotated_handle_to_i64_param",
+        "module m;\nfn g(x: i64) -> i64 { return x; }\nfn f() -> i64 ! { Alloc } { region a(64) { let h = a; let y: i64 = g(h); }; return 0; }\n",
+        "REJECT:tc:T254;T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_int_to_region_param",
+        "module m;\nfn g(r: Region) -> i64 { return 0; }\nfn f() -> i64 { return g(5); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_slot_of_another_cap_to_slot_param",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Net>(); return fill(s, c); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_inline_slot_of_another_cap",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Fuel) -> i64 { return fill(slot_new::<Net>(), c); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_slot_shorter_deadline_to_slot_param",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn fill(s: Slot<Approval(2030)>, c: Approval(2030)) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Approval(2030)) -> i64 { let s = slot_new::<Approval(2025)>(); return fill(s, c); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_cap_to_another_cap_param",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(n: Net) -> i64 { return g(n); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_cap_to_slot_param",
+        "module m;\ncap type Fuel { burn }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { return 0; }\nfn f(c: Fuel, d: Fuel) -> i64 { return fill(c, d); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_slot_to_cap_param",
+        "module m;\ncap type Fuel { burn }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f() -> i64 { let s = slot_new::<Fuel>(); return g(s); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_taken_cap_to_another_cap_param",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn g(n: Net) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, c); return g(slot_take(s)); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_restrict_result_to_another_cap_param",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(n: Net) -> i64 { return g(n.restrict(tx)); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_fn_returned_cap_to_another_cap_param",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn mk(c: Fuel) -> Fuel { return c; }\nfn g(n: Net) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { return g(mk(c)); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_cap_to_i64_param",
+        "module m;\ncap type Fuel { burn }\nfn g(x: i64) -> i64 { return x; }\nfn f(c: Fuel) -> i64 { return g(c); }\n",
+        "REJECT:tc:T071;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_fn_returned_cap_under_another_cap",
+        "module m;\ncap type Fuel { burn }\ncap type Net { tx }\nfn mk(n: Net) -> Net { return n; }\nfn f(n: Net) -> i64 { let x: Fuel = mk(n); return 0; }\n",
+        "REJECT:tc:T041;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_cap_under_i64",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let x: i64 = c; return x; }\n",
+        "REJECT:tc:T041;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_slot_under_region",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 ! { Alloc } { let s = slot_new::<Fuel>(); region a(64) { let h: Region = s; }; return 0; }\n",
+        "REJECT:tc:T041;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_cap_under_slot",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let s: Slot<Fuel> = c; return 0; }\n",
+        "REJECT:tc:T046;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_slot_under_slot_of_longer_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f() -> i64 { let s: Slot<Approval(2030)> = slot_new::<Approval(2040)>(); return 0; }\n",
+        "REJECT:tc:T046;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_fn_returned_slot_under_slot_of_longer_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn mk() -> Slot<Approval(2040)> { return slot_new::<Approval(2040)>(); }\nfn f() -> i64 { let s: Slot<Approval(2030)> = mk(); return 0; }\n",
+        "REJECT:tc:T046;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    (
+        "r_region_return_type",
+        "module m;\nfn g(r: Region) -> Region { return r; }\n",
+        "REJECT:tc:T253;T254;",
+        "REJECT:tc:SH_TC_UNSUPPORTED;",
+    ),
+    // Byte-identical: the flows production admits — covariant arguments, annotations and returns, the
+    // inline operations, a restricted cap put into a slot (no sink), a borrowed or tupled cap.
+    (
+        "a_slot_arg_longer_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn fill(s: Slot<Approval(2030)>, c: Approval(2030)) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Approval(2030)) -> i64 { let s = slot_new::<Approval(2040)>(); return fill(s, c); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_cap_arg_longer_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn g(c: Approval(2030)) -> i64 { return 1; }\nfn f(c: Approval(2040)) -> i64 { return g(c); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_inline_slot_new_arg",
+        "module m;\ncap type Fuel { burn }\nfn fill(s: Slot<Fuel>, c: Fuel) -> i64 { slot_put(s, c); return 0; }\nfn f(c: Fuel) -> i64 { return fill(slot_new::<Fuel>(), c); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_inline_draw_arg",
+        "module m;\ncap type Fuel { burn, query }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { return g(c.draw(5)); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_inline_split_arg",
+        "module m;\ncap type Fuel { burn, query }\nfn g(c: Fuel) -> i64 { return 1; }\nfn f(c: Fuel, n: i64) -> i64 { return g(c.split(n)); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_slot_put_inline_restrict",
+        "module m;\ncap type Fuel { burn, query }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, c.restrict(burn)); return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_slot_put_narrowed_path",
+        "module m;\ncap type Fuel { burn, query }\nfn f(c: Fuel) -> i64 { let s = slot_new::<Fuel>(); let r: Fuel = c.restrict(burn); slot_put(s, r); return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_parametric_return_longer_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2040)) -> Approval(2030) { return c; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_fn_returned_cap_under_its_cap",
+        "module m;\ncap type Fuel { burn }\nfn mk(c: Fuel) -> Fuel { return c; }\nfn use_it(c: Fuel) -> i64 { return 1; }\nfn f(c: Fuel) -> i64 { let x: Fuel = mk(c); return use_it(x); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_cap_under_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2040)) -> i64 { let d: Approval(2030) = c; return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_slot_returned_under_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn mk() -> Slot<Approval(2030)> { return slot_new::<Approval(2040)>(); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_taken_cap_under_shorter_deadline",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn f(c: Approval(2040)) -> i64 { let s = slot_new::<Approval(2040)>(); slot_put(s, c); let d: Approval(2030) = slot_take(s); return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_restrict_deadline_into_shorter_param",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn use_2020(c: Approval(2020)) -> i64 { return 1; }\nfn boot(c: Approval(2030)) -> i64 { let n = c.restrict_deadline(2025); return use_2020(n); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_restrict_deadline_chain",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn use_2020(c: Approval(2020)) -> i64 { return 1; }\nfn boot(c: Approval(2030)) -> i64 { let a = c.restrict_deadline(2025); let b = a.restrict_deadline(2022); return use_2020(b); }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_restrict_deadline_annotated",
+        "module m;\ncap type Approval(deadline_ms: i64) {}\nfn boot(c: Approval(2030)) -> i64 { let n: Approval(2025) = c.restrict_deadline(2025); return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_record_with_a_borrowed_cap",
+        "module m;\ncap type Fuel { burn }\nrecord R { c: &Fuel }\nfn f() -> i64 { return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_tuple_holding_a_cap",
+        "module m;\ncap type Fuel { burn }\nfn f(c: Fuel) -> i64 { let t: (Fuel, i64) = (c, 1); return 0; }\n",
+        "OK",
+        "=",
+    ),
+    (
+        "a_tuple_holding_a_slot",
+        "module m;\ncap type Fuel { burn }\nfn f() -> i64 { let t: (Slot<Fuel>, i64) = (slot_new::<Fuel>(), 1); return 0; }\n",
+        "OK",
+        "=",
+    ),
+];
+
+#[test]
+fn shp5c3_capability_flows_match_the_oracle_or_refuse() {
+    for (label, src, want_oracle, want_shadow) in SHP5C3_FLOW_CORPUS {
+        let oracle = oracle_compile(label, src);
+        if *want_oracle == "OK" {
+            assert_eq!(
+                split_protocol(&oracle).0,
+                "OK",
+                "SHP-5c-3 {label}: the oracle must accept:\n{oracle}"
+            );
+        } else {
+            assert_eq!(
+                oracle, *want_oracle,
+                "SHP-5c-3 {label}: the oracle's exact answer moved"
+            );
+        }
+        let shadow = sh_compile_out(src);
+        let want = if *want_shadow == "=" {
+            oracle.as_str()
+        } else {
+            want_shadow
+        };
+        assert_eq!(
+            shadow, want,
+            "SHP-5c-3 {label}: the self-hosted compiler's answer moved\n{src}"
+        );
+    }
+}
+
+// ── SHP-2b: two-ring emission ─────────────────────────────────────────────────────────────────
+//
+// A program with an outer-ring module compiles to two modules, the inner one first, and the
+// self-hosted compiler answers in the protocol's superset form `OK:{inner}|{outer}`
+// (docs/specs/self-host-backend-parity.md, SHP-2b). Each fixture requires the oracle to emit two
+// modules and the self-hosted compiler to give the same string.
+const SHP2B_CORPUS: &[(&str, &str)] = &[
+    // Outer-only: production's fixed inner module (no fns, so no table), then an outer module
+    // that imports fuel_decrement, alloc and the one extern its call reaches.
+    (
+        "outer_extern_tool",
+        "#[ring(outer)] #[trusted] module tool;\nextern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\nextern \"C\" fn http_get(url: i32, url_len: i32) -> i64 ! { FFI, Unsafe };\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {\n    return fs_read(input_ptr, input_len);\n}\n",
+    ),
+    // Two externs, imported in the order their calls first occur over the ring's fns (`one`
+    // before `two`), not in declaration order.
+    (
+        "outer_externs_fn_order",
+        "#[ring(outer)] #[trusted] module tool;\nextern \"C\" fn a_ext(p: i64) -> i64 ! { FFI, Unsafe };\nextern \"C\" fn b_ext(p: i64) -> i64 ! { FFI, Unsafe };\nfn one(p: i64) -> i64 @Internal ! { FFI, Unsafe } {\n    return b_ext(p);\n}\nfn two(p: i64) -> i64 @Internal ! { FFI, Unsafe } {\n    return a_ext(p);\n}\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { FFI, Unsafe } {\n    return two(input_len) + one(input_len);\n}\n",
+    ),
+    // The inner module first: the outer ring's calls take its own indices (two, then its
+    // same-signature neighbour three), and each ring's element segment sits at its global slots.
+    (
+        "two_ring_inner_first",
+        "module first;\nfn dummy(a: i64) -> i64 { return a; }\n#[ring(outer)] module tool;\nfn two(a: i64) -> i64 { return a + 2; }\nfn three(a: i64) -> i64 { return a + 3; }\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return two(input_len) + three(input_len); }\n",
+    ),
+    // The outer module first, each ring with its own string data laid out from 1024.
+    (
+        "two_ring_outer_first_strings",
+        "#[ring(outer)] module tool;\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { let s: str = \"hello\"; return s.len(); }\nmodule second;\npub fn label() -> i64 { let t: str = \"ab\"; return t.len(); }\n",
+    ),
+];
+
+#[test]
+fn shp2b_two_ring_programs_match_the_oracle() {
+    for (label, src) in SHP2B_CORPUS {
+        let oracle = oracle_compile(label, src);
+        let (kind, _, payload) = split_protocol(&oracle);
+        assert_eq!(
+            kind, "OK",
+            "SHP-2b {label}: the oracle must accept:\n{oracle}"
+        );
+        assert_eq!(
+            payload.matches('|').count(),
+            1,
+            "SHP-2b {label}: the oracle must emit two modules"
+        );
+        let shadow = sh_compile_out(src);
+        assert_eq!(
+            shadow, oracle,
+            "SHP-2b {label}: the self-hosted compiler must give the oracle's exact answer\n{src}"
+        );
+    }
+}
+
+// ── SHP-5c-2 third review, follow-up: N005 on the member lists, end to end ────────────────────
+//
+// A duplicate parameter on an effect operation, a trait method signature or an impl method is
+// production's N005, and the self-hosted chain answered `OK:` with a module: its resolver checked
+// an `fn` item's list and an actor's only. `name_resolution_differential` pins the resolver's
+// codes fixture by fixture; this pins the composed compiler's whole answer on the shapes the gap
+// was reported with, so a gate that filtered the resolver's stream could not drop the refusal
+// unseen, and the accept twin of each, byte-identical.
+const MEMBER_PARAMS_CORPUS: &[(&str, &str, &str)] = &[
+    (
+        "dup_effect_op_param",
+        "module tool; effect Log { fn note(x: i64, x: i64) -> i64; } pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        "REJECT:nr:N005;",
+    ),
+    (
+        "effect_op_params",
+        "module tool; effect Log { fn note(x: i64, y: i64) -> i64; } pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        "OK",
+    ),
+    (
+        "dup_trait_sig_param",
+        "module tool; trait T { fn m(x: i64, x: i64) -> i64; } pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        "REJECT:nr:N005;",
+    ),
+    (
+        "trait_sig_params",
+        "module tool; trait T { fn m(x: i64, y: i64) -> i64; } pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        "OK",
+    ),
+    (
+        "dup_impl_method_param",
+        "module m;\nrecord P { v: i64 }\nimpl P { fn get(self: P, x: i64, x: i64) -> i64 { return x; } }\nfn f(p: P) -> i64 { return p.get(1, 2); }\n",
+        "REJECT:nr:N005;",
+    ),
+    (
+        "impl_method_params",
+        "module m;\nrecord P { v: i64 }\nimpl P { fn get(self: P, x: i64, y: i64) -> i64 { return x; } }\nfn f(p: P) -> i64 { return p.get(1, 2); }\n",
+        "OK",
+    ),
+];
+
+#[test]
+fn shp5c2_duplicate_member_params_match_the_oracle() {
+    for (label, src, want) in MEMBER_PARAMS_CORPUS {
+        let oracle = oracle_compile(label, src);
+        if *want == "OK" {
+            assert_eq!(
+                split_protocol(&oracle).0,
+                "OK",
+                "SHP-5c-2 {label}: the oracle must accept:\n{oracle}"
+            );
+        } else {
+            assert_eq!(
+                oracle, *want,
+                "SHP-5c-2 {label}: the oracle's exact answer moved"
+            );
+        }
+        let shadow = sh_compile_out(src);
+        assert_eq!(
+            shadow, oracle,
+            "SHP-5c-2 {label}: the self-hosted compiler must give the oracle's exact answer\n{src}"
+        );
+    }
+}
+
 // ── MONO-4 Phase-0: sh_compile + mn_expand on generic programs ────────────────────────────────
 
 /// The BOOT mega-tool + monomorph.sigil composed; body = parse -> mn_expand -> sh_compile.
@@ -1056,7 +2216,7 @@ pub fn tool_main(",
 #[test]
 fn cap0_oracle_accepts_capstone_input() {
     let input = cap0_input();
-    let oracle = oracle_compile("cap0", &input);
+    let oracle = memo_oracle_compile("cap0", &input);
     let (okind, _, _) = split_protocol(&oracle);
     assert_eq!(okind, "OK", "the oracle must accept the capstone input");
 }
@@ -1155,14 +2315,12 @@ fn cap0_poison_census_ratchet() {
          return census.as_output();";
         boot_mono_tool(body)
     };
-    let census_wasm = sigil_compiler::compile_tool(&census_tool)
-        .expect("the census tool compiles")
-        .wasm;
+    let census_wasm = memo_compile_tool(&census_tool).expect("the census tool compiles");
     let result = sigil_runtime::execute_ephemeral_with_memory_budget(
         &census_wasm,
         input.as_bytes(),
         3_000_000_000,
-        256 * 1024 * 1024,
+        512 * 1024 * 1024,
         &sigil_runtime::grants::IoGrants::none(),
     )
     .expect("the census executes under the SELF-4 budget");
@@ -1185,7 +2343,7 @@ fn cap0_poison_census_ratchet() {
 #[test]
 fn boot_self_byte_capstone() {
     let input = cap0_input();
-    let oracle = oracle_compile("boot_self", &input);
+    let oracle = memo_oracle_compile("boot_self", &input);
     let (okind, _, ohex) = split_protocol(&oracle);
     assert_eq!(okind, "OK", "Stage-2 exists");
     let stage1_tool = {
@@ -1200,18 +2358,16 @@ fn boot_self_byte_capstone() {
          return hex.as_output();";
         boot_mono_tool(body)
     };
-    let stage1_wasm = sigil_compiler::compile_tool(&stage1_tool)
-        .expect("the stage-1 tool compiles")
-        .wasm;
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let stage1_wasm = memo_compile_tool(&stage1_tool).expect("the stage-1 tool compiles");
+    let output = memo_execute(
         &stage1_wasm,
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("stage-1 completes under the SELF-4 budget");
-    let shex = String::from_utf8_lossy(&result.output).into_owned();
+    let shex = String::from_utf8_lossy(&output).into_owned();
     assert!(!shex.contains("!!"), "stage-1 must emit poison-free");
     assert_eq!(
         shex.len(),
@@ -1292,14 +2448,12 @@ fn cap0_runnable_poison_census_zero() {
          return census.as_output();";
         boot_mono_tool(body)
     };
-    let census_wasm = sigil_compiler::compile_tool(&census_tool)
-        .expect("the census tool compiles")
-        .wasm;
+    let census_wasm = memo_compile_tool(&census_tool).expect("the census tool compiles");
     let result = sigil_runtime::execute_ephemeral_with_memory_budget(
         &census_wasm,
         input.as_bytes(),
         3_000_000_000,
-        256 * 1024 * 1024,
+        512 * 1024 * 1024,
         &sigil_runtime::grants::IoGrants::none(),
     )
     .expect("the census executes under the SELF-4 budget");
@@ -1320,7 +2474,7 @@ fn cap0_runnable_poison_census_zero() {
 #[test]
 fn boot_self_runnable_byte_capstone() {
     let input = cap0_input_runnable();
-    let (okind, _, ohex) = split_protocol(&oracle_compile("boot_self_runnable", &input));
+    let (okind, _, ohex) = split_protocol(&memo_oracle_compile("boot_self_runnable", &input));
     assert_eq!(okind, "OK", "Stage-2 exists for the runnable library");
     let stage1_tool = {
         let body = "    let opt: Option<str> = input_ptr.from_bytes(input_len);
@@ -1334,18 +2488,16 @@ fn boot_self_runnable_byte_capstone() {
          return hex.as_output();";
         boot_mono_tool(body)
     };
-    let stage1_wasm = sigil_compiler::compile_tool(&stage1_tool)
-        .expect("the stage-1 tool compiles")
-        .wasm;
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let stage1_wasm = memo_compile_tool(&stage1_tool).expect("the stage-1 tool compiles");
+    let output = memo_execute(
         &stage1_wasm,
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("stage-1 completes under the SELF-4 budget");
-    let shex = String::from_utf8_lossy(&result.output).into_owned();
+    let shex = String::from_utf8_lossy(&output).into_owned();
     assert!(!shex.contains("!!"), "stage-1 must emit poison-free");
     assert_eq!(
         shex.len(),
@@ -1380,23 +2532,21 @@ fn selfhost_emit_wasm() -> &'static [u8] {
          let e: i64 = mn_expand(nodes, kids, root);
          let hex: str = ai_encode_wasm(nodes, kids, root);
          return hex.as_output();";
-        sigil_compiler::compile_tool(&boot_mono_tool(body))
-            .expect("the stage-1 tool compiles")
-            .wasm
+        memo_compile_tool(&boot_mono_tool(body)).expect("the stage-1 tool compiles")
     })
 }
 
 /// Run the SELFHOST compiler-as-wasm on `input`, returning the emitted module hex.
 fn selfhost_emit(input: &str) -> String {
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let output = memo_execute(
         selfhost_emit_wasm(),
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("stage-1 completes under the SELF-4 budget");
-    String::from_utf8_lossy(&result.output).into_owned()
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn unhex(hex: &str) -> Vec<u8> {
@@ -1641,11 +2791,12 @@ fn stage3a_executable_closure() {
     );
 
     // RUN the SIGIL-built compiler on its own source → reproduce shex'.
-    let out = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let out = sigil_runtime::execute_ephemeral_with_budgets(
         &runnable,
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
+        SELF_FUEL,
+        SELF_WASM_FUEL,
+        SELF_MEMORY,
         &sigil_runtime::grants::IoGrants::none(),
     )
     .expect("the spliced runnable executes under the SELF-4 budget");
@@ -1713,17 +2864,17 @@ fn a_prime_wasm() -> &'static [u8] {
     })
 }
 
-/// Run the BACKDOORED compiler A′ on `input`, returning the emitted module hex.
-fn a_prime_emit(input: &str) -> String {
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+/// Run the BACKDOORED compiler A′ on `input` under `budget`, returning the emitted module hex.
+fn a_prime_emit(input: &str, budget: WasmBudget) -> String {
+    let output = memo_execute(
         a_prime_wasm(),
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        budget,
     )
     .expect("A' completes under the SELF-4 budget");
-    String::from_utf8_lossy(&result.output).into_owned()
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 /// Execute the COMMITTED SEED on `src` — the DDC's second compiler. The distinction from
@@ -1732,15 +2883,15 @@ fn a_prime_emit(input: &str) -> String {
 /// sandbox that executes it. (The seed is the GATED artifact, so its output is protocol-shaped.)
 fn seed_compile(src: &str) -> String {
     let seed = read_seed();
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let output = memo_execute(
         &seed,
         src.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("the committed seed executes as the DDC's second compiler");
-    String::from_utf8_lossy(&result.output).into_owned()
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 /// Stage-3-B THE DEFENSE: the DDC clears the honest compiler and CATCHES the backdoored one. The
@@ -1750,7 +2901,7 @@ fn seed_compile(src: &str) -> String {
 #[test]
 fn stage3b_ddc_honest_passes_backdoored_caught() {
     let input = cap0_input_runnable();
-    let (okind, _, ohex) = split_protocol(&oracle_compile("stage3b_oracle", &input));
+    let (okind, _, ohex) = split_protocol(&memo_oracle_compile("stage3b_oracle", &input));
     assert_eq!(
         okind, "OK",
         "the oracle (DDC's trusted second compiler) accepts cap0'"
@@ -1764,7 +2915,7 @@ fn stage3b_ddc_honest_passes_backdoored_caught() {
     );
 
     // A′ is CAUGHT — its self-emission diverges from the oracle.
-    let backdoored = a_prime_emit(&input);
+    let backdoored = a_prime_emit(&input, WasmBudget::SelfCompile);
     assert_ne!(
         backdoored, ohex,
         "DDC: the backdoored A' must NOT be byte-identical (the defense catches it)"
@@ -1794,7 +2945,7 @@ fn stage3b_backdoor_targets_only_self() {
         "module tool;\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }\n";
     let (okind, _, oforeign) = split_protocol(&oracle_compile("stage3b_foreign", foreign));
     assert_eq!(okind, "OK", "the oracle accepts the foreign program");
-    let a_foreign = a_prime_emit(foreign);
+    let a_foreign = a_prime_emit(foreign, WasmBudget::Default);
     assert_eq!(
         a_foreign, oforeign,
         "A' emits a foreign (non-self) program honestly — the backdoor does not fire"
@@ -1813,7 +2964,7 @@ fn stage3b_backdoor_targets_only_self() {
 /// propagation across N generations is the weaponized quine, an explicit anti-goal — AG-2/AG-3.)
 #[test]
 fn stage3b_backdoored_compiler_still_functions() {
-    let backdoored = a_prime_emit(&cap0_input_runnable());
+    let backdoored = a_prime_emit(&cap0_input_runnable(), WasmBudget::SelfCompile);
     assert!(
         backdoored.ends_with(THOMPSON_MARKER_HEX),
         "the marker survived into the gen-1 compiler binary"
@@ -1822,15 +2973,15 @@ fn stage3b_backdoored_compiler_still_functions() {
     let foreign =
         "module tool;\npub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }\n";
     let (_, _, oforeign) = split_protocol(&oracle_compile("stage3b_gen2", foreign));
-    let out = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let out = memo_execute(
         &runnable,
         foreign.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::Default,
     )
     .expect("the backdoored compiler executes as a runnable tool");
-    let gen2 = String::from_utf8_lossy(&out.output).into_owned();
+    let gen2 = String::from_utf8_lossy(&out).into_owned();
     assert_eq!(
         gen2, oforeign,
         "the backdoored compiler is a functioning compiler (gen-2 output is valid + honest)"
@@ -1882,7 +3033,7 @@ fn stage3b_ddc_second_compiler_is_the_seed() {
     );
 
     // A′ is CAUGHT by the seed — oracle not consulted.
-    let backdoored = a_prime_emit(&input);
+    let backdoored = a_prime_emit(&input, WasmBudget::SelfCompile);
     assert_ne!(
         backdoored, seed_hex,
         "DDC (seed edition): the backdoored A' must diverge from the frozen seed"
@@ -1903,7 +3054,7 @@ fn stage3b_ddc_second_compiler_is_the_seed() {
 #[test]
 fn stage3b_seed_and_oracle_agree_on_the_ddc_input() {
     let input = cap0_input_runnable();
-    let (okind, _, ohex) = split_protocol(&oracle_compile("stage3b_seed_agree", &input));
+    let (okind, _, ohex) = split_protocol(&memo_oracle_compile("stage3b_seed_agree", &input));
     assert_eq!(okind, "OK", "the oracle accepts the DDC input");
     let (skind, _, shex) = split_protocol(&seed_compile(&input));
     assert_eq!(skind, "OK", "the seed accepts the DDC input");
@@ -1914,7 +3065,7 @@ fn stage3b_seed_and_oracle_agree_on_the_ddc_input() {
     // SC-P4 anti-vacuity: the comparison must be able to SEE a difference. The backdoored A′ is
     // the live witness — same input, same comparison, different verdict.
     assert_ne!(
-        a_prime_emit(&input),
+        a_prime_emit(&input, WasmBudget::SelfCompile),
         shex,
         "anti-vacuity: this equality is not trivially satisfiable — A' fails it"
     );
@@ -1925,7 +3076,7 @@ fn stage3b_seed_and_oracle_agree_on_the_ddc_input() {
 #[test]
 fn ag6_5_with_driver_byte_capstone() {
     let input = with_driver_input();
-    let oracle = oracle_compile("ag6_5", &input);
+    let oracle = memo_oracle_compile("ag6_5", &input);
     let (okind, _, ohex) = split_protocol(&oracle);
     assert_eq!(
         okind, "OK",
@@ -1943,18 +3094,17 @@ fn ag6_5_with_driver_byte_capstone() {
          return hex.as_output();";
         boot_mono_tool(body)
     };
-    let stage1_wasm = sigil_compiler::compile_tool(&stage1_tool)
-        .expect("the with-driver stage-1 tool compiles")
-        .wasm;
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let stage1_wasm =
+        memo_compile_tool(&stage1_tool).expect("the with-driver stage-1 tool compiles");
+    let output = memo_execute(
         &stage1_wasm,
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("with-driver stage-1 completes under the SELF-4 budget");
-    let shex = String::from_utf8_lossy(&result.output).into_owned();
+    let shex = String::from_utf8_lossy(&output).into_owned();
     assert!(
         !shex.contains("!!"),
         "AG6-5: the with-driver tool_main must emit POISON-FREE"
@@ -2010,12 +3160,12 @@ fn ag6_5_with_driver_byte_capstone() {
 //
 // Relational capstones can miss changes when both stages move together. These
 // absolute pins make certified-surface movement an explicit, reviewed change.
-const PIN_CAP0_SRC_CHARS: usize = 1_150_294;
-const PIN_CAP0_MODULE_BYTES: usize = 454_195;
-const PIN_CAP0_RUNNABLE_SRC_CHARS: usize = 1_150_649;
-const PIN_CAP0_RUNNABLE_MODULE_BYTES: usize = 454_549;
-const PIN_WITH_DRIVER_SRC_CHARS: usize = 1_151_129;
-const PIN_WITH_DRIVER_MODULE_BYTES: usize = 454_894;
+const PIN_CAP0_SRC_CHARS: usize = 1_572_200;
+const PIN_CAP0_MODULE_BYTES: usize = 627_140;
+const PIN_CAP0_RUNNABLE_SRC_CHARS: usize = 1_572_555;
+const PIN_CAP0_RUNNABLE_MODULE_BYTES: usize = 627_494;
+const PIN_WITH_DRIVER_SRC_CHARS: usize = 1_573_035;
+const PIN_WITH_DRIVER_MODULE_BYTES: usize = 627_839;
 // PIN-1, STAGE-1 SIDE. The six pins above measure the ORACLE's output: `pin_module_bytes` calls
 // `oracle_compile`, so Stage-1's own size was pinned only TRANSITIVELY — via the capstones'
 // `shex == ohex`. That chain has two links, and a weakened or deleted equality assertion breaks
@@ -2023,9 +3173,9 @@ const PIN_WITH_DRIVER_MODULE_BYTES: usize = 454_894;
 // SELFHOST-emitted module directly, at the point each capstone already holds `shex`, so the
 // selfhost side costs no extra Stage-1 run. They must be repinned on their own, with their own
 // stated reason, even when the oracle pins move with them.
-const PIN_STAGE1_CAP0_MODULE_BYTES: usize = 454_195;
-const PIN_STAGE1_RUNNABLE_MODULE_BYTES: usize = 454_549;
-const PIN_STAGE1_WITH_DRIVER_MODULE_BYTES: usize = 454_894;
+const PIN_STAGE1_CAP0_MODULE_BYTES: usize = 627_140;
+const PIN_STAGE1_RUNNABLE_MODULE_BYTES: usize = 627_494;
+const PIN_STAGE1_WITH_DRIVER_MODULE_BYTES: usize = 627_839;
 // Catastrophic-shrink floors (SC-P3): these survive a lazy "edit the exact pin down" change.
 const PIN_FLOOR_SRC_CHARS: usize = 1_000_000;
 const PIN_FLOOR_MODULE_BYTES: usize = 400_000;
@@ -2068,7 +3218,7 @@ fn with_driver_input() -> String {
 }
 
 fn pin_module_bytes(label: &str, src: &str) -> usize {
-    let (kind, _, ohex) = split_protocol(&oracle_compile(label, src));
+    let (kind, _, ohex) = split_protocol(&memo_oracle_compile(label, src));
     assert_eq!(
         kind, "OK",
         "PIN: the oracle must accept the certified input `{label}`"
@@ -2186,14 +3336,12 @@ fn pin_census_anti_vacuity() {
          return census.as_output();";
         boot_mono_tool(body)
     };
-    let census_wasm = sigil_compiler::compile_tool(&census_tool)
-        .expect("the census tool compiles")
-        .wasm;
+    let census_wasm = memo_compile_tool(&census_tool).expect("the census tool compiles");
     let result = sigil_runtime::execute_ephemeral_with_memory_budget(
         &census_wasm,
         input.as_bytes(),
         3_000_000_000,
-        256 * 1024 * 1024,
+        512 * 1024 * 1024,
         &sigil_runtime::grants::IoGrants::none(),
     )
     .expect("the census executes under the SELF-4 budget");
@@ -2229,7 +3377,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// The oracle-emitted module hex for a certified input (Stage-2 side).
 fn oracle_module_hex(label: &str, src: &str) -> String {
-    let (kind, _, ohex) = split_protocol(&oracle_compile(label, src));
+    let (kind, _, ohex) = split_protocol(&memo_oracle_compile(label, src));
     assert_eq!(
         kind, "OK",
         "PIN-7: the oracle must accept the certified input `{label}`"
@@ -2306,19 +3454,19 @@ fn pin_certified_artifact_digest() {
 
     // Source digests include the strip-list result.
     const PIN_CAP0_SRC_SHA256: &str =
-        "9c7e6702bf963acfe528e2c8bda1586dd22d56942213dd307313a66f7d33dce7";
+        "ef0be0bb3a8acc6b7a4241d68810e0e3d28a9240fcae2720914cb78eb37e1902";
     const PIN_CAP0_RUNNABLE_SRC_SHA256: &str =
-        "3d40add4944508246a9760b56a1bdd529fc06adc76aa01857fcce8a9fc1827a4";
+        "9401214db9007df834822f9cfd0a5e45e8fd8f1335145fdce10cbe39b51d7a7d";
     const PIN_WITH_DRIVER_SRC_SHA256: &str =
-        "2a0acecaff3357b5e1066a74185dda97800a3a469c5317b66e2852db81411b46";
+        "2e859c3c8bd370e870983134e2bde466e0ed2b00667cf115d1d0c9fb8006435a";
 
     // Module digests pin the absolute oracle output behind relational capstones.
     const PIN_CAP0_MODULE_SHA256: &str =
-        "160f608f572e8b429f03f05d2662f13219e37a6aa739739fe86a1c31b62ec9b6";
+        "8706051e6136f8d86d9dcba04e6166f08d5fa75e725944a801eb1ce87b1e2895";
     const PIN_CAP0_RUNNABLE_MODULE_SHA256: &str =
-        "f91aaf10dcfe25240155208c38b9f8dcbb73f24d566d18487eb3fba0d28ffe81";
+        "b1d1def0d4c7c5ee3c43149b6f8ac17f214eb79477151d0a33c2f1b1bc15f786";
     const PIN_WITH_DRIVER_MODULE_SHA256: &str =
-        "177e43e625b4908d085f5cc4cb386cd1440698155e07df4be458bafc585f1128";
+        "325e543da64ad689ab6818fad483ec0f544e00b1cb48f74df8092ab7baf10722";
 
     let checks: [(&str, String, &str); 6] = [
         (
@@ -2406,15 +3554,15 @@ fn pin_strip_list_length() {
 /// input needs the SELF-4 budgets (measured: 92 M fuel for gates + emit — the 10 G budget is the
 /// same ceiling the emit-lane capstones use; 256 MB linear memory).
 fn sh_mono_out_cap0(src: &str) -> String {
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let output = memo_execute(
         sh_mono_wasm(),
         src.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("the composed gate compiler executes at cap0 scale");
-    String::from_utf8_lossy(&result.output).into_owned()
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 /// HB-2 CHECKED CAPSTONE: the certified artifact passes its OWN full gate chain, and the module
@@ -2423,7 +3571,7 @@ fn sh_mono_out_cap0(src: &str) -> String {
 #[test]
 fn hb2_checked_byte_capstone() {
     let input = cap0_input();
-    let oracle = oracle_compile("hb2_checked", &input);
+    let oracle = memo_oracle_compile("hb2_checked", &input);
     let (okind, _, ohex) = split_protocol(&oracle);
     assert_eq!(
         okind, "OK",
@@ -2494,9 +3642,11 @@ fn hb2_checked_capstone_mutants_reject() {
             "O001",
         ),
     ];
-    for (label, snippet, want_stage, want_code) in mutants {
-        let mutated = format!("{base}{snippet}");
-        let out = sh_mono_out_cap0(&mutated);
+    // Independent certified-scale runs: compute them at once, then assert in order.
+    let outputs = parallel_map(mutants, |(_, snippet, _, _)| {
+        sh_mono_out_cap0(&format!("{base}{snippet}"))
+    });
+    for ((label, _, want_stage, want_code), out) in mutants.iter().zip(outputs) {
         let (kind, stage, detail) = split_protocol(&out);
         assert_eq!(
             (kind.as_str(), stage.as_str()),
@@ -2551,26 +3701,21 @@ fn with_driver_artifact() -> &'static (Vec<u8>, String) {
     static A: std::sync::OnceLock<(Vec<u8>, String)> = std::sync::OnceLock::new();
     A.get_or_init(|| {
         let input = with_driver_input();
-        let (okind, _, ohex) = split_protocol(&oracle_compile("hb1_artifact", &input));
+        let (okind, _, ohex) = split_protocol(&memo_oracle_compile("hb1_artifact", &input));
         assert_eq!(okind, "OK", "the oracle accepts the with-driver artifact");
         (unhex(&ohex), ohex)
     })
 }
 
-/// Execute the with-driver artifact on `src` under the standard SELF-4 budgets.
-fn run_artifact(src: &str) -> String {
+/// Execute the with-driver artifact on `src` under the standard SELF-4 budgets and the wasm
+/// budget `budget` (the self-compile's on certified-scale source, the default otherwise).
+fn run_artifact(src: &str, budget: WasmBudget) -> String {
     let art = with_driver_artifact();
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
-        &art.0,
-        src.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
-    )
-    .expect("the with-driver artifact executes");
+    let output = memo_execute(&art.0, src.as_bytes(), SELF_FUEL, SELF_MEMORY, budget)
+        .expect("the with-driver artifact executes");
     // Strict, matching `sh_mono_out`: lossy decoding would silently map non-UTF-8 output to
     // U+FFFD and let a corrupt run be compared as if it were text.
-    String::from_utf8(result.output).expect("the artifact's output is UTF-8")
+    String::from_utf8(output).expect("the artifact's output is UTF-8")
 }
 
 /// The with-driver artifact, EXECUTED on its own source, gates it and emits its own bytes:
@@ -2583,7 +3728,7 @@ fn run_artifact(src: &str) -> String {
 fn hb1_stub_free_executable_fixed_point() {
     let input = with_driver_input();
     let art = with_driver_artifact();
-    let out = run_artifact(&input);
+    let out = run_artifact(&input, WasmBudget::SelfCompile);
     let (kind, stage, hex) = split_protocol(&out);
     assert_eq!(
         (kind.as_str(), stage.as_str()),
@@ -2641,8 +3786,11 @@ fn hb1_executed_artifact_rejects_mutants() {
             "O001",
         ),
     ];
-    for (label, snippet, want_stage, want_code) in mutants {
-        let out = run_artifact(&format!("{base}{snippet}"));
+    // Independent certified-scale runs: compute them at once, then assert in order.
+    let outputs = parallel_map(mutants, |(_, snippet, _, _)| {
+        run_artifact(&format!("{base}{snippet}"), WasmBudget::SelfCompile)
+    });
+    for ((label, _, want_stage, want_code), out) in mutants.iter().zip(outputs) {
         let (kind, stage, detail) = split_protocol(&out);
         assert_eq!(
             (kind.as_str(), stage.as_str()),
@@ -2672,7 +3820,7 @@ fn hb1_executed_artifact_is_a_compiler_not_an_echo() {
     let oracle_other = oracle_compile("hb1_echo_other", other);
     let (okind2, _, other_hex) = split_protocol(&oracle_other);
     assert_eq!(okind2, "OK", "the oracle accepts the other program");
-    let out = run_artifact(other);
+    let out = run_artifact(other, WasmBudget::Default);
     let (kind, _, hex) = split_protocol(&out);
     assert_eq!(
         kind, "OK",
@@ -2698,7 +3846,7 @@ fn hb1_executed_artifact_is_a_compiler_not_an_echo() {
 fn hb1_executed_artifact_runs_the_gates() {
     let mut reject_stages = std::collections::BTreeSet::new();
     for (label, src, want) in BOOT_CORPUS {
-        let exec = run_artifact(src);
+        let exec = run_artifact(src, WasmBudget::Default);
         let composed = sh_mono_out(src);
         assert_eq!(
             exec, composed,
@@ -2801,7 +3949,7 @@ fn hb1_multi_module_rejects_fence_the_vacuous_gate_class() {
         ),
     ];
     for (label, src, want_stage, want_code) in MULTI {
-        let exec = run_artifact(src);
+        let exec = run_artifact(src, WasmBudget::Default);
         assert_eq!(
             exec,
             sh_mono_out(src),
@@ -2837,7 +3985,7 @@ fn hb1_multi_module_rejects_fence_the_vacuous_gate_class() {
 
 /// SHA-256 of the committed seed's RAW bytes (distinct from PIN_WITH_DRIVER_MODULE_SHA256,
 /// which digests the oracle's HEX STRING).
-const PIN_SEED_SHA256: &str = "1ef47cc5b967d2d42b43be6353dc8d276209aa8ec23655a9b4e0c83ad21764f2";
+const PIN_SEED_SHA256: &str = "ed73518a781fae6b466e51d99c931eed54131074ef9779bde65e1173b22c31b2";
 
 /// Environment variable that ARMS the succession ritual's write. Without it the ritual VERIFIES
 /// instead of writing (see `seed_regenerate`).
@@ -2943,15 +4091,15 @@ fn seed_is_the_oracle_emit_of_the_certified_source() {
 fn seed_self_regenerates() {
     let seed = read_seed();
     let input = with_driver_input();
-    let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+    let output = memo_execute(
         &seed,
         input.as_bytes(),
-        10_000_000_000,
-        256 * 1024 * 1024,
-        &sigil_runtime::grants::IoGrants::none(),
+        SELF_FUEL,
+        SELF_MEMORY,
+        WasmBudget::SelfCompile,
     )
     .expect("the committed seed executes on the certified source");
-    let out = String::from_utf8_lossy(&result.output).into_owned();
+    let out = String::from_utf8_lossy(&output).into_owned();
     let (kind, stage, hex) = split_protocol(&out);
     assert_eq!(
         (kind.as_str(), stage.as_str()),
@@ -3008,11 +4156,12 @@ fn seed_regenerate() {
 
     let new_bytes = match std::fs::read(&path) {
         Ok(old_seed) => {
-            let result = sigil_runtime::execute_ephemeral_with_memory_budget(
+            let result = sigil_runtime::execute_ephemeral_with_budgets(
                 &old_seed,
                 input.as_bytes(),
-                10_000_000_000,
-                256 * 1024 * 1024,
+                SELF_FUEL,
+                SELF_WASM_FUEL,
+                SELF_MEMORY,
                 &sigil_runtime::grants::IoGrants::none(),
             )
             .expect("succession: the old seed executes on the current certified source");
@@ -3042,11 +4191,12 @@ fn seed_regenerate() {
                 // provenance row must name the emission change that made the second stage
                 // necessary.
                 let stage_one = bytes;
-                let second = sigil_runtime::execute_ephemeral_with_memory_budget(
+                let second = sigil_runtime::execute_ephemeral_with_budgets(
                     &stage_one,
                     input.as_bytes(),
-                    10_000_000_000,
-                    256 * 1024 * 1024,
+                    SELF_FUEL,
+                    SELF_WASM_FUEL,
+                    SELF_MEMORY,
                     &sigil_runtime::grants::IoGrants::none(),
                 )
                 .expect("emitter-rule succession: the stage-one compiler executes on the certified source");
@@ -3271,4 +4421,366 @@ pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 {
             "SHADOW GAP in `{label}`: the certified source now contains a `str` `==`/`!=` or a              string-literal `match` arm. `selfhost/air.sigil` has no lowering for it and the fuel              shadow cannot reproduce its ceiling-poison, so Stage-1 and Stage-2 would diverge              silently. Use `.bytes_eq()` — the identical predicate and the established idiom              there — or teach `selfhost/air.sigil` the lowering and run the full repin ritual."
         );
     }
+}
+
+/// One top-level function of SIGIL source: its name, and its text from the header to its closing
+/// brace with `//` comments removed. A top-level function starts at column 0 (`fn name(` or
+/// `pub fn name(`) and ends at the first line that starts with `}` there; a closure is an
+/// expression and does neither, and the records and consts between functions belong to none.
+fn sigil_functions(src: &str) -> Vec<(String, String)> {
+    let mut functions = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in src.lines() {
+        let header = line
+            .strip_prefix("pub fn ")
+            .or_else(|| line.strip_prefix("fn "));
+        if let Some(rest) = header {
+            functions.extend(current.take());
+            let name = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>();
+            current = Some((name, String::new()));
+        }
+        if let Some((_, body)) = current.as_mut() {
+            body.push_str(line.split("//").next().unwrap_or_default());
+            body.push('\n');
+            if line.starts_with('}') {
+                functions.extend(current.take());
+            }
+        }
+    }
+    functions.extend(current);
+    functions
+}
+
+/// The identifiers `body` declares with type `ty` (`name: ty`, as a parameter or a `let`).
+fn sigil_names_typed(body: &str, ty: &str) -> Vec<String> {
+    let needle = format!(": {ty}");
+    let mut names = Vec::new();
+    for (at, _) in body.match_indices(&needle) {
+        let name = body[..at]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Does `body` call `receiver.method(`, with `receiver` a whole identifier?
+fn sigil_calls(body: &str, receiver: &str, method: &str) -> bool {
+    let needle = format!("{receiver}.{method}(");
+    body.match_indices(&needle).any(|(at, _)| {
+        !body[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Every place in `src` that breaks one of the invariants the self-hosted type checker's indexed
+/// lookups rely on (`selfhost/typecheck.sigil`):
+/// 1. A function's bind table is read and written slot by slot only through `tc_bind_index` and
+///    its accessors, `tc_scope_unwind` and the const-run builders. `tc_scope_unwind` marks a popped
+///    block with one dead-run marker and leaves the slots under it as they were, so any other
+///    newest-first scan reads bindings that went out of scope (and treats markers as bindings).
+///    Monomorph's tables never hold markers; its two readers are allowed by name.
+/// 2. Signature rows are built only by `tc_build_sigs` (and the intrinsic helper and the sort it
+///    calls), which leaves every table sorted for `tc_sig_find`'s binary search.
+/// 3. The two marker texts live only in their helpers, which only the unwind, the const seeding
+///    and `tc_bind_index` call.
+///
+/// And the ones the self-hosted taint checker's index relies on (`selfhost/taint_check.sigil`):
+/// the table keeps its push order (row numbers are semantic) and `tt_encode` builds a `TtIdx`
+/// beside it once, after `tt_build_sigs`, which answers every later lookup only while:
+/// 4. Rows are pushed only by the table builders and, after the index, only by `tt_sm_build`
+///    (its sentinel, of a kind no lookup asks for).
+/// 5. A row rewritten in place (a `TtSig {` literal outside `tt_sig_row`) keeps its own name and
+///    kind.
+/// 6. The index is built only by `tt_index_build`, for `tt_encode`, and read only by the lookups;
+///    no other function measures a table (`.len()`), which is how a scan by name starts.
+///
+/// And the one the type checker's cap-name list relies on (`tc_cap_names`, the arena's `cap type`
+/// names read once at a pass's entry for `tc_cap_declared`):
+/// 7. The parser is the only allocator of a cap declaration (a `PNode {` literal of kind
+///    `P_K_CAP_TYPE` only in `parser_cap_type`), so the list a pass builds at its entry is the
+///    arena's set for the whole pass; and the list is built only there, by the pass entries.
+fn indexed_lookup_breaches(src: &str) -> Vec<String> {
+    const BIND_SLOT_USERS: &[&str] = &[
+        "tc_bind_index",
+        "tc_bind_lookup",
+        "tc_bind_detail",
+        "tc_bind_targs",
+        "tc_scope_unwind",
+        "tc_seed_consts",
+        "tc_module_consts",
+        "mn_bind_tag",
+        "mn_seed_subst",
+    ];
+    const SIG_WRITERS: &[&str] = &["tc_build_sigs", "tc_push_intr_sig", "tc_sort_sig_tail"];
+    const TT_ROW_PUSHERS: &[&str] = &[
+        "tt_build_sigs",
+        "tt_push_fn_sig",
+        "tt_push_record_sigs",
+        "tt_push_enum_sigs",
+        "tt_sm_build",
+    ];
+    const TT_TABLE_MEASURERS: &[&str] =
+        &["tt_sm_live", "tt_sm_close", "tt_sm_build", "tt_index_build"];
+    const TT_INDEX_READERS: &[&str] = &[
+        "tt_index_first",
+        "tt_tab_find",
+        "tt_sm_fn_row",
+        "tt_sm_is_variant",
+    ];
+    const CAP_LIST_BUILDERS: &[&str] = &[
+        "tc_emit",
+        "cap_encode_mode",
+        "own_encode",
+        "mn_run",
+        "mn_expand",
+        "ai_encode_cv_impl",
+    ];
+    const MARKS: [(&str, &str, &[&str]); 2] = [
+        (
+            "\"$dead\"",
+            "tc_dead_run_mark",
+            &["tc_scope_unwind", "tc_bind_index"],
+        ),
+        (
+            "\"$consts\"",
+            "tc_const_run_mark",
+            &["tc_seed_consts", "tc_bind_index"],
+        ),
+    ];
+    let mut breaches = Vec::new();
+    for (name, body) in sigil_functions(src) {
+        if !BIND_SLOT_USERS.contains(&name.as_str()) {
+            for table in sigil_names_typed(&body, "Vec<TcBind>") {
+                for method in ["get", "set"] {
+                    if sigil_calls(&body, &table, method) {
+                        breaches.push(format!(
+                            "`{name}` reads or writes the bind table `{table}` slot by slot \
+                             (`.{method}`); go through tc_bind_index"
+                        ));
+                    }
+                }
+            }
+        }
+        if !SIG_WRITERS.contains(&name.as_str()) {
+            if body.contains("TcSig {") {
+                breaches.push(format!(
+                    "`{name}` builds a `TcSig` row outside tc_build_sigs"
+                ));
+            }
+            for table in sigil_names_typed(&body, "Vec<TcSig>") {
+                for method in ["push", "set"] {
+                    if sigil_calls(&body, &table, method) {
+                        breaches.push(format!(
+                            "`{name}` writes the signature table `{table}` (`.{method}`) outside \
+                             tc_build_sigs, so it may not stay sorted"
+                        ));
+                    }
+                }
+            }
+        }
+        for (text, helper, callers) in MARKS {
+            if body.contains(text) && name != helper {
+                breaches.push(format!("`{name}` spells the marker text {text} itself"));
+            }
+            if body.contains(&format!("{helper}()"))
+                && name != helper
+                && !callers.contains(&name.as_str())
+            {
+                breaches.push(format!(
+                    "`{name}` writes or reads a marker through `{helper}`"
+                ));
+            }
+        }
+        for table in sigil_names_typed(&body, "Vec<TtSig>") {
+            if !TT_ROW_PUSHERS.contains(&name.as_str()) && sigil_calls(&body, &table, "push") {
+                breaches.push(format!(
+                    "`{name}` pushes a row onto the taint table `{table}`, which its index \
+                     (built once, after tt_build_sigs) cannot see"
+                ));
+            }
+            if !TT_TABLE_MEASURERS.contains(&name.as_str()) && sigil_calls(&body, &table, "len") {
+                breaches.push(format!(
+                    "`{name}` measures the taint table `{table}` (`.len()`) to scan it; look a \
+                     name up through tt_tab_find, tt_sm_fn_row or tt_sm_is_variant"
+                ));
+            }
+        }
+        if name != "tt_sig_row" {
+            for (at, _) in body.match_indices("TtSig {") {
+                let literal = &body[at..];
+                let literal = &literal[..literal.find('}').map_or(literal.len(), |end| end + 1)];
+                if !sigil_row_keeps_name_and_kind(literal) {
+                    breaches.push(format!(
+                        "`{name}` rewrites a taint table row with a name or kind that is not \
+                         the row's own: {literal}"
+                    ));
+                }
+            }
+        }
+        if name != "tt_index_build" && body.contains("TtIdx {") {
+            breaches.push(format!("`{name}` builds a `TtIdx` outside tt_index_build"));
+        }
+        if name != "tt_encode" && name != "tt_index_build" && body.contains("tt_index_build(") {
+            breaches.push(format!(
+                "`{name}` builds the taint index itself; tt_encode builds it once"
+            ));
+        }
+        if !TT_INDEX_READERS.contains(&name.as_str()) {
+            for field in [".by_name", ".variants"] {
+                if body.contains(field) {
+                    breaches.push(format!(
+                        "`{name}` reads the taint index (`{field}`) itself; look a name up \
+                         through tt_tab_find, tt_sm_fn_row or tt_sm_is_variant"
+                    ));
+                }
+            }
+        }
+        if name != "parser_cap_type" {
+            for (at, _) in body.match_indices("PNode {") {
+                let literal = &body[at..];
+                let literal = &literal[..literal.find('}').map_or(literal.len(), |end| end + 1)];
+                if literal.contains("P_K_CAP_TYPE") {
+                    breaches.push(format!(
+                        "`{name}` allocates a cap declaration; the parser is the only allocator \
+                         (a pass reads the arena's cap names once, at its entry: tc_cap_names)"
+                    ));
+                }
+            }
+        }
+        if name != "tc_cap_names"
+            && !CAP_LIST_BUILDERS.contains(&name.as_str())
+            && body.contains("tc_cap_names(")
+        {
+            breaches.push(format!(
+                "`{name}` builds the cap-name list itself; a pass builds it once, at its entry"
+            ));
+        }
+    }
+    breaches
+}
+
+/// Does a `TtSig {` literal take its `name` and `kind` from one row `r` (`name: r.name`,
+/// `kind: r.kind`), as a rewrite of that row in place must?
+fn sigil_row_keeps_name_and_kind(literal: &str) -> bool {
+    let Some(at) = literal.find("name: ") else {
+        return false;
+    };
+    let rest = &literal[at + "name: ".len()..];
+    let row = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>();
+    !row.is_empty()
+        && rest[row.len()..].starts_with(".name,")
+        && literal.contains(&format!("kind: {row}.kind,"))
+}
+
+/// SHADOW FENCE. The certified source keeps the invariants the self-hosted type checker's and
+/// taint checker's indexed lookups depend on (`indexed_lookup_breaches`). Each was an argument
+/// when the lookups were indexed (the scans they replaced found the same entry for every input),
+/// and an argument only holds while the code it is about stays the same: a newer function that
+/// scans a table itself compiles, merges without a conflict, and resolves names wrongly. This
+/// makes it a refusal.
+#[test]
+fn certified_source_keeps_the_indexed_lookup_invariants() {
+    // Anti-stub: every kind of breach, planted, is found, and its function named.
+    let planted = "fn tc_planted_scan(binds: Vec<TcBind>, name: str) -> bool {\n    let b: TcBind = binds.get(0);\n    return b.name.bytes_eq(name);\n}\n\
+fn tc_planted_row(sigs: Vec<TcSig> @Mut) -> i64 {\n    let q: i64 = sigs.push(TcSig { name: \"x\" });\n    return q;\n}\n\
+fn tc_planted_mark() -> str {\n    return \"$dead\";\n}\n\
+fn tc_planted_marker_use(binds: Vec<TcBind> @Mut) -> i64 {\n    let mk: str = tc_const_run_mark();\n    return 0;\n}\n\
+fn tt_planted_push(out: Vec<TtSig> @Mut) -> i64 {\n    let q: i64 = out.push(tt_sig_row(\"x\", \"\", 0, 0, \"\", false, 0, 0));\n    return q;\n}\n\
+fn tt_planted_scan(sigs: Vec<TtSig>, name: str) -> i64 {\n    let n: i64 = sigs.len();\n    return n;\n}\n\
+fn tt_planted_rename(sigs: Vec<TtSig> @Mut) -> i64 {\n    let sg: TtSig = sigs.get(0);\n    let q: i64 = sigs.set(0, TtSig { name: \"x\", kind: sg.kind });\n    return q;\n}\n\
+fn tt_planted_literal(rows: Vec<i64>, names: Vec<str>) -> TtIdx {\n    return TtIdx { by_name: rows, variants: names };\n}\n\
+fn tt_planted_build(sigs: Vec<TtSig>) -> TtIdx {\n    return tt_index_build(sigs);\n}\n\
+fn tt_planted_read(sidx: TtIdx) -> i64 {\n    return sidx.by_name.get(0);\n}\n\
+fn mn_planted_cap(nodes: Arena<PNode> @Mut) -> i64 {\n    let id: i64 = nodes.allocate(PNode { kind: P_K_CAP_TYPE, text: \"x\" });\n    return id;\n}\n\
+fn tc_planted_caplist(nodes: Arena<PNode>) -> Vec<str> {\n    return tc_cap_names(nodes);\n}\n";
+    let planted_breaches = indexed_lookup_breaches(planted);
+    // A clean function followed by a record declaration: the record is no function's code (a
+    // splitter that ran on to the next header read this one as building a signature row).
+    let clean = "fn tc_clean(x: i64) -> i64 {\n    return x;\n}\nrecord TcSig { name: str }\n\
+fn tc_clean_too() -> i64 {\n    return 0;\n}\nrecord TtIdx { by_name: Vec<i64> }\n\
+fn tt_clean_rewrite(sigs: Vec<TtSig> @Mut) -> i64 {\n    let sg: TtSig = sigs.get(0);\n    \
+let q: i64 = sigs.set(0, TtSig { name: sg.name, kind: sg.kind, rel: 0 });\n    return q;\n}\n";
+    assert_eq!(
+        indexed_lookup_breaches(clean),
+        Vec::<String>::new(),
+        "the census read a declaration between two functions as part of one, or a rewrite that \
+         keeps its row's name and kind as a breach"
+    );
+    for function in [
+        "tc_planted_scan",
+        "tc_planted_row",
+        "tc_planted_mark",
+        "tc_planted_marker_use",
+        "tt_planted_push",
+        "tt_planted_scan",
+        "tt_planted_rename",
+        "tt_planted_literal",
+        "tt_planted_build",
+        "tt_planted_read",
+        "mn_planted_cap",
+        "tc_planted_caplist",
+    ] {
+        assert!(
+            planted_breaches
+                .iter()
+                .any(|breach| breach.contains(function)),
+            "anti-stub: the census missed the planted breach in `{function}`: {planted_breaches:#?}"
+        );
+    }
+
+    let source = with_driver_input();
+    // Not vacuous: the census sees the certified source's functions, including the ones the
+    // invariants are about.
+    let names = sigil_functions(&source)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<std::collections::BTreeSet<_>>();
+    for required in [
+        "tc_bind_index",
+        "tc_scope_unwind",
+        "tc_seed_consts",
+        "tc_sig_find",
+        "tc_build_sigs",
+        "tc_sort_sig_tail",
+        "tt_build_sigs",
+        "tt_index_build",
+        "tt_tab_find",
+        "tt_sm_fn_row",
+        "tt_sm_is_variant",
+        "tt_sm_build",
+        "tt_sm_close",
+        "parser_cap_type",
+        "tc_cap_names",
+        "tc_cap_declared",
+    ] {
+        assert!(
+            names.contains(required),
+            "the census found no `{required}` in the certified source; its function splitter or \
+             the source changed"
+        );
+    }
+    let breaches = indexed_lookup_breaches(&source);
+    assert!(
+        breaches.is_empty(),
+        "the certified source breaks an invariant of the indexed lookups in \
+         selfhost/typecheck.sigil, selfhost/taint_check.sigil or the passes that build the \
+         cap-name list (see indexed_lookup_breaches):\n{}",
+        breaches.join("\n")
+    );
 }

@@ -1,0 +1,21 @@
+{
+  "allocation": "constructor only; two fixed matrices plus caller scratch",
+  "contract_hash": "sha256:168243a02d874777a28a22c30b0fe51db8644c767ee61741abdeac81f75ac927",
+  "effects": [
+    "Alloc"
+  ],
+  "errors": {
+    "-400": "phase, metadata or overlap",
+    "-409": "changed commit destination",
+    "-413": "numeric capacity",
+    "-422": "shape, bound, rate or numerical failure"
+  },
+  "host_imports": [],
+  "limits": {
+    "elements": 4096
+  },
+  "package": "sigil/optim",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "update": "staged clipped sign step; explicit commit or discard",
+  "version": "0.1.0-public.1"
+}

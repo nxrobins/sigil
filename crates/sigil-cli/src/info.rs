@@ -85,6 +85,10 @@ COMMANDS:
     --build-deadline <MS>  Reject parametric caps whose deadline has passed
 
   run <FILE...>          Compile, verify, then execute
+    --package <ROOT>       Run a locked, root-owned Public tool::tool_main (Alloc-only, no host grants)
+    --input <TEXT>         Package tool input (default empty; at most 1 MiB)
+    --fuel <N>             Package tool fuel (default 100000; 1..10000000)
+    --cert <FILE>          Verify a supplied graph certificate before package execution
     --serve                Stay resident after the boot drain: feed stdin lines to the
                            entry actor until EOF (fuel is refilled per dispatch). `run` only
     --on <HANDLER>         Which handler `--serve` feeds; needed only when the entry actor
@@ -118,7 +122,17 @@ COMMANDS:
     --require-cert-provenance <ID=PUBKEY_HEX>  Require a trusted signed cert envelope
     --cert-context <CTX> / --revoke-cert-signer <ID>  Provenance policy gates
 
-  package-lock          Create a root-only offline lock (--root <DIR>); never overwrite
+  package-init          Create a NEW private bytes/fmt starter; never overwrite a directory
+    --root <DIR>          New project directory; its parent must already exist
+    --namespace <NAME>    Lowercase package namespace; package/module name is always tool
+    --dependency <ID=DIR> Select sigil/bytes and sigil/fmt explicitly (both required)
+                          Generates real hashes and a lock, not admission or solver approval
+  package-refresh       Refresh private bytes/fmt tool metadata and root lock (--root <DIR>)
+                          Preserves prior files in .sigil/refresh; refuses dependency changes
+                          Neither compilation nor admission; interrupted refresh requires inspection
+  package-lock          Create an offline lock (--root <DIR>); never overwrite or repin
+    --dependency <ID=DIR> Explicit local sources (repeatable, feature-free workspace graphs)
+                          Copies pinned dependencies into root-local .sigil/deps; no network
   package-evidence      Emit solver-backed compiler artifacts, not an admission verdict
     --root <DIR>          Explicit locked package materialization
     --output-dir <DIR>    New directory disjoint from the package; manifest written last

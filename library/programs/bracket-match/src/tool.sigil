@@ -1,0 +1,81 @@
+// Experimental private bracket validator using fmt; no host authority.
+module tool;
+use sigil::fmt;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let stack_ptr = alloc(input_len);
+    let mut depth = 0;
+    let mut valid = 1;
+    let mut i = 0;
+
+    while i < input_len {
+        if valid == 1 {
+            let b = load8(input_ptr + i);
+
+            if b == 40 {
+                store8(stack_ptr + depth, 40);
+                depth = depth + 1;
+            } else {
+                if b == 91 {
+                    store8(stack_ptr + depth, 91);
+                    depth = depth + 1;
+                } else {
+                    if b == 123 {
+                        store8(stack_ptr + depth, 123);
+                        depth = depth + 1;
+                    } else {
+                        if b == 41 {
+                            if depth > 0 {
+                                let top = load8(stack_ptr + depth - 1);
+                                if top == 40 {
+                                    depth = depth - 1;
+                                } else {
+                                    valid = 0;
+                                }
+                            } else {
+                                valid = 0;
+                            }
+                        } else {
+                            if b == 93 {
+                                if depth > 0 {
+                                    let top = load8(stack_ptr + depth - 1);
+                                    if top == 91 {
+                                        depth = depth - 1;
+                                    } else {
+                                        valid = 0;
+                                    }
+                                } else {
+                                    valid = 0;
+                                }
+                            } else {
+                                if b == 125 {
+                                    if depth > 0 {
+                                        let top = load8(stack_ptr + depth - 1);
+                                        if top == 123 {
+                                            depth = depth - 1;
+                                        } else {
+                                            valid = 0;
+                                        }
+                                    } else {
+                                        valid = 0;
+                                    }
+                                } else {
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+        }
+
+        i = i + 1;
+    }
+
+    if depth == 0 {
+    } else {
+        valid = 0;
+    }
+
+    return fmt::boolean(valid == 1);
+}

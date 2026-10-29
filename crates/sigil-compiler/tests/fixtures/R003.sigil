@@ -18,9 +18,11 @@
 //
 // After step 24, ring_check's Inner-ring branch walks each function
 // body for `TypedExprKind::ExternCall` and emits R003 with the
-// offending callee name. The diagnostic suggests two copyable fixes
-// (move to outer/trusted, or use `grant(&cap, fn(ref) -> ...)` to
-// cross the ring).
+// offending callee name. The diagnostic names the fix: declare the
+// calling module `#[ring(outer)] #[trusted]` if it is FFI surface
+// code. It once also offered `grant(&cap, fn(ref) -> ...)` as a way
+// across the ring. There is none: a call into the outer ring is
+// R004 even inside a `grant` body.
 //
 // NOTE (step 30 / E003 update): use_it must NOT declare
 // `! { FFI, Unsafe }` in its effect row, because step 30's E003

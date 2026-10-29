@@ -1,0 +1,10 @@
+// A closure capturing three locals whose first-use order (zeta, alpha, mid) is not their name order: the closure's environment is laid out in name order, so its Wasm bytes are identical on every compile.
+module tool;
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 {
+    let zeta: i64 = 100;
+    let alpha: i64 = 20;
+    let mid: i64 = 3;
+    let g: Fn(i64) -> i64 = fn(x: i64) -> i64 { return zeta + alpha * x + mid; };
+    return 0 - g(2);
+}

@@ -318,17 +318,58 @@ fn cap_env_actual(env_names: Vec<str>, env_actual: Vec<i64>, name: str) -> i64 {
 
 // The cap type a `let` binds, or "" (not cap-typed). Annotated `let x: T = …` → the annotation's cap
 // name. MI-3: un-annotated `let x = recv.restrict/split/draw(…)` → the receiver's cap type.
-fn cap_let_type(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, env_names: Vec<str>, env_caps: Vec<str>) -> str ! { Alloc } {
+fn cap_let_type(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, env_names: Vec<str>, env_caps: Vec<str>) -> str ! { Alloc } {
     let ln: PNode = nodes.get(letid);
     if ln.child_count == 2 {
         let tid: i64 = kids.get(ln.child_start);
         let capn: str = tc_cap_name_of_typenode(nodes, tid, rdefs, cdefs);
-        return capn;
+        if capn.len() > 0 {
+            return capn;
+        }
+        // SHP-5c-3: `let s: Slot<C> = …` — a slot entry (tc_slot_entry; not a cap, skipped at
+        // every sink by cap_emit_if_cap).
+        let slott: str = tc_slot_cap_of_typenode(nodes, kids, tid, rdefs, capnames);
+        if slott.len() > 0 {
+            return tc_slot_entry(tc_seg_at(slott, 0));
+        }
+        return "";
     } else {
     }
     if ln.child_count == 1 {
         let rid: i64 = kids.get(ln.child_start);
         let rn: PNode = nodes.get(rid);
+        // SHP-5c-3: `let s = slot_new::<C>()` and a copy of a slot-bound name are slot entries;
+        // `let t = slot_take(s)` binds the slot's cap C with the FULL mask (cap_let_actual's
+        // call-returned origin): production's static authority trace terminates at SlotTake.
+        if rn.kind == P_K_CALL {
+            if rn.text.bytes_eq("slot_new") {
+                if rn.flags >= 1 {
+                    let nct: str = tc_cap_text_of_typenode(nodes, kids.get(rn.child_start), rdefs, capnames);
+                    if nct.len() > 0 {
+                        return tc_slot_entry(tc_seg_at(nct, 0));
+                    }
+                }
+            }
+            if rn.text.bytes_eq("slot_take") {
+                if rn.flags == 0 {
+                    if rn.child_count == 1 {
+                        let san: PNode = nodes.get(kids.get(rn.child_start));
+                        if san.kind == P_K_PATH {
+                            let sentry: str = cap_env_find(env_names, env_caps, san.text);
+                            if tc_is_slot_entry(sentry) {
+                                return tc_slot_entry_cap(sentry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if rn.kind == P_K_PATH {
+            let centry: str = cap_env_find(env_names, env_caps, rn.text);
+            if tc_is_slot_entry(centry) {
+                return centry;
+            }
+        }
         let mut isop: bool = false;
         if rn.kind == P_K_CAP_RESTRICT {
             isop = true;
@@ -364,6 +405,10 @@ fn cap_let_type(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, rdefs: Vec<TcRe
 //   a bare-name copy    → src.actual                    [PRESERVE — Assign(Var)]
 //   restrict_deadline / call-returned / mint / opaque → full_mask   [ORIGIN — the walk breaks]
 fn cap_let_actual(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, cap_type: str, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, env_names: Vec<str>, env_actual: Vec<i64>) -> i64 ! { Alloc } {
+    // SHP-5c-3: a slot entry carries no authority (never read: cap_emit_if_cap skips slots).
+    if tc_is_slot_entry(cap_type) {
+        return 0;
+    }
     let ln: PNode = nodes.get(letid);
     let mut rid: i64 = 0;
     if ln.child_count == 2 {
@@ -403,28 +448,16 @@ fn cap_let_actual(nodes: Arena<PNode>, kids: Vec<i64>, letid: i64, cap_type: str
 // provably == the Z3 discharge on slot-free programs, the CAP-0 equivalence proof). Returns 0.
 fn cap_emit_if_cap(mode: i64, kind: str, pathname: str, cap_names: Vec<str>, cap_masks: Vec<i64>, env_names: Vec<str>, env_caps: Vec<str>, env_actual: Vec<i64>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let capn: str = cap_env_find(env_names, env_caps, pathname);
+    // SHP-5c-3: a slot handed to a sink is not a capability obligation (production's
+    // obligations are keyed on cap-kinded operands; a slot is a pointer).
+    if tc_is_slot_entry(capn) {
+        return 0;
+    }
     if capn.len() > 0 {
         let mask: i64 = cap_mask_of(cap_names, cap_masks, capn);
         if mask > 0 {
             let actual: i64 = cap_env_actual(env_names, env_actual, pathname);
-            if mode == 1 {
-                let covered: i64 = cap_and(actual, mask);
-                if covered == mask {
-                } else {
-                    let q: i64 = diags.push("C003;");
-                }
-            } else {
-                let s1: str = kind.concat(" ");
-                let s2: str = s1.concat(capn);
-                let s3: str = s2.concat(" ");
-                let ms: str = cap_i64_str(mask);
-                let s4: str = s3.concat(ms);
-                let s5: str = s4.concat(" ");
-                let as1: str = cap_i64_str(actual);
-                let s6: str = s5.concat(as1);
-                let s7: str = s6.concat(";");
-                let q: i64 = diags.push(s7);
-            }
+            let ob: i64 = cap_emit_obligation(mode, kind, capn, mask, actual, diags);
         } else {
         }
     } else {
@@ -432,17 +465,106 @@ fn cap_emit_if_cap(mode: i64, kind: str, pathname: str, cap_names: Vec<str>, cap
     return 0;
 }
 
+// One obligation (MI-5): cap `capn` with declared authority `mask` meets a `kind` sink with
+// `actual` authority. mode 0 (WORKLOAD) → `{kind} {cap} {mask} {actual};`; mode 1 (VERDICT) →
+// `C003;` iff the obligation is VIOLATED (actual & mask != mask). Returns 0.
+fn cap_emit_obligation(mode: i64, kind: str, capn: str, mask: i64, actual: i64, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    if mode == 1 {
+        let covered: i64 = cap_and(actual, mask);
+        if covered != mask {
+            let q1: i64 = diags.push("C003;");
+        }
+        return 0;
+    }
+    let s1: str = kind.concat(" ");
+    let s2: str = s1.concat(capn);
+    let s3: str = s2.concat(" ");
+    let ms: str = cap_i64_str(mask);
+    let s4: str = s3.concat(ms);
+    let s5: str = s4.concat(" ");
+    let as1: str = cap_i64_str(actual);
+    let s6: str = s5.concat(as1);
+    let s7: str = s6.concat(";");
+    let q2: i64 = diags.push(s7);
+    return 0;
+}
+
+// SHP-5c-3 review: a capability value handed straight to a sink (a call argument, a returned
+// value) that is not a bare name obligates as its let-bound twin does (cap_let_actual): a
+// capability operation's cap is its receiver's — `restrict` narrows the receiver's authority to
+// the named one, `split` and `draw` preserve it, `restrict_deadline` is an origin at the full
+// mask — and a `slot_take` of a named slot is its slot's cap at the full mask (the static trace
+// ends there). A receiver that is no cap in the env obligates nothing, as at a let. Returns 0.
+fn cap_emit_if_capexpr(mode: i64, kind: str, nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, env_names: Vec<str>, env_caps: Vec<str>, env_actual: Vec<i64>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+    let onode: PNode = nodes.get(eid);
+    if onode.kind == P_K_CALL {
+        if onode.text.bytes_eq("slot_take") {
+            if onode.flags == 0 {
+                if onode.child_count == 1 {
+                    let san: PNode = nodes.get(kids.get(onode.child_start));
+                    if san.kind == P_K_PATH {
+                        let sentry: str = cap_env_find(env_names, env_caps, san.text);
+                        if tc_is_slot_entry(sentry) {
+                            let scap: str = tc_slot_entry_cap(sentry);
+                            let smask: i64 = cap_mask_of(cap_names, cap_masks, scap);
+                            if smask > 0 {
+                                return cap_emit_obligation(mode, kind, scap, smask, smask, diags);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+    let mut isop: bool = onode.kind == P_K_CAP_RESTRICT;
+    if onode.kind == P_K_CAP_RESTRICT_DEADLINE {
+        isop = true;
+    }
+    if onode.kind == P_K_CAP_SPLIT {
+        isop = true;
+    }
+    if onode.kind == P_K_CAP_DRAW {
+        isop = true;
+    }
+    if !isop {
+        return 0;
+    }
+    let recv: str = tc_seg_at(onode.text, 0);
+    let capn: str = cap_env_find(env_names, env_caps, recv);
+    if capn.len() == 0 {
+        return 0;
+    }
+    if tc_is_slot_entry(capn) {
+        return 0;
+    }
+    let mask: i64 = cap_mask_of(cap_names, cap_masks, capn);
+    if mask <= 0 {
+        return 0;
+    }
+    let mut actual: i64 = cap_env_actual(env_names, env_actual, recv);
+    if onode.kind == P_K_CAP_RESTRICT {
+        let auth: str = tc_seg_at(onode.text, 1);
+        let bit: i64 = cap_auth_bit(cap_names, cap_auths, capn, auth);
+        actual = cap_and(actual, bit);
+    }
+    if onode.kind == P_K_CAP_RESTRICT_DEADLINE {
+        actual = mask;
+    }
+    return cap_emit_obligation(mode, kind, capn, mask, actual, diags);
+}
+
 // The single body walk: threads the append-only (names, caps, actual) env, emits Call/Return
 // obligations in pre-order-DFS = source order. A P_K_LET adds its cap binding AFTER its RHS is
 // walked (nested sinks emit first; the binding's actual is traced from the receiver already in env).
-fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, env_names: Vec<str> @Mut, env_caps: Vec<str> @Mut, env_actual: Vec<i64> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, env_names: Vec<str> @Mut, env_caps: Vec<str> @Mut, env_actual: Vec<i64> @Mut, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let n: PNode = nodes.get(nid);
     if n.kind == P_K_LET {
-        let capn: str = cap_let_type(nodes, kids, nid, rdefs, cdefs, env_names, env_caps);
+        let capn: str = cap_let_type(nodes, kids, nid, rdefs, capnames, cdefs, env_names, env_caps);
         let mut ci: i64 = 0;
         while ci < n.child_count {
             let cid: i64 = kids.get(n.child_start + ci);
-            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             ci = ci + 1;
         }
         if capn.len() > 0 {
@@ -456,20 +578,34 @@ fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec
     } else {
     }
     if n.kind == P_K_CALL {
+        // SHP-5c-3 review: the slot intrinsics are no call sinks — production lowers them to
+        // SlotNew/SlotPut/SlotTake, which carry no capability obligation (a restricted cap put
+        // into a slot is no violation).
+        let mut slotop: bool = n.text.bytes_eq("slot_put");
+        if n.text.bytes_eq("slot_take") {
+            slotop = true;
+        }
+        if n.text.bytes_eq("slot_new") {
+            slotop = true;
+        }
         let mut ai: i64 = 0;
+        if slotop {
+            ai = n.child_count;
+        }
         while ai < n.child_count {
             let aid: i64 = kids.get(n.child_start + ai);
             let an: PNode = nodes.get(aid);
             if an.kind == P_K_PATH {
                 let e: i64 = cap_emit_if_cap(mode, "Call", an.text, cap_names, cap_masks, env_names, env_caps, env_actual, diags);
             } else {
+                let eo: i64 = cap_emit_if_capexpr(mode, "Call", nodes, kids, aid, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             }
             ai = ai + 1;
         }
         let mut ci: i64 = 0;
         while ci < n.child_count {
             let cid: i64 = kids.get(n.child_start + ci);
-            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             ci = ci + 1;
         }
         return 0;
@@ -482,13 +618,14 @@ fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec
             if vn.kind == P_K_PATH {
                 let e: i64 = cap_emit_if_cap(mode, "Return", vn.text, cap_names, cap_masks, env_names, env_caps, env_actual, diags);
             } else {
+                let eo: i64 = cap_emit_if_capexpr(mode, "Return", nodes, kids, vid, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             }
         } else {
         }
         let mut ci: i64 = 0;
         while ci < n.child_count {
             let cid: i64 = kids.get(n.child_start + ci);
-            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             ci = ci + 1;
         }
         return 0;
@@ -511,7 +648,7 @@ fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec
         let mut ci: i64 = 0;
         while ci < n.child_count {
             let cid: i64 = kids.get(n.child_start + ci);
-            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+            let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
             ci = ci + 1;
         }
         return 0;
@@ -564,7 +701,7 @@ fn cap_walk(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, nid: i64, rdefs: Vec
     let mut ci: i64 = 0;
     while ci < n.child_count {
         let cid: i64 = kids.get(n.child_start + ci);
-        let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+        let r: i64 = cap_walk(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
         ci = ci + 1;
     }
     return 0;
@@ -595,7 +732,7 @@ fn cap_is_generic_fn(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64) -> bool {
 
 // Check one fn/handler/init: seed the pre-env (actor state cap fields — empty for a module fn),
 // then cap-typed params (actual = full_mask, a param shadows a same-named state field), then walk.
-fn cap_check_fn(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, seed_names: Vec<str>, seed_caps: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn cap_check_fn(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, seed_names: Vec<str>, seed_caps: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let mut env_names: Vec<str> = Vec::new();
     let mut env_caps: Vec<str> = Vec::new();
     let mut env_actual: Vec<i64> = Vec::new();
@@ -617,13 +754,22 @@ fn cap_check_fn(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs
         if cn.kind == P_K_PARAM {
             if cn.child_count >= 1 {
                 let tid: i64 = kids.get(cn.child_start);
+                // SHP-5c-3: the env key is the param's NAME (its text is `name;region` under
+                // `@in r`); a `Slot<C>` param is a slot entry with no authority of its own.
+                let pname: str = tc_seg_at(cn.text, 0);
                 let capn: str = tc_cap_name_of_typenode(nodes, tid, rdefs, cdefs);
                 if capn.len() > 0 {
                     let fullm: i64 = cap_mask_of(cap_names, cap_masks, capn);
-                    let qn: i64 = env_names.push(cn.text);
+                    let qn: i64 = env_names.push(pname);
                     let qc: i64 = env_caps.push(capn);
                     let qa: i64 = env_actual.push(fullm);
                 } else {
+                    let slott: str = tc_slot_cap_of_typenode(nodes, kids, tid, rdefs, capnames);
+                    if slott.len() > 0 {
+                        let qsn: i64 = env_names.push(pname);
+                        let qsc: i64 = env_caps.push(tc_slot_entry(tc_seg_at(slott, 0)));
+                        let qsa: i64 = env_actual.push(0);
+                    }
                 }
             } else {
             }
@@ -633,7 +779,7 @@ fn cap_check_fn(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs
     }
     let body: i64 = tc_fn_body(nodes, kids, fnid);
     if body >= 0 {
-        let r: i64 = cap_walk(mode, nodes, kids, body, rdefs, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
+        let r: i64 = cap_walk(mode, nodes, kids, body, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, env_names, env_caps, env_actual, diags);
     } else {
     }
     return 0;
@@ -642,7 +788,7 @@ fn cap_check_fn(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, rdefs
 // Walk an actor's ACTOR_INIT + HANDLER children as functions (the MI-4 census). The actor's state
 // cap fields (P_K_FIELD children whose type is a cap) are collected first and pre-seeded into every
 // handler/init env at FULL authority (a state cap is an authority origin, like a param).
-fn cap_check_actor(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, actid: i64, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
+fn cap_check_actor(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, actid: i64, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, cap_names: Vec<str>, cap_masks: Vec<i64>, cap_auths: Vec<str>, diags: Vec<str> @Mut) -> i64 ! { Alloc } {
     let an: PNode = nodes.get(actid);
     let mut sfnames: Vec<str> = Vec::new();
     let mut sfcaps: Vec<str> = Vec::new();
@@ -670,10 +816,10 @@ fn cap_check_actor(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, actid: i64, r
         let cid: i64 = kids.get(an.child_start + i);
         let cn: PNode = nodes.get(cid);
         if cn.kind == P_K_ACTOR_INIT {
-            let r: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, sfnames, sfcaps, diags);
+            let r: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, sfnames, sfcaps, diags);
         } else {
             if cn.kind == P_K_HANDLER {
-                let r: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, sfnames, sfcaps, diags);
+                let r: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, sfnames, sfcaps, diags);
             } else {
             }
         }
@@ -700,6 +846,7 @@ fn cap_encode_mode(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, root: i64) ->
 
     let mut cdefs: Vec<TcCap> = Vec::new();
     let mut rdefs: Vec<TcRec> = Vec::new();
+    let capnames: Vec<str> = tc_cap_names(nodes);
     let mut bi: i64 = 0;
     while bi < nmod {
         let mid: i64 = mods.get(bi);
@@ -722,11 +869,11 @@ fn cap_encode_mode(mode: i64, nodes: Arena<PNode>, kids: Vec<i64>, root: i64) ->
                 } else {
                     let empty_names: Vec<str> = Vec::new();
                     let empty_caps: Vec<str> = Vec::new();
-                    let rf: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, empty_names, empty_caps, diags);
+                    let rf: i64 = cap_check_fn(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, empty_names, empty_caps, diags);
                 }
             } else {
                 if cn.kind == P_K_ACTOR {
-                    let ra: i64 = cap_check_actor(mode, nodes, kids, cid, rdefs, cdefs, cap_names, cap_masks, cap_auths, diags);
+                    let ra: i64 = cap_check_actor(mode, nodes, kids, cid, rdefs, capnames, cdefs, cap_names, cap_masks, cap_auths, diags);
                 } else {
                 }
             }

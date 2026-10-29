@@ -1,0 +1,28 @@
+// expect-error: T216
+// Z3 corpus #108: axis-1 — DBC-0b: a store into a field of a cross-field clause is refused.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `Range` carries `where lo <= hi`. `r.lo = 9` would break it (`hi` is 5),
+// but a store into one field cannot be checked against a two-field clause:
+// the other field's current value is not tracked. The collector refuses the
+// store outright with T216 (the spec's Q3 decision: the cross-field code,
+// no new one) and tells the user to reconstruct the record, where both
+// fields are supplied and checked (#42, #43). Fail-closed in both builds,
+// without Z3.
+//
+// MUTATION CONTRACT
+//
+// Deleting the mutation site leaves the construction `Range { lo: 1, hi: 5 }`,
+// a literal pair Z3 discharges (#42's shape). Compiles.
+module sigil;
+
+record Range { lo: i64, hi: i64 } where lo <= hi
+
+entry actor Main {
+    on Tick() -> i64 {
+        let mut r: Range = Range { lo: 1, hi: 5 };
+        r.lo = 9;  // MUTATION_SITE
+        return 1;
+    }
+}

@@ -507,6 +507,10 @@ fn f(opt: Opt @Secret, c: bool) -> i64 {
     );
 }
 
+/// The range loop var `x` shadows an outer `let mut x` over the body, where it is read into a
+/// secret binding; the outer x is never written by the loop and is still @Public (and still
+/// assignable) after it. The loop variable itself is immutable, so the body cannot write the
+/// secret into it: that shape is exactly T042 (`assigning_the_shadowing_loop_var_is_t042`).
 #[test]
 fn for_range_loop_var_collision_compiles() {
     assert_compiles(
@@ -515,20 +519,59 @@ fn for_range_loop_var_collision_compiles() {
 fn f(s: i64 @Secret, n: i64) -> i64 {
     let mut x: i64 = 0;
     for x in 0..n {
-        x = s;
+        let y: i64 @Secret = s + x;
     }
+    x = x + n;
     return x;
 }
 "#,
-        "the range loop var `x` shadows the outer x over the body; the outer x is never written",
+        "the range loop var `x` shadows the outer x over the body; the outer x is never written by the loop",
     );
 }
 
+/// The for-in element var `x` is @Secret (the array is) and body-scoped; the outer `let mut x`
+/// stays @Public and assignable after the loop.
 #[test]
 fn for_in_loop_var_collision_compiles() {
     assert_compiles(
         "ee_loopvar_forin.sigil",
         r#"module sigil;
+fn f(arr: [i64; 4] @Secret, n: i64) -> i64 {
+    let mut x: i64 = 0;
+    for x in arr {
+        let y: i64 @Secret = x;
+    }
+    x = x + n;
+    return x;
+}
+"#,
+        "the for-in element var `x` is body-scoped; the outer x stays @Public",
+    );
+}
+
+/// Writing a secret INTO the shadowing loop variable (`for x in .. { x = s; }`) is not a taint
+/// question: a loop variable is immutable (range-for spec §2, "Mutation-proof"), so the shape is
+/// exactly {T042} in both loop forms. These two programs were the accept fixtures above until
+/// SR-035's third review: they compiled only because the body's mutable set was inherited by name
+/// and never pruned of the loop variable, which also let `a[x]` keep an elided bounds check.
+#[test]
+fn assigning_the_shadowing_loop_var_is_t042() {
+    for (name, source) in [
+        (
+            "ee_loopvar_range_assign.sigil",
+            r#"module sigil;
+fn f(s: i64 @Secret, n: i64) -> i64 {
+    let mut x: i64 = 0;
+    for x in 0..n {
+        x = s;
+    }
+    return x;
+}
+"#,
+        ),
+        (
+            "ee_loopvar_forin_assign.sigil",
+            r#"module sigil;
 fn f(s: i64 @Secret, arr: [i64; 4]) -> i64 {
     let mut x: i64 = 0;
     for x in arr {
@@ -537,8 +580,20 @@ fn f(s: i64 @Secret, arr: [i64; 4]) -> i64 {
     return x;
 }
 "#,
-        "the for-in element var `x` is body-scoped; the outer x stays @Public",
-    );
+        ),
+    ] {
+        let err = compile_named_module(name, source)
+            .err()
+            .unwrap_or_else(|| panic!("{name}: an assignment to the loop variable compiled"));
+        let mut codes: Vec<String> = err
+            .diagnostics()
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect();
+        codes.sort();
+        codes.dedup();
+        assert_eq!(codes, ["T042"], "{name}: exact code set");
+    }
 }
 
 // ── Implicit flow through secret-guarded control ────────────────────────────────────────────────

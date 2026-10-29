@@ -1,0 +1,76 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-429",
+      "-430"
+    ],
+    "taint_contracts": [
+      "records::field(ptr:Flow,len:Flow,key:Flow,key_len:Flow)->Flow",
+      "records::finish(doc:Flow)->Flow",
+      "records::hex(ptr:Flow,len:Flow)->Flow",
+      "records::new(limit:Flow)->Flow",
+      "records::put_f64le(doc:Flow,key:Flow,key_len:Flow,ptr:Flow,count:Flow)->Flow",
+      "records::put_hex(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+      "records::put_json(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+      "records::put_string(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+      "records::put_u64(doc:Flow,key:Flow,key_len:Flow,value:Flow)->Flow",
+      "records::read_f64le(ptr:Flow,len:Flow,count:Flow)->Flow",
+      "records::read_u64(ptr:Flow,len:Flow)->Flow",
+      "records::unhex(ptr:Flow,len:Flow,maximum:Flow)->Flow"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:45b1dd08fe75e4ad93f1276786bd0d29700f5b66e8f14de2c1e4bd8e037a05df",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/json",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source immutable JSON records and exact scalar encodings; preserves labels, unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:4270786cc7df2debfe61aadda0a4575f19719f8f34e7bc44f93e17fbb9acf5cf",
+    "api_contract_hash": "sha256:2b0261a8e5f88cc0a5f2d9d560cfd4d8f47426b00d5854f2b7005f68ff62e703",
+    "charter_hash": "sha256:09c61b180e89407bd411dd32318c268b9c0e611d51a0583edd45e20d428a6cb0",
+    "evidence_manifest_hash": "sha256:b5f4fb7f665b20885d033a6d2bf57956fec1661019a9ce90f5e9ba3eec32173c"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "records"
+  ],
+  "name": "records",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

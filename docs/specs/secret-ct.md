@@ -145,26 +145,60 @@ and the taint transitions are enforced in
 SIGIL provides three typed, branch-free intrinsics:
 
 ```text
-ct_eq(a: integer, b: integer) -> bool
-ct_select(cond: bool, then_value: integer, else_value: integer) -> integer
-ct_lt(a: integer, b: integer) -> bool
+ct_eq(a: i64 | u64, b: i64 | u64) -> bool
+ct_select(cond: bool, then_value: i64 | u64, else_value: i64 | u64) -> i64
+ct_lt(a: i64, b: i64) -> bool    // signed order
+ct_lt(a: u64, b: u64) -> bool    // unsigned order
 ```
 
 Their result taint is the least upper bound of their inputs. Arity and operand
-types are checked like other intrinsics.
+types are checked like other intrinsics. An operand must be 8 bytes wide, or an
+integer literal no larger than `i64::MAX` (a larger one is a `u256`): the
+sequences below are i64 sequences, so a 4-byte `i32` or `u32` operand is
+rejected with `T075` rather than emitted into a module that does not validate.
+Widen it first with `.as_i64()` or `.as_u64()`: both sign-extend an `i32` and
+zero-extend a `u32`. A `u32` keeps its order under `ct_lt` either way, and an
+`i32` only as an `i64`: `.as_u64()` makes it a `u64`, which `ct_lt` compares
+unsigned, so a negative `i32` widened that way orders above every non-negative
+one (`ct_lt_orders_an_i32_widened_to_u64_by_its_unsigned_bits`). The `T075`
+hint says so, and that `ct_lt` needs two operands of one signedness.
+
+`ct_eq` and `ct_select` act on the 64 bits as given. `ct_lt` compares two `i64`
+as signed values and two `u64` as unsigned values, on all 64 bits. Its two
+operands must have one signedness: one `i64` and one `u64` have no single
+order, so that pair is rejected with `T075`; convert one operand with
+`.as_i64()` or `.as_u64()` to choose the order. An integer literal beside a
+`u64` is checked as a `u64`, as the type checker checks it beside `<`, so a
+negative literal there (`-1` is one) is rejected with `T075`
+(`ct_lt_refuses_a_negative_literal_beside_a_u64`). A binding of an un-annotated
+literal (`let n = 5;`) is checked the same way, and `ct_lt` gives it that
+order. `<` on such a binding does not yet: its emission takes the order from
+the binding's `i64` local (the open literal-binding entry in
+[`../../tests/attack/KNOWN_GAPS.md`](../../tests/attack/KNOWN_GAPS.md)). The
+order is pinned at both ends of each type and on each side of its sign boundary by
+`ct_lt_orders_every_i64_pair_at_the_extremes` and
+`ct_lt_orders_every_u64_pair_at_the_extremes`
+([`int_convert.rs`](../../crates/sigil-runtime/tests/int_convert.rs)). Until
+2026-10-04 `ct_lt` returned the sign bit of the wrapping `a - b`, which
+misordered a pair whose difference did not fit in an i64 and read a `u64` as
+signed (the closed entry in
+[`../../tests/attack/KNOWN_GAPS.md`](../../tests/attack/KNOWN_GAPS.md)).
 
 The direct Wasm emitter uses fixed instruction sequences:
 
 - `ct_eq`: XOR followed by zero test.
 - `ct_select`: mask construction and bitwise selection, without Wasm
   `select` or conditional control flow.
-- `ct_lt`: subtraction and constant sign-bit extraction.
+- `ct_lt`: the sign bit, by a constant shift, of an overflow-safe word built
+  with subtraction and bitwise operations (Hacker's Delight §2-12):
+  `(a - b) ^ ((a ^ b) & ((a - b) ^ a))` for two `i64`, and
+  `(!a & b) | ((!a | b) & (a - b))` for two `u64`.
 
 The implementation is in
 [`wasm.rs`](../../crates/sigil-compiler/src/wasm.rs). The byte-level regression
 test in
 [`taint_ct_audit.rs`](../../crates/sigil-compiler/tests/taint_ct_audit.rs)
-compiles a fixture using all three intrinsics and rejects conditional-control,
+compiles a fixture using all three intrinsics, `ct_lt` in both orders, and rejects conditional-control,
 select, division, and remainder opcodes in the emitted function bodies. A
 separate detector test proves that the audit notices division.
 

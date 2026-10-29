@@ -1,0 +1,8 @@
+{
+  "format": "sigil-source-revision-v1",
+  "module_sha256": {
+    "src/optim.sigil": "sha256:36e93163d5389f1798d4d984a8c759ed43a3da17832c3c2c1fb4d00fdc73bc9d"
+  },
+  "package": "sigil/optim",
+  "previous_version": "0.1.0-dogfood.1"
+}

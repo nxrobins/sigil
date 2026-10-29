@@ -631,8 +631,9 @@ outer-ring function placed after an inner-ring module still fires E001. That exe
 by the host boundary, not by the absence of effects: `alloc` is an inner-ring primitive and it
 does perform the registered `Alloc` effect — it is simply not charged to a row there. What
 inner-ring code cannot do is reach the host, and two fences carry that: R003 rejects an inner-ring
-`extern` call and R004 rejects a direct inner→outer call (only `grant` crosses). E003 is a weaker,
-row-hygiene fence, not a host-boundary one (see its entry below).
+`extern` call and R004 rejects every call across the ring boundary, one made inside a `grant` body
+included (a `grant` closure runs in its caller's ring). E003 is a weaker, row-hygiene fence, not a
+host-boundary one (see its entry below).
 
 **Emitter 1 (effect checker), generic code:** a monomorphized generic instance — and any closure
 lambda-lifted while its body is re-checked — is walked unless EVERY module governing it is
@@ -711,7 +712,10 @@ host are R003 and R004.
 
 ### R001 — Outer-ring code cannot own capabilities
 
-Capabilities live in the inner ring. Pass a borrowed capability via `grant(&cap, fn(ref) -> ...)` instead of taking ownership in outer-ring code.
+Outer-ring code cannot own a capability, as a parameter, a return value, or a local. Keep the code
+that owns and uses the capability in an inner-ring module. Outer-ring code may take a borrowed
+`&Cap` parameter, but no call crosses the ring boundary, a call made inside a `grant` body
+included (see R004), so an inner-ring capability cannot be handed to outer-ring code.
 
 **Scope, generic code (R001 and R002):** a monomorphized generic instance is held to the
 outer-ring cap rules if ANY module governing it is outer-ring — the module that DEFINES the
@@ -723,13 +727,20 @@ an outer-ring module is held to the outer rules too. These rules decide the ring
 still follows the filing module, so a generic this check accepts is refused with R007 when its
 instance is filed in another ring than its caller (see R007; #768).
 
-### R002 — Capability reference escapes its grant scope
+### R002 — Capability reference returned from an outer-ring function
 
-A `&cap T` reference is only valid inside the `grant(...)` closure body. Return owned data, not the capability reference.
+An outer-ring function may not return a type containing a `&cap T` reference. The check is
+structural, through tuples, arrays, closure parameters and returns, and generic arguments. Return
+owned data instead. This is a return-type test only: it does not track a reference's lifetime
+against its `grant(...)` scope, which the ownership pass confines separately (O007).
 
 ### R003 — Inner-ring code cannot call `extern` functions
 
-Move the FFI call into a `#[ring(outer)] #[trusted]` module and expose it through a safe wrapper that the inner ring calls via grants.
+Inner-ring code cannot reach FFI, directly or through another module: a call into an outer-ring
+wrapper is a cross-ring call (R004), a call made inside a `grant` body included. If the calling
+module is FFI surface code, declare it `#[ring(outer)] #[trusted]`; outer-ring code cannot own
+capabilities (R001) or call inner-ring modules (R004). Otherwise keep the FFI call out of
+inner-ring code.
 
 **Scope, generic code:** a monomorphized generic instance is held to R003 if ANY module governing
 it is inner-ring — the module that DEFINES the generic or any module whose scope resolved names in
@@ -738,9 +749,28 @@ R003 wherever it is instantiated, and so is an outer-ring generic whose body res
 declared by its inner-ring caller. A generic this check accepts can still be refused with R007 at
 emission (see R007; #768).
 
-### R004 — Direct cross-ring call requires a grant
+### R004 — Call across the ring boundary
 
-Inner and outer rings can only interact via `grant(&cap, fn(ref) -> ...)`. Direct calls across the boundary are forbidden.
+No call crosses the ring boundary, in either direction. `grant` is not a way across: it lends a
+borrowed capability to a closure that runs in the caller's own ring, so a cross-ring call made
+inside a `grant` body is rejected like any other. Declare the calling module
+`#[ring(outer)] #[trusted]` if it needs FFI-backed code, or call only modules in its own ring.
+
+The message names the fix for the direction. An inner-ring caller is told to add
+`#[ring(outer)] #[trusted]`. An outer-ring caller is already in the outer ring, and `#[trusted]`
+would not change its ring, so it is told to remove `#[ring(outer)]`, and `#[trusted]` if present,
+when the module does not need FFI, or else to call only outer-ring modules. (`#[trusted]` alone
+does not parse, so leaving it behind is not an option.)
+
+**Scope:** the type checker raises R004 at the source call site. A call to a GENERIC free
+function escapes it: the callee resolves program-wide by bare name, so the cross-ring rule is not
+consulted (recorded in `tests/attack/KNOWN_GAPS.md`). Its instance is still emitted in one ring,
+and the call is refused with R007 when that ring is not the caller's (see R007). Calls INSIDE a
+generic function's body are judged against the ring of the module being checked when its instance
+is built, not the module that defines it: the module whose own code reaches the instantiation,
+directly or through other generic functions. Such an R004 is reported at the call inside the
+generic's body, and its fix applies to that instantiating module. Generic methods are not split
+this way, because a method call resolves only within the caller's ring.
 
 ### R005 — Compatibility alias for T109 ring-error sanitization
 
@@ -770,6 +800,64 @@ boundary after lowering. A generic currently resolves by bare name from ANY modu
 compilation unit (bypassing module privacy and R004); when the instance lands in the caller's
 ring, that source-level cross-ring call is not caught here (open gap, recorded in
 `tests/attack/KNOWN_GAPS.md`).
+
+### R008 — Outer-ring `extern` requires `#[trusted]`
+
+Declaring an `extern` binds a host function, and only a `#[trusted]` module may do that. Add
+`#[trusted]` after the module's `#[ring(outer)]`, or call the host function through a trusted
+module's non-generic wrapper instead, such as the stdlib `fs` module; calling such a wrapper needs
+only the outer ring. Generic code may call an `extern` only when every module governing its
+instance is `#[trusted]`, which can include the module that calls it.
+
+**Scope:** the check is on the declaration, so it fires even when nothing calls the extern. It
+covers outer-ring modules only. An inner-ring module cannot be `#[trusted]` at all (R006), and any
+call it makes to an `extern` is already R003.
+
+Generic code needs the second half. Its names resolve in the instantiating module's scope, so an
+untrusted module's generic could otherwise call an extern that a trusted module declares. R008
+therefore also rejects an `extern` call inside an instance unless every module governing it is
+trusted, the same rule `handle Unsafe` follows (E002). A call counts as an extern call only when it
+resolves to an extern declaration; a local function that shares an extern's name stays an ordinary
+call.
+
+The second half over-rejects one shape, as E002 does: a trusted module's generic impl method that
+wraps the module's own `extern` is rejected when an untrusted module's call creates its instance,
+although the untrusted module gains no host access the non-generic twin would not give it. An
+impl-method instance keeps the home of the first call that creates it, so the same program compiles
+when the trusted module calls the method first. Give an untrusted caller a non-generic wrapper
+(SR-019).
+
+### R009 — Messaging, spawn or capability operation in outer-ring code
+
+The outer-ring module has no host import for `send`, `ask`, `spawn` or a capability operation
+(`.restrict()`, `.split()`, `.draw()`, `mint`), so outer-ring code cannot use them. Move the code
+that messages, spawns or operates on a capability into an inner-ring module. Outer-ring code is FFI
+surface: it cannot own a capability (R001), and no call crosses the ring boundary (R004), so it
+cannot reach that code by a call either.
+
+**Scope:** the check runs on the lowered program just before Wasm emission, on every function that
+lowering places in the outer ring, as R007 does. It reports each operation once per function, at
+the function's declaration. Earlier checks refuse most of these shapes first. R014 refuses an actor
+declared in an outer-ring module, so an operation on an outer-ring actor's state never reaches this
+check from source. R001 refuses a capability operation whose result is bound to a variable. What
+reaches R009 from source today: a message (`send` or `ask`) from an outer-ring function to an
+inner-ring actor it is handed an `ActorRef` to, and a capability operation whose result is never
+bound and that needs no actor, such as `mint FileAccess for f;` in a function that holds the
+minting authority. R009 refuses any other such statement that reaches emission. Before R009 and
+R014, these shapes passed every checker and crashed the compiler at emission (SR-033).
+
+### R014 — Actor declared in an outer-ring module
+
+The actor runtime hosts only the inner-ring module, so an actor declared in a `#[ring(outer)]`
+module could never run. Declare the actor in an inner-ring module. An outer-ring module is FFI
+surface: it holds functions, such as a tool's `tool_main`, and not actors.
+
+**Scope:** the check runs during type checking, on every actor declared in an outer-ring module,
+and reports each one at its declaration. `wasm::emit` places an outer-ring actor's init and
+handlers in the outer module, and every actor runtime path bootstraps the inner module alone, so
+before R014 such an actor compiled and then failed at bootstrap with a missing handler export
+(SR-036). An outer-ring module that declares no actor is unaffected, and so is an inner-ring actor
+beside it.
 
 ### R010 — Non-capability spawn argument
 

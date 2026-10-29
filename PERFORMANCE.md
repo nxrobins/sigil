@@ -46,7 +46,7 @@ this document focuses on numbers we ran ourselves.
   `Win32_ComputerSystem` on each day); OS build 10.0.26200 on 09-20 and
   10.0.26300 on 09-30; rustc 1.98.0 (88d9e12ae 2026-08-18); cargo
   1.98.0 (797e8a9bc 2026-08-05); target `x86_64-pc-windows-gnu`;
-  wasmtime 47.0.4 (the version `Cargo.lock` pins for `sigil-runtime`)
+  wasmtime 47.0.4 (the version `Cargo.lock` then pinned for `sigil-runtime`)
 
 CPU governor / thermal state was not externally controlled. The
 machine was idle (no other CPU-bound processes) for the 2026-05-17

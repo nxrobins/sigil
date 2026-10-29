@@ -15,7 +15,10 @@
 //! ## Coverage
 //!
 //! The collector covers literal, symbolic, and subsumption checks at return,
-//! record-construction, variant-construction, and function-argument sites.
+//! record-construction, variant-construction, and function-argument sites, and
+//! at every store into a refined record's field, which gets the construction
+//! site's dispatch (the design-by-contract spec's DBC0-3); a store into a field
+//! that a cross-field or `length()` clause joins to a sibling is refused (T216).
 //! Cross-field record clauses emit a Z3 obligation for literal pairs and a
 //! conservative T216 rejection for symbolic pairs. Declaration-shape errors
 //! (T120, T212, T213, T217, and T219) remain in the declaration validator.
@@ -31,8 +34,8 @@ use crate::name_resolution::ResolvedProgram;
 use crate::span::Span;
 use crate::type_check::Type;
 use crate::typed_ast::{
-    TypedBlock, TypedCallExpr, TypedEnumConstructExpr, TypedExpr, TypedExprKind, TypedProgram,
-    TypedRecordConstructExpr, TypedReturnStmt, TypedStmt,
+    TypedAssignStmt, TypedBlock, TypedCallExpr, TypedEnumConstructExpr, TypedExpr, TypedExprKind,
+    TypedProgram, TypedRecordConstructExpr, TypedReturnStmt, TypedStmt,
 };
 use std::collections::HashMap;
 
@@ -136,6 +139,20 @@ pub(super) fn collect_refinement_obligations(
                     &mut workload,
                 ),
                 _ => {}
+            });
+
+            // DBC0-3: every store into a refined record's field is a sink, keyed on
+            // the place's record type. A second walk, because the two hooks would
+            // borrow the diagnostics and the workload at once.
+            visit_block_stmts(&typed_fn.body, &mut |stmt| {
+                if let TypedStmt::Assign(store) = stmt {
+                    emit_field_store_obligations(
+                        store,
+                        &record_def_by_name,
+                        &mut diagnostics,
+                        &mut workload,
+                    );
+                }
             });
         }
     }
@@ -574,6 +591,212 @@ fn record_symbolic_t211_diagnostic(clause: &RefinementClause, span: Span) -> Dia
     )
 }
 
+/// Check one store `place.f = e` against the refinement clauses of the place's record type
+/// (the design-by-contract spec's DBC0-3): a field store is a refinement sink with the
+/// construction site's dispatch. The rule is keyed on the TYPE of the record `f` belongs to,
+/// never on how the place was reached, so a nested field (`a.b.f`), an array element
+/// (`arr[i].f`), an actor state field and a store through an `@Mut` parameter are one case.
+///   * literal stored → `LiteralFits` carrying the T210 store message;
+///   * symbolic value with a fact, past the syntactic fast path →
+///     `SubsumptionAtConstruction` (T215, built at discharge);
+///   * symbolic value with no fact → T211 at the stored value;
+///   * a compound store (`f op= e`) stores the computed `f op e`, a value with no fact → T211;
+///   * `f` takes part in a cross-field clause (`lo <= hi`), or is the bound side of a
+///     `length()` clause: a store into one field cannot be checked against the clause, because
+///     the other side's current value is not tracked, so the store is refused with T216 (the
+///     spec's Q3: no new code) and the user reconstructs the record. A store into the array
+///     side of a `length()` clause is not joined: the array's length is its type's.
+///
+/// Fails closed: a store the rule cannot vouch for is a diagnostic, never a silent accept. At
+/// most one direct diagnostic per store; obligations are one per matching clause, as at a
+/// construction site. Whole values stored into a local, a state field or an element are
+/// checked where they were made (z3_corpus #27 for a refined record).
+fn emit_field_store_obligations(
+    store: &TypedAssignStmt,
+    record_def_by_name: &HashMap<String, &RecordDef>,
+    diagnostics: &mut Vec<Diagnostic>,
+    workload: &mut RefinementWorkload,
+) {
+    let TypedExprKind::FieldAccess(access) = &store.place.kind else {
+        return;
+    };
+    // The read side looks through a reference receiver (`infer_field_access_expr`); so here.
+    let record_name = match &access.object.ty {
+        Type::Ref(inner, _) => match inner.as_ref() {
+            Type::Named(name, _) => name,
+            _ => return,
+        },
+        Type::Named(name, _) => name,
+        _ => return,
+    };
+    let Some(record_def) = record_def_by_name.get(record_name) else {
+        return;
+    };
+    if record_def.refinements.is_empty() {
+        return;
+    }
+    let field = access.field.as_str();
+
+    for clause in &record_def.refinements {
+        let joined = match &clause.rhs {
+            RefinementRhs::Field(sibling) => clause.field == field || sibling == field,
+            RefinementRhs::LengthOf(_) => clause.field == field,
+            RefinementRhs::Literal(_) | RefinementRhs::LiteralWide(_) => false,
+        };
+        if joined {
+            diagnostics.push(field_store_joined_clause_t216_diagnostic(
+                clause,
+                field,
+                record_name,
+                store.span,
+            ));
+            return;
+        }
+    }
+
+    for clause in &record_def.refinements {
+        if clause.field != field {
+            continue;
+        }
+        if store.op.is_some() {
+            diagnostics.push(field_store_compound_t211_diagnostic(clause, store.span));
+            return;
+        }
+        match (
+            crate::type_check::refinement_value_for(&store.value),
+            &store.value.refinement,
+        ) {
+            (Some(value), _) => {
+                workload
+                    .obligations
+                    .push(RefinementObligation::LiteralFits {
+                        clause: clause.clone(),
+                        value,
+                        site: store.span,
+                        on_violated: field_store_literal_violated_diagnostic(
+                            clause, value, store.span,
+                        ),
+                        on_timeout: field_store_literal_timeout_diagnostic(
+                            clause, value, store.span,
+                        ),
+                    });
+            }
+            (None, Some(stored_clauses)) => {
+                let syntactic = stored_clauses
+                    .iter()
+                    .any(|s| crate::type_check::refinements_match(s, clause));
+                if !syntactic {
+                    workload
+                        .obligations
+                        .push(RefinementObligation::SubsumptionAtConstruction {
+                            actual: stored_clauses.clone(),
+                            expected: clause.clone(),
+                            site: store.span,
+                        });
+                }
+            }
+            (None, None) => {
+                diagnostics.push(field_store_symbolic_t211_diagnostic(
+                    clause,
+                    store.value.span,
+                ));
+                return;
+            }
+        }
+    }
+}
+
+/// T210 for a literal store the clause refutes.
+fn field_store_literal_violated_diagnostic(
+    clause: &RefinementClause,
+    value: crate::ast::RefValue,
+    span: Span,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::T210,
+        format!(
+            "field store violates refinement: field `{}` assigned literal `{}`, but predicate `{} {} {}` is refutable",
+            clause.field,
+            crate::type_check::render_ref_value(&value),
+            clause.field,
+            format_refinement_op(clause.op),
+            crate::type_check::format_refinement_rhs(&clause.rhs),
+        ),
+        Some(span),
+    )
+}
+
+/// T210 for a literal store Z3 could not decide within budget.
+fn field_store_literal_timeout_diagnostic(
+    clause: &RefinementClause,
+    value: crate::ast::RefValue,
+    span: Span,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::T210,
+        format!(
+            "Z3 timed out within rlimit budget while discharging refinement on field `{}` against the stored literal `{}`; treat as a budget-exceeded variant of T210 (no counterexample available)",
+            clause.field,
+            crate::type_check::render_ref_value(&value),
+        ),
+        Some(span),
+    )
+}
+
+/// T211 for a stored value with no fact.
+fn field_store_symbolic_t211_diagnostic(clause: &RefinementClause, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        codes::T211,
+        format!(
+            "refinement check requires a literal value for the store into field `{}`: the stored value carries no fact for `{} {} {}`. Store an integer literal or a value whose fact implies the predicate, or reconstruct the record.",
+            clause.field,
+            clause.field,
+            format_refinement_op(clause.op),
+            crate::type_check::format_refinement_rhs(&clause.rhs),
+        ),
+        Some(span),
+    )
+}
+
+/// T211 for a compound store, whose stored value is computed from the field.
+fn field_store_compound_t211_diagnostic(clause: &RefinementClause, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        codes::T211,
+        format!(
+            "a compound store into field `{}` stores a computed value, which carries no fact for `{} {} {}`. Store the result as an integer literal or a value whose fact implies the predicate, or reconstruct the record.",
+            clause.field,
+            clause.field,
+            format_refinement_op(clause.op),
+            crate::type_check::format_refinement_rhs(&clause.rhs),
+        ),
+        Some(span),
+    )
+}
+
+/// T216 for a store into a field that a cross-field or `length()` clause joins to a sibling.
+fn field_store_joined_clause_t216_diagnostic(
+    clause: &RefinementClause,
+    field: &str,
+    record: &str,
+    span: Span,
+) -> Diagnostic {
+    Diagnostic::error_with_hint(
+        codes::T216,
+        format!(
+            "field `{}` of `{}` takes part in the clause `{} {} {}`, which a store into one field cannot be checked against: the other side's current value is not tracked",
+            field,
+            record,
+            clause.field,
+            format_refinement_op(clause.op),
+            crate::type_check::format_refinement_rhs(&clause.rhs),
+        ),
+        Some(span),
+        format!(
+            "reconstruct the record with every field supplied (`{record} {{ .. }}`), where the clause is checked, instead of storing into `{field}`"
+        ),
+    )
+}
+
 /// Check one variant construction on the supported single-field literal-RHS
 /// surface:
 ///   * literal supplied → LiteralFits with the T220 variant message;
@@ -947,51 +1170,75 @@ fn callarg_t211_diagnostic(
 /// Visit every relevant expression in a block subtree. The parent expression
 /// span is the construction-site diagnostic anchor.
 pub(crate) fn visit_block_constructs<F: FnMut(&TypedExpr)>(block: &TypedBlock, visit: &mut F) {
+    visit_block_nodes(block, &mut |_: &TypedStmt| {}, visit);
+}
+
+/// Pre-order walk over every statement in `block`, nested blocks included: `if`, `match`
+/// and loop bodies, and the blocks expressions carry (`handle`, effect clauses, `region`).
+/// Calls the closure on each statement before descending into it.
+fn visit_block_stmts<S: FnMut(&TypedStmt)>(block: &TypedBlock, visit: &mut S) {
+    visit_block_nodes(block, visit, &mut |_: &TypedExpr| {});
+}
+
+/// The one walker under both entries: `on_stmt` sees every statement and `on_expr` every
+/// expression, each before its children. Covers every `TypedStmt` and `TypedExprKind`
+/// variant with no `_ =>` catch-all, so a block nested in a variant added later cannot be
+/// skipped silently: the compiler's exhaustiveness check names the new arm.
+fn visit_block_nodes<S: FnMut(&TypedStmt), F: FnMut(&TypedExpr)>(
+    block: &TypedBlock,
+    on_stmt: &mut S,
+    on_expr: &mut F,
+) {
     for stmt in &block.statements {
-        visit_stmt_constructs(stmt, visit);
+        visit_stmt_nodes(stmt, on_stmt, on_expr);
     }
 }
 
-fn visit_stmt_constructs<F: FnMut(&TypedExpr)>(stmt: &TypedStmt, visit: &mut F) {
+fn visit_stmt_nodes<S: FnMut(&TypedStmt), F: FnMut(&TypedExpr)>(
+    stmt: &TypedStmt,
+    on_stmt: &mut S,
+    on_expr: &mut F,
+) {
+    on_stmt(stmt);
     match stmt {
-        TypedStmt::Let(s) => visit_expr_constructs(&s.value, visit),
-        TypedStmt::Assign(s) => visit_expr_constructs(&s.value, visit),
-        TypedStmt::Expr(s) => visit_expr_constructs(&s.expr, visit),
+        TypedStmt::Let(s) => visit_expr_nodes(&s.value, on_stmt, on_expr),
+        TypedStmt::Assign(s) => visit_expr_nodes(&s.value, on_stmt, on_expr),
+        TypedStmt::Expr(s) => visit_expr_nodes(&s.expr, on_stmt, on_expr),
         TypedStmt::Return(s) => {
             if let Some(v) = &s.value {
-                visit_expr_constructs(v, visit);
+                visit_expr_nodes(v, on_stmt, on_expr);
             }
         }
         TypedStmt::Break(_) | TypedStmt::Continue(_) => {}
         TypedStmt::If(s) => {
-            visit_expr_constructs(&s.condition, visit);
-            visit_block_constructs(&s.then_branch, visit);
-            visit_block_constructs(&s.else_branch, visit);
+            visit_expr_nodes(&s.condition, on_stmt, on_expr);
+            visit_block_nodes(&s.then_branch, on_stmt, on_expr);
+            visit_block_nodes(&s.else_branch, on_stmt, on_expr);
         }
         TypedStmt::Match(s) => {
-            visit_expr_constructs(&s.scrutinee, visit);
+            visit_expr_nodes(&s.scrutinee, on_stmt, on_expr);
             for arm in &s.arms {
                 if let Some(g) = &arm.guard {
-                    visit_expr_constructs(g, visit);
+                    visit_expr_nodes(g, on_stmt, on_expr);
                 }
-                visit_block_constructs(&arm.body, visit);
+                visit_block_nodes(&arm.body, on_stmt, on_expr);
             }
         }
         TypedStmt::While(s) => {
-            visit_expr_constructs(&s.condition, visit);
-            visit_block_constructs(&s.body, visit);
+            visit_expr_nodes(&s.condition, on_stmt, on_expr);
+            visit_block_nodes(&s.body, on_stmt, on_expr);
         }
         TypedStmt::ForIn(s) => {
-            visit_expr_constructs(&s.iterable, visit);
+            visit_expr_nodes(&s.iterable, on_stmt, on_expr);
             for inner in &s.body {
-                visit_stmt_constructs(inner, visit);
+                visit_stmt_nodes(inner, on_stmt, on_expr);
             }
         }
         TypedStmt::ForRange(s) => {
-            visit_expr_constructs(&s.start, visit);
-            visit_expr_constructs(&s.end, visit);
+            visit_expr_nodes(&s.start, on_stmt, on_expr);
+            visit_expr_nodes(&s.end, on_stmt, on_expr);
             for inner in &s.body {
-                visit_stmt_constructs(inner, visit);
+                visit_stmt_nodes(inner, on_stmt, on_expr);
             }
         }
     }
@@ -1003,10 +1250,14 @@ fn visit_stmt_constructs<F: FnMut(&TypedExpr)>(stmt: &TypedStmt, visit: &mut F) 
 /// construction. Covers every TypedExprKind variant — the compiler's
 /// exhaustiveness check enforces that new variants added in the future are
 /// explicitly handled here (no `_ =>` catch-all).
-fn visit_expr_constructs<F: FnMut(&TypedExpr)>(expr: &TypedExpr, visit: &mut F) {
+fn visit_expr_nodes<S: FnMut(&TypedStmt), F: FnMut(&TypedExpr)>(
+    expr: &TypedExpr,
+    on_stmt: &mut S,
+    on_expr: &mut F,
+) {
     // Visit before recursing so outer construction sites are reported
     // in source order (parent before children).
-    visit(expr);
+    on_expr(expr);
 
     match &expr.kind {
         TypedExprKind::Literal(_) | TypedExprKind::Local(_) | TypedExprKind::StateField(_) => {}
@@ -1014,73 +1265,73 @@ fn visit_expr_constructs<F: FnMut(&TypedExpr)>(expr: &TypedExpr, visit: &mut F) 
         TypedExprKind::FString(fs) => {
             for part in &fs.parts {
                 if let crate::typed_ast::TypedFStringPart::Hole(h) = part {
-                    visit_expr_constructs(h, visit);
+                    visit_expr_nodes(h, on_stmt, on_expr);
                 }
             }
         }
         TypedExprKind::Call(c) => {
             for a in &c.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
         TypedExprKind::Intrinsic(i) => {
             for a in &i.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
-        TypedExprKind::ResultCtor(r) => visit_expr_constructs(&r.value, visit),
+        TypedExprKind::ResultCtor(r) => visit_expr_nodes(&r.value, on_stmt, on_expr),
         TypedExprKind::EnumConstruct(e) => {
             for f in &e.fields {
-                visit_expr_constructs(f, visit);
+                visit_expr_nodes(f, on_stmt, on_expr);
             }
         }
-        TypedExprKind::Try(t) => visit_expr_constructs(&t.value, visit),
+        TypedExprKind::Try(t) => visit_expr_nodes(&t.value, on_stmt, on_expr),
         TypedExprKind::Send(s) => {
             for a in &s.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
         TypedExprKind::Ask(a) => {
             for arg in &a.args {
-                visit_expr_constructs(arg, visit);
+                visit_expr_nodes(arg, on_stmt, on_expr);
             }
-            visit_expr_constructs(&a.timeout, visit);
+            visit_expr_nodes(&a.timeout, on_stmt, on_expr);
         }
         TypedExprKind::Spawn(s) => {
             for a in &s.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
         TypedExprKind::Binary(b) => {
-            visit_expr_constructs(&b.lhs, visit);
-            visit_expr_constructs(&b.rhs, visit);
+            visit_expr_nodes(&b.lhs, on_stmt, on_expr);
+            visit_expr_nodes(&b.rhs, on_stmt, on_expr);
         }
         TypedExprKind::RecordConstruct(rc) => {
             for (_, v) in &rc.fields {
-                visit_expr_constructs(v, visit);
+                visit_expr_nodes(v, on_stmt, on_expr);
             }
         }
-        TypedExprKind::FieldAccess(fa) => visit_expr_constructs(&fa.object, visit),
+        TypedExprKind::FieldAccess(fa) => visit_expr_nodes(&fa.object, on_stmt, on_expr),
         TypedExprKind::CapRestrict(_) => {} // no sub-expressions (cap is a String name)
-        TypedExprKind::CapSplit(cs) => visit_expr_constructs(&cs.amount, visit),
-        TypedExprKind::CapDraw(cd) => visit_expr_constructs(&cd.amount, visit),
-        TypedExprKind::Mint(m) => visit_expr_constructs(&m.target, visit),
+        TypedExprKind::CapSplit(cs) => visit_expr_nodes(&cs.amount, on_stmt, on_expr),
+        TypedExprKind::CapDraw(cd) => visit_expr_nodes(&cd.amount, on_stmt, on_expr),
+        TypedExprKind::Mint(m) => visit_expr_nodes(&m.target, on_stmt, on_expr),
         TypedExprKind::ArrayLit(al) => {
             for e in &al.elements {
-                visit_expr_constructs(e, visit);
+                visit_expr_nodes(e, on_stmt, on_expr);
             }
         }
         TypedExprKind::Index(idx) => {
-            visit_expr_constructs(&idx.array, visit);
-            visit_expr_constructs(&idx.index, visit);
+            visit_expr_nodes(&idx.array, on_stmt, on_expr);
+            visit_expr_nodes(&idx.index, on_stmt, on_expr);
         }
         TypedExprKind::Slice(sl) => {
-            visit_expr_constructs(&sl.array, visit);
+            visit_expr_nodes(&sl.array, on_stmt, on_expr);
             if let Some(s) = &sl.start {
-                visit_expr_constructs(s, visit);
+                visit_expr_nodes(s, on_stmt, on_expr);
             }
             if let Some(e) = &sl.end {
-                visit_expr_constructs(e, visit);
+                visit_expr_nodes(e, on_stmt, on_expr);
             }
         }
         TypedExprKind::ClosureConstruct(_) => {
@@ -1088,45 +1339,45 @@ fn visit_expr_constructs<F: FnMut(&TypedExpr)>(expr: &TypedExpr, visit: &mut F) 
             // (the closure body) belong to a separate TypedFunction that's
             // walked at the module level. Don't recurse here.
         }
-        TypedExprKind::Borrow(b) => visit_expr_constructs(&b.inner, visit),
+        TypedExprKind::Borrow(b) => visit_expr_nodes(&b.inner, on_stmt, on_expr),
         TypedExprKind::Grant(g) => {
-            visit_expr_constructs(&g.cap, visit);
-            visit_expr_constructs(&g.body, visit);
+            visit_expr_nodes(&g.cap, on_stmt, on_expr);
+            visit_expr_nodes(&g.body, on_stmt, on_expr);
         }
-        TypedExprKind::Handle(h) => visit_block_constructs(&h.body, visit),
+        TypedExprKind::Handle(h) => visit_block_nodes(&h.body, on_stmt, on_expr),
         // Effect Handlers (EH3, C-VIS): descend into the new nodes.
         TypedExprKind::Perform(p) => {
             for arg in &p.args {
-                visit_expr_constructs(arg, visit);
+                visit_expr_nodes(arg, on_stmt, on_expr);
             }
         }
         TypedExprKind::ClauseHandle(c) => {
-            visit_expr_constructs(&c.scrutinee, visit);
+            visit_expr_nodes(&c.scrutinee, on_stmt, on_expr);
             for clause in &c.clauses {
-                visit_block_constructs(&clause.body, visit);
+                visit_block_nodes(&clause.body, on_stmt, on_expr);
             }
         }
-        TypedExprKind::Resume(r) => visit_expr_constructs(&r.value, visit),
+        TypedExprKind::Resume(r) => visit_expr_nodes(&r.value, on_stmt, on_expr),
         TypedExprKind::Declassify(d) => {
-            visit_expr_constructs(&d.value, visit);
-            visit_expr_constructs(&d.cap, visit);
+            visit_expr_nodes(&d.value, on_stmt, on_expr);
+            visit_expr_nodes(&d.cap, on_stmt, on_expr);
         }
         TypedExprKind::DeclassifyCt(d) => {
-            visit_expr_constructs(&d.value, visit);
-            visit_expr_constructs(&d.cap, visit);
+            visit_expr_nodes(&d.value, on_stmt, on_expr);
+            visit_expr_nodes(&d.cap, on_stmt, on_expr);
         }
         TypedExprKind::ExternCall(e) => {
             for a in &e.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
         TypedExprKind::Region(r) => {
-            visit_expr_constructs(&r.limit, visit);
-            visit_block_constructs(&r.body, visit);
+            visit_expr_nodes(&r.limit, on_stmt, on_expr);
+            visit_block_nodes(&r.body, on_stmt, on_expr);
         }
         TypedExprKind::IndirectCall(ic) => {
             for a in &ic.args {
-                visit_expr_constructs(a, visit);
+                visit_expr_nodes(a, on_stmt, on_expr);
             }
         }
     }

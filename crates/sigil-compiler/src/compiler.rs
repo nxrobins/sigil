@@ -1283,6 +1283,10 @@ fn compile_ast_with_options(
     // `Call` arm's ICE in `wasm.rs` is its unreachable backstop. Runs on the final, memory- and
     // fuel-lowered AIR (exactly what `emit` sees), so no later rewrite can reintroduce one.
     ring_check::check_air_ring_placement(&air).map_err(to_err)?;
+    // R009, on the same final AIR: an outer-ring statement that calls a host import the outer
+    // module does not have (messaging, spawn, a capability operation) is refused here, and the
+    // matching `.expect`s in `wasm.rs` are its unreachable backstop.
+    ring_check::check_air_outer_ring_imports(&air).map_err(to_err)?;
     let mut wasm_output = wasm::emit(&air);
     if let Some(requirement) = context.host_requirement() {
         wasm::append_host_profile_requirement(&mut wasm_output, requirement);
@@ -3954,9 +3958,10 @@ entry actor Main {
 
     #[test]
     fn attack_42_audit_evasion_structural() {
-        // Structural test: verify grants can only happen through the
-        // grant mechanism (no direct cross-ring calls). Outer code
-        // cannot call inner functions and vice versa without grant.
+        // Structural test: a capability is lent only through the
+        // grant mechanism, and a grant never crosses the ring boundary:
+        // outer code cannot call inner functions or vice versa, and a
+        // call made inside a grant body is no exception.
         // This is a compile-time guarantee from the ring checker.
         //
         // Note: runtime audit log verification is deferred to M4.

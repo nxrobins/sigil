@@ -467,6 +467,30 @@ const CAP1_COVERED: &[(&str, &str)] = &[
         "w_ask_attenuated",
         "module sigil;\ncap type Fuel { burn, query }\nactor Worker {\n    init(seed: i64) {}\n    on Q(f: Fuel) -> i64 { return 0; }\n}\nentry actor Main {\n    state { fuel: Fuel }\n    on Start(worker: ActorRef<Worker>) -> i64 { let r: Fuel = fuel.restrict(burn); let x: i64 = worker.ask(Q(r), 5000); return x; }\n}\n",
     ),
+    // SHP-5c-3 review: a capability handed straight to a sink obligates as its let-bound twin
+    // does — an inline restrict narrows, an inline draw preserves, an inline restrict returned
+    // narrows, a `slot_take` handed on is its slot's cap at the full mask — and `slot_put` is no
+    // sink at all.
+    (
+        "w_inline_restrict_call",
+        "module sigil;\ncap type Fuel { burn, query }\nfn need(f: Fuel) -> i64 { return 1; }\nfn go(f: Fuel) -> i64 { return need(f.restrict(burn)); }\n",
+    ),
+    (
+        "w_inline_draw_call",
+        "module sigil;\ncap type Fuel { burn, query }\nfn need(f: Fuel) -> i64 { return 1; }\nfn go(f: Fuel) -> i64 { return need(f.draw(10)); }\n",
+    ),
+    (
+        "w_inline_restrict_return",
+        "module sigil;\ncap type Fuel { burn, query }\nfn pass(f: Fuel) -> Fuel { return f.restrict(burn); }\n",
+    ),
+    (
+        "w_slot_take_into_call",
+        "module sigil;\ncap type Fuel { burn, query }\nfn need(f: Fuel) -> i64 { return 1; }\nfn go(f: Fuel) -> i64 { let s = slot_new::<Fuel>(); slot_put(s, f); return need(slot_take(s)); }\n",
+    ),
+    (
+        "w_slot_put_is_no_sink",
+        "module sigil;\ncap type Fuel { burn, query }\nfn go(f: Fuel) -> i64 { let r: Fuel = f.restrict(burn); let s = slot_new::<Fuel>(); slot_put(s, r); return 0; }\n",
+    ),
 ];
 
 /// CAP-1: the selfhost required-mask projection equals the oracle's, EXACTLY and in program

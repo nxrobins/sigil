@@ -1,0 +1,52 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "fmt::boolean(value:Public)->Public",
+      "fmt::decimal_i64(value:Public)->Public",
+      "fmt_internal::boolean(value:Internal)->Internal",
+      "fmt_internal::decimal_i64(value:Internal)->Internal",
+      "fmt_secret::boolean(value:Secret)->Secret",
+      "fmt_secret::decimal_i64(value:Secret)->Secret"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental, unreviewed public source fmt dogfood; not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:a3cd452a451b17145a82abc156497ff407f44262e96feb86e811871b1f38bb91",
+    "api_contract_hash": "sha256:a6abbea753c312503e326c29eddb813d5f4cec8a37c64aea6b210dbb9caa7077",
+    "charter_hash": "sha256:a666f766bfbeedd483da3034aac667808da7af8181eec52230c744eb4c8c24e5",
+    "evidence_manifest_hash": "sha256:7fb97671ca4e0bdabb61a53a01d3fb4ce309ffffa9c761ec3be5a6f49c8e916d"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "fmt",
+    "fmt_internal",
+    "fmt_secret"
+  ],
+  "name": "fmt",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

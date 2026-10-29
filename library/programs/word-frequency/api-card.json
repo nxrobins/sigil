@@ -1,0 +1,33 @@
+{
+  "allocation_requests": "eight-byte metadata per word, same fixed output capacity, bounded builder record storage and fmt allocation per distinct word; original empty-input path retained",
+  "byte_errors": "negative metadata statuses refuse before use; bytes_out retains the first assembly error and finish refuses",
+  "contract_hash": "sha256:4fa75715c31aaa8339d39f99d55398804c79a3a5246188733b1b74376bafab4b",
+  "dependencies": [
+    "sigil/bytes",
+    "sigil/fmt"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "ownership": "caller supplies Public input; runtime consumes output before discarding store",
+  "package": "word-frequency/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "result": "i64@Public",
+  "result_bytes": "first-appearance-order word:count pairs separated by commas, no escaping or trailing newline",
+  "result_encoding": "pointer * 4294967296 + length",
+  "separators": [
+    9,
+    10,
+    13,
+    32
+  ],
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "unicode": "case-sensitive raw-byte equality, not Unicode word segmentation",
+  "version": "0.1.0-public.1",
+  "word_comparison": "bytes_scan::equal from explicit bytes public.5; negative status refuses"
+}

@@ -1,0 +1,211 @@
+// Complete bounded population state; one candidate fit or one breeding round per call.
+// Returned errors publish no new state. Raw snapshots are validated data, not attestations.
+module tool_search;
+use sigil::rng;
+use sigil::records;
+use sigil::vec;
+use sigil::bytes;
+use sigil::bytes_scan;
+use sigil::exchange;
+use tool_fit;
+use tool_population;
+use tool_report;
+
+record Search { head: Vec<u64>, population: i64, history: Vec<f64> }
+
+fn copy(dst: i64, src: i64, len: i64) -> i64 {
+    return bytes::copy_into(dst, len, 0, src, len, 0, len);
+}
+fn fresh() -> Search ! { Alloc } {
+    let h: Vec<u64> = Vec::with_capacity(32); let history: Vec<f64> = Vec::with_capacity(41);
+    let mut i = 0; while i < 32 { h.push(0); i = i + 1; }
+    i = 0; while i < 41 { history.push(0.0); i = i + 1; }
+    let pop = alloc(1152); i = 0; while i < 1152 { store8(pop + i, 0); i = i + 1; }
+    return Search { head: h, population: pop, history: history };
+}
+fn emit(s: Search @ReadOnly) -> i64 ! { Alloc } {
+    let out = alloc(1736); copy(out, s.head.buf, 256); copy(out + 256, s.population, 1152); copy(out + 1408, s.history.buf, 328);
+    return out * 4294967296 + 1736;
+}
+fn snapshot(s: Search @Mut, generator: SeedRng @ReadOnly) -> i64 ! { Alloc } {
+    let saved = rng::new_snapshot(); let status = rng::snapshot_into(generator, saved);
+    if status < 0 { return status; } else {}
+    s.head.set(5, saved.value); s.head.set(6, saved.increment); return 0;
+}
+fn validate(s: Search @ReadOnly) -> i64 ! { Alloc } {
+    let h = s.head;
+    if h.get(0) != 1397904193 || h.get(1) != 1 || h.get(2) != 1 { return -409; } else {}
+    if h.get(4) > 9223372036854775807 || h.get(6) != ((h.get(4) << 1) | 1) { return -422; } else {}
+    if h.get(7) < 1 || h.get(7) > 40 || h.get(8) > 20 || h.get(9) > 1 { return -413; } else {}
+    let generations = h.get(7); let generation = h.get(10); let cursor = h.get(11); let phase = h.get(12);
+    if generation > generations || cursor > 8 || phase > 2 { return -422; } else {}
+    if h.get(14) != generation * 8 + cursor || h.get(13) != h.get(14) + generation { return -422; } else {}
+    if h.get(15) > (generations + 1) * 8 || h.get(14) > h.get(15) { return -413; } else {}
+    if phase == 0 { if cursor >= 8 || h.get(19) != generation { return -422; } else {} }
+    else {
+        if cursor != 8 || h.get(19) != generation + 1 { return -422; } else {}
+        if phase == 1 && generation >= generations { return -422; } else {}
+        if phase == 2 && generation != generations { return -422; } else {}
+    }
+    let mut fitted = h.get(14); if fitted > generations * 8 { fitted = generations * 8; } else {}
+    if h.get(17) > 984 || h.get(18) > 984 || h.get(17) + h.get(18) > 3 * fitted * h.get(9) || h.get(16) != h.get(14) + h.get(17) + h.get(18) { return -422; } else {}
+    let mut i = 20; while i < 32 { if h.get(i) != 0 { return -422; } else {} i = i + 1; }
+    i = 0;
+    while i < 8 {
+        let status = tool_population::valid(s.population + i * 144, h.get(8).as_i64(), i < cursor.as_i64());
+        if status < 0 { return status; } else {} i = i + 1;
+    }
+    if phase != 0 {
+        let scores: Vec<f64> = Vec::with_capacity(8); i = 0;
+        while i < 8 { scores.push(0.0); copy(scores.buf + i * 8, s.population + i * 144 + 136, 8); i = i + 1; }
+        i = 1; while i < 8 { if scores.get(i) < scores.get(i - 1) { return -422; } else {} i = i + 1; }
+        let loss: Vec<f64> = Vec::with_capacity(1); loss.push(0.0); copy(loss.buf, s.population + 128, 8);
+        if s.history.get(generation.as_i64()) != loss.get(0) { return -422; } else {}
+    } else {}
+    i = 0;
+    while i < 41 {
+        let value = s.history.get(i);
+        if value - value != 0.0 || value < 0.0 { return -422; } else {}
+        if i >= h.get(19).as_i64() {
+            let mut j = 0; while j < 8 { if load8(s.history.buf + i * 8 + j) != 0 { return -422; } else {} j = j + 1; }
+        } else {} i = i + 1;
+    }
+    return 0;
+}
+fn initialize(request: i64) -> i64 ! { Alloc } {
+    let s = fresh(); let h = s.head;
+    h.set(0, 1397904193); h.set(1, 1); h.set(2, 1);
+    copy(h.buf + 24, request + 8, 16); copy(h.buf + 120, request + 24, 8);
+    h.set(7, load8(request + 5).as_u64()); h.set(8, load8(request + 6).as_u64()); h.set(9, load8(request + 7).as_u64());
+    if h.get(7) < 1 || h.get(7) > 40 || h.get(8) > 20 || h.get(9) > 1 || h.get(15) > (h.get(7) + 1) * 8 { return -413; } else {}
+    let generator = rng::new(h.get(3), h.get(4)); if generator.error < 0 { return generator.error; } else {}
+    let mut i = 0;
+    while i < 3 { let status = tool_population::seed(s.population + i * 144, i, h.get(8).as_i64()); if status < 0 { return status; } else {} i = i + 1; }
+    while i < 8 {
+        let parent = rng::below(generator, 3); if parent < 0 { return parent; } else {}
+        copy(s.population + i * 144, s.population + parent * 144, 144);
+        let status = tool_population::mutate(s.population + i * 144, generator); if status < 0 { return status; } else {} i = i + 1;
+    }
+    let saved = snapshot(s, generator); if saved < 0 { return saved; } else {}
+    let checked = validate(s); if checked < 0 { return checked; } else {}
+    return emit(s);
+}
+fn breed(s: Search @Mut) -> i64 ! { Alloc } {
+    let h = s.head; let generator = rng::new(h.get(3), h.get(4)); let saved = rng::new_snapshot();
+    saved.value = h.get(5); saved.increment = h.get(6);
+    let restored = rng::restore(generator, saved); if restored < 0 { return restored; } else {}
+    let next = alloc(1152); copy(next, s.population, 288); let mut i = 2;
+    while i < 8 {
+        let a = rng::below(generator, 4); if a < 0 { return a; } else {}
+        let cross = rng::below(generator, 2); if cross < 0 { return cross; } else {}
+        if cross == 0 {
+            let b = rng::below(generator, 4); if b < 0 { return b; } else {}
+            let status = tool_population::crossover(next + i * 144, s.population + a * 144, s.population + b * 144, generator);
+            if status < 0 { return status; } else {}
+        } else { copy(next + i * 144, s.population + a * 144, 144); }
+        let status = tool_population::mutate(next + i * 144, generator); if status < 0 { return status; } else {} i = i + 1;
+    }
+    i = 0; while i < 8 { let mut j = 128; while j < 144 { store8(next + i * 144 + j, 0); j = j + 1; } i = i + 1; }
+    copy(s.population, next, 1152);
+    let status = snapshot(s, generator); if status < 0 { return status; } else {}
+    h.set(10, h.get(10) + 1); h.set(11, 0); h.set(12, 0); h.set(13, h.get(13) + 1); return 0;
+}
+fn fitting_request(s: Search @ReadOnly) -> i64 ! { Alloc } {
+    let h = s.head; if h.get(14) >= h.get(15) { return -413; } else {}
+    let candidate = s.population + h.get(11).as_i64() * 144; let count = load8(candidate + 6);
+    let request = alloc(128); store8(request, 65); store8(request + 1, 70); store8(request + 2, 73); store8(request + 3, 84);
+    store8(request + 4, 1); let mut rounds = 0;
+    if h.get(9) == 1 && h.get(10) < h.get(7) { rounds = 3; } else {}
+    store8(request + 5, rounds); store8(request + 6, 0); store8(request + 7, 0); copy(request + 8, candidate, 72 + count * 4);
+    return request * 4294967296 + 80 + count * 4;
+}
+fn apply_report(s: Search @Mut, result: i64, result_len: i64, request: i64, request_len: i64) -> i64 ! { Alloc } {
+    let checked = tool_report::validate(result, result_len, request, request_len); if checked < 0 { return checked; } else {}
+    let h = s.head; let candidate = s.population + h.get(11).as_i64() * 144;
+    let counters: Vec<u64> = Vec::with_capacity(8); let mut i = 0;
+    while i < 8 { counters.push(0); i = i + 1; } copy(counters.buf, result, 64);
+    copy(candidate + 8, result + 88, 64); copy(candidate + 128, result + 152, 16);
+    h.set(11, h.get(11) + 1); h.set(13, h.get(13) + 1); h.set(14, h.get(14) + 1);
+    h.set(16, h.get(16) + 1 + counters.get(4)); h.set(17, h.get(17) + counters.get(5)); h.set(18, h.get(18) + counters.get(6));
+    if h.get(11) == 8 {
+        tool_population::rank(s.population); copy(s.history.buf + h.get(10).as_i64() * 8, s.population + 128, 8); h.set(19, h.get(10) + 1);
+        if h.get(10) == h.get(7) { h.set(12, 2); } else { h.set(12, 1); }
+    } else {} return 0;
+}
+fn score(s: Search @Mut) -> i64 ! { Alloc } {
+    let request = fitting_request(s); if request < 0 { return request; } else {}
+    let encoded = records::hex(request / 4294967296, request % 4294967296); if encoded < 0 { return encoded; } else {}
+    let fitted = tool_fit::run(encoded / 4294967296 + 1, encoded % 4294967296 - 2); if fitted < 0 { return fitted; } else {}
+    return apply_report(s, fitted / 4294967296, fitted % 4294967296, request / 4294967296, request % 4294967296);
+}
+
+pub fn evaluation_request(snapshot_ptr: i64, len: i64, identity: i64, identity_len: i64) -> i64 ! { Alloc } {
+    if len != 1736 || identity_len != 64 { return -422; } else {}
+    let s = fresh(); copy(s.head.buf, snapshot_ptr, 256); copy(s.population, snapshot_ptr + 256, 1152); copy(s.history.buf, snapshot_ptr + 1408, 328);
+    let checked = validate(s); if checked < 0 { return checked; } else {}
+    let h = s.head; if h.get(12) != 0 { return -409; } else {}
+    let request = fitting_request(s); if request < 0 { return request; } else {}
+    let config: Vec<u64> = Vec::with_capacity(6);
+    config.push(h.get(3)); config.push(h.get(4)); config.push(h.get(7)); config.push(h.get(8)); config.push(h.get(9)); config.push(h.get(15));
+    let context = alloc(112); copy(context, config.buf, 48); copy(context + 48, identity, 64);
+    let profile = "autoresearch-fit-v1"; let p = profile.as_output();
+    return exchange::request(p / 4294967296, profile.len(), context, 112, h.get(13), request / 4294967296, request % 4294967296);
+}
+
+pub fn evaluation_work_request(ptr: i64, len: i64) -> i64 ! { Alloc } {
+    let request = exchange::open_request(ptr, len); if request.error < 0 { return request.error; } else {}
+    let profile = "autoresearch-fit-v1"; let p = profile.as_output();
+    if bytes_scan::equal(request.profile, request.profile_len, p / 4294967296, profile.len()) != 1 || request.context_len != 112 || request.sequence > 368 { return -409; } else {}
+    if request.payload_len < 84 || request.payload_len > 128 || load8(request.payload) != 65 || load8(request.payload + 1) != 70 || load8(request.payload + 2) != 73 || load8(request.payload + 3) != 84 || load8(request.payload + 4) != 1 { return -422; } else {}
+    return request.payload * 4294967296 + request.payload_len;
+}
+
+// Fitting and wire packaging are separate bounded calls; neither borrows fuel
+// from the other. Successful replies must carry a structurally valid report.
+pub fn evaluation_response(ptr: i64, len: i64, status: u64, report: i64, report_len: i64) -> i64 ! { Alloc } {
+    let work = evaluation_work_request(ptr, len); if work < 0 { return work; } else {}
+    if status == 0 {
+        let checked = tool_report::validate(report, report_len, work / 4294967296, work % 4294967296);
+        if checked < 0 { return checked; } else {}
+    } else {}
+    return exchange::respond(ptr, len, status, report, report_len);
+}
+
+pub fn accept_evaluation(snapshot_ptr: i64, len: i64, identity: i64, identity_len: i64, response: i64, response_len: i64) -> i64 ! { Alloc } {
+    let expected = evaluation_request(snapshot_ptr, len, identity, identity_len); if expected < 0 { return expected; } else {}
+    let reply = exchange::open_response(expected / 4294967296, expected % 4294967296, response, response_len);
+    if reply.error < 0 { return reply.error; } else {}
+    if reply.status != 0 { return -502; } else {}
+    let s = fresh(); copy(s.head.buf, snapshot_ptr, 256); copy(s.population, snapshot_ptr + 256, 1152); copy(s.history.buf, snapshot_ptr + 1408, 328);
+    let request = fitting_request(s); if request < 0 { return request; } else {}
+    let applied = apply_report(s, reply.payload, reply.payload_len, request / 4294967296, request % 4294967296); if applied < 0 { return applied; } else {}
+    let checked = validate(s); if checked < 0 { return checked; } else {} return emit(s);
+}
+
+pub fn validate_state(ptr: i64, len: i64) -> i64 ! { Alloc } {
+    if len != 1736 { return -422; } else {}
+    let s = fresh(); copy(s.head.buf, ptr, 256); copy(s.population, ptr + 256, 1152); copy(s.history.buf, ptr + 1408, 328);
+    return validate(s);
+}
+
+pub fn run(input: i64, len: i64) -> i64 ! { Alloc } {
+    if len > 3488 { return -413; } else {}
+    let decoded = records::unhex(input, len, 1744); if decoded < 0 { return decoded; } else {}
+    let request = decoded / 4294967296; let size = decoded % 4294967296;
+    if size < 8 || load8(request) != 65 || load8(request + 1) != 83 || load8(request + 4) != 1 { return -422; } else {}
+    if load8(request + 2) == 73 && load8(request + 3) == 78 {
+        if size != 32 { return -422; } else {} return initialize(request);
+    } else {}
+    if size != 1744 || load8(request + 5) != 0 || load8(request + 6) != 0 || load8(request + 7) != 0 { return -422; } else {}
+    let step = load8(request + 2) == 83 && load8(request + 3) == 84;
+    let check = load8(request + 2) == 86 && load8(request + 3) == 65;
+    if !step && !check { return -422; } else {}
+    let s = fresh(); copy(s.head.buf, request + 8, 256); copy(s.population, request + 264, 1152); copy(s.history.buf, request + 1416, 328);
+    let valid = validate(s); if valid < 0 { return valid; } else {}
+    if check { return emit(s); } else {}
+    if s.head.get(12) == 2 { return -409; } else {}
+    let mut status = 0; if s.head.get(12) == 1 { status = breed(s); } else { status = score(s); }
+    if status < 0 { return status; } else {}
+    let checked = validate(s); if checked < 0 { return checked; } else {}
+    return emit(s);
+}

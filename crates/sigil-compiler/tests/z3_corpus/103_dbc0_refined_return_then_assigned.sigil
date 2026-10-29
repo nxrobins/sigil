@@ -1,0 +1,36 @@
+// expect-error: T211
+// Z3 corpus #103: axis-1 — DBC-0a: a `let mut` keeps no fact from a refined return.
+//
+// WHAT THIS FIXTURE PROVES
+//
+// `pos()` returns `@ > 0`, and an immutable `let` would carry that fact to a call. A `let mut`
+// keeps nothing (DBC0-2), so after `p = 0 - 3` the call `need_positive(p)` meets no fact and is
+// refused with T211, in both build configurations. Before DBC-0a the return's fact outlived the
+// assignment (SR-037, probe P10).
+//
+// MUTATION CONTRACT
+//
+// Deleting the call leaves the assignment with no refined sink after it, and the program compiles
+// cleanly. (Binding `p` immutably, with no assignment, would carry the fact instead.)
+module sigil;
+
+fn need_positive(x: i64) where x > 0 -> i64 {
+    return x;
+}
+
+fn pos() -> i64 where @ > 0 {
+    return 1;
+}
+
+fn probe() -> i64 {
+    let mut p: i64 = pos();
+    p = 0 - 3;
+    let q: i64 = need_positive(p);  // MUTATION_SITE
+    return p;
+}
+
+entry actor Main {
+    on Tick() -> i64 {
+        return probe();
+    }
+}

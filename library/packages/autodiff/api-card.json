@@ -1,0 +1,24 @@
+{
+  "allocation": "constructors only; fixed node and sum-edge capacity",
+  "branch_gradient": "selected branch only; nondifferentiable bool; ReLU derivative zero at zero",
+  "contract_hash": "sha256:be0b8f9c1adc7b68f081ebdf7747f912255e29c8ee5c0177fe1363cd267d7c21",
+  "dtype": "f64",
+  "effects": [
+    "Alloc"
+  ],
+  "errors": {
+    "-400": "metadata/handle/query state",
+    "-413": "capacity/epoch",
+    "-422": "nonfinite value or derivative"
+  },
+  "host_imports": [],
+  "limits": {
+    "epoch": 1048574,
+    "nodes": 4096,
+    "sum_edges": 4096
+  },
+  "ownership": "constructor-owned live Public backing; records not sealed",
+  "package": "sigil/autodiff",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

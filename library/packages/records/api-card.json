@@ -1,0 +1,34 @@
+{
+  "contract_hash": "sha256:2b0261a8e5f88cc0a5f2d9d560cfd4d8f47426b00d5854f2b7005f68ff62e703",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "limits": {
+    "blob_bytes": 8191,
+    "f64_words": 512,
+    "fields": 32,
+    "key_bytes": 64,
+    "record_bytes": 32768,
+    "string_bytes": 2048,
+    "value_bytes": 16384
+  },
+  "package": "sigil/records",
+  "source_codec": "byte-identical stdlib/sigil/json.sigil",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "records::field(ptr:Flow,len:Flow,key:Flow,key_len:Flow)->Flow",
+    "records::finish(doc:Flow)->Flow",
+    "records::hex(ptr:Flow,len:Flow)->Flow",
+    "records::new(limit:Flow)->Flow",
+    "records::put_f64le(doc:Flow,key:Flow,key_len:Flow,ptr:Flow,count:Flow)->Flow",
+    "records::put_hex(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+    "records::put_json(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+    "records::put_string(doc:Flow,key:Flow,key_len:Flow,value:Flow,value_len:Flow)->Flow",
+    "records::put_u64(doc:Flow,key:Flow,key_len:Flow,value:Flow)->Flow",
+    "records::read_f64le(ptr:Flow,len:Flow,count:Flow)->Flow",
+    "records::read_u64(ptr:Flow,len:Flow)->Flow",
+    "records::unhex(ptr:Flow,len:Flow,maximum:Flow)->Flow"
+  ],
+  "version": "0.1.0-public.1"
+}

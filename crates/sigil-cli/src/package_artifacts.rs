@@ -1,12 +1,16 @@
-//! Create-new compiler evidence. These commands do not judge or admit packages.
+//! Explicit local package metadata, locking and create-new compiler evidence.
+//! Refresh preserves old state; none of these commands judges or admits packages.
 
 use crate::json_envelope::{self, Envelope, OutputFormat};
 use serde_json::{Value, json};
-use sigil_compiler::package::{compile_local_package_with_context, create_local_package_lock};
+use sigil_compiler::package::{
+    LocalPackageDependency, compile_local_package_with_context, create_local_package_lock,
+    create_local_package_lock_with_dependencies,
+};
 use sigil_compiler::{CompileOptions, CompilerContext};
 use std::path::Path;
 
-fn emit(
+pub(super) fn emit(
     command: &'static str,
     fmt: OutputFormat,
     result: anyhow::Result<Value>,
@@ -33,14 +37,36 @@ fn emit(
     }
 }
 
-pub(crate) fn lock(root: &Path, fmt: OutputFormat) -> anyhow::Result<()> {
+pub(crate) fn lock(
+    root: &Path,
+    dependencies: &[LocalPackageDependency],
+    fmt: OutputFormat,
+) -> anyhow::Result<()> {
     emit(
         "package-lock",
         fmt,
         (|| {
-            let bytes = create_local_package_lock(root)?;
+            let bytes = if dependencies.is_empty() {
+                create_local_package_lock(root)?
+            } else {
+                create_local_package_lock_with_dependencies(root, dependencies)?
+            };
             Ok(
                 json!({"lockfile": root.join("sigil-package.lock.json"), "bytes": bytes.len(), "admission": "not_evaluated"}),
+            )
+        })(),
+    )
+}
+
+pub(crate) fn refresh(root: &Path, fmt: OutputFormat) -> anyhow::Result<()> {
+    emit(
+        "package-refresh",
+        fmt,
+        (|| {
+            let result = sigil_compiler::package::refresh_local_tool_package(root)?;
+            Ok(
+                json!({"root_package": result.root_package, "backup_directory": result.backup_directory,
+            "package_graph_hash": result.graph_hash, "locked": true, "admission": "not_evaluated"}),
             )
         })(),
     )
@@ -73,8 +99,9 @@ pub(crate) fn evidence(
             let package =
                 compile_local_package_with_context(root, CompileOptions::default(), context)?;
             package.write_evidence_directory(&target)?;
+            // The tier is the compilation's own witness, as in `sigil run`.
             Ok(
-                json!({"output_dir": target, "proof_tier": "solver_verified", "admission": "not_evaluated"}),
+                json!({"output_dir": target, "proof_tier": package.proof_tier(), "admission": "not_evaluated"}),
             )
         })(),
     )

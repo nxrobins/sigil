@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2014 Melissa O'Neill <oneill@pcg-random.org>
+// SIGIL adaptation Copyright 2026 SIGIL contributors.
+// Seeded PCG-XSH-RR with bounded, transactional sampling; not secure entropy.
+// Algorithm by M. E. O'Neill; this SIGIL adaptation adds checked snapshots,
+// Public-only APIs and refusal after 32 rejected draws. See PROVENANCE.md.
+module rng;
+
+record SeedRng { value: u64, increment: u64, error: i64 }
+record RngSnapshot { version: i64, value: u64, increment: u64 }
+record RngInt { value: i64 }
+record RngFloat { value: f64 }
+
+fn valid(rng: SeedRng @ReadOnly) -> bool {
+    return rng.error == 0 && (rng.increment & 1) == 1;
+}
+
+// u64 arithmetic wraps modulo 2^64; the output rotates a truncated 32-bit word.
+fn advance(value: u64, increment: u64) -> u64 {
+    return value * 6364136223846793005 + increment;
+}
+
+fn output(value: u64) -> i64 {
+    let shifted: u64 = value >> 18;
+    let exclusive: u64 = (shifted | value) - (shifted & value);
+    let mixed: u64 = (exclusive >> 27) & 4294967295;
+    let rotation: u64 = value >> 59;
+    let opposite: u64 = (32 - rotation) & 31;
+    let bits: u64 = ((mixed >> rotation) | (mixed << opposite)) & 4294967295;
+    return bits.as_i64();
+}
+
+pub fn new(seed: u64, stream: u64) -> SeedRng ! { Alloc } {
+    if stream > 9223372036854775807 {
+        return SeedRng { value: 0, increment: 1, error: -400 };
+    } else {}
+    let increment: u64 = (stream << 1) | 1;
+    let first: u64 = increment + seed;
+    return SeedRng { value: advance(first, increment), increment: increment, error: 0 };
+}
+
+pub fn new_snapshot() -> RngSnapshot ! { Alloc } {
+    return RngSnapshot { version: 1, value: 0, increment: 1 };
+}
+
+pub fn snapshot_into(rng: SeedRng @ReadOnly, out: RngSnapshot @Mut) -> i64 {
+    if !valid(rng) { return -400; } else {}
+    out.version = 1; out.value = rng.value; out.increment = rng.increment;
+    return 0;
+}
+
+pub fn restore(rng: SeedRng @Mut, snapshot: RngSnapshot @ReadOnly) -> i64 {
+    if snapshot.version != 1 || (snapshot.increment & 1) != 1 { return -400; } else {}
+    rng.value = snapshot.value; rng.increment = snapshot.increment; rng.error = 0;
+    return 0;
+}
+
+pub fn next(rng: SeedRng @Mut) -> i64 {
+    if !valid(rng) { return -400; } else {}
+    let result = output(rng.value);
+    rng.value = advance(rng.value, rng.increment);
+    return result;
+}
+
+pub fn below(rng: SeedRng @Mut, bound: i64) -> i64 {
+    if !valid(rng) || bound < 1 || bound > 4294967296 { return -400; } else {}
+    let threshold = (4294967296 - bound) % bound;
+    let mut current: u64 = rng.value;
+    let mut attempts = 0;
+    while attempts < 32 {
+        let drawn = output(current);
+        current = advance(current, rng.increment);
+        if drawn >= threshold {
+            rng.value = current;
+            return drawn % bound;
+        } else {}
+        attempts = attempts + 1;
+    }
+    // Refuse without consuming state rather than introduce bias or loop forever.
+    return -429;
+}
+
+pub fn new_int() -> RngInt ! { Alloc } { return RngInt { value: 0 }; }
+
+pub fn signed_into(rng: SeedRng @Mut, radius: i64, out: RngInt @Mut) -> i64 {
+    if radius < 0 || radius > 2147483647 { return -400; } else {}
+    let drawn = below(rng, radius * 2 + 1);
+    if drawn < 0 { return drawn; } else {}
+    out.value = drawn - radius;
+    return 0;
+}
+
+pub fn new_float() -> RngFloat ! { Alloc } { return RngFloat { value: 0.0 }; }
+
+pub fn unit_into(rng: SeedRng @Mut, out: RngFloat @Mut) -> i64 {
+    let drawn = next(rng);
+    if drawn < 0 { return drawn; } else {}
+    let mut remaining = drawn;
+    let mut result = 0.0;
+    let mut unit = 1.0 / 4294967296.0;
+    let mut bit = 0;
+    while bit < 32 {
+        if remaining % 2 == 1 { result = result + unit; } else {}
+        remaining = remaining / 2; unit = unit * 2.0; bit = bit + 1;
+    }
+    out.value = result;
+    return 0;
+}

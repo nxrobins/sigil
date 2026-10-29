@@ -180,8 +180,7 @@ fn unapplied_effectful_closure_lands_row_in_effects_required() {
     let src = "#[ring(outer)]\nmodule app;\n\
          effect Log;\n\
          fn logs() -> i64 ! { Log } { return 0; }\n\
-         fn quiet() -> i64 { let f = fn(x: i64) -> i64 { return logs(); }; return 0; }\n\
-         entry actor Main { on Tick() -> i64 { return quiet(); } }\n";
+         fn quiet() -> i64 { let f = fn(x: i64) -> i64 { return logs(); }; return 0; }\n";
     let compilation = sigil_compiler::compile_named_module("hof_cert_row.sigil", src)
         .expect("constructing (without applying) an effectful closure in a pure fn is legal");
     assert!(

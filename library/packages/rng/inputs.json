@@ -1,0 +1,12 @@
+{
+  "files": {
+    "API.md": "sha256:540cb1fd0877bfde00b29e8c59d1db092fc4fc05bba29f7069ee74cbfb1f193c",
+    "LICENSE.txt": "sha256:b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+    "PROVENANCE.md": "sha256:36a5e28b6f42396405a1eb98b873beed1198238cbcf2ee3c43f19c3d57211e5a",
+    "README.md": "sha256:80ecc4085ff7c934693e3c539392d99a9fbea3f1a2563324716d454af356e1c5",
+    "api-card.json": "sha256:b24bc184337a54bf4558ec93a5ac0c2f5d26c9f8781a96ab7b1a9fe3de6f246d",
+    "source-provenance.json": "sha256:84730f6198fa84af6ae78b2c6fda8ca1be51a22cd898364a8857a95ea388552a",
+    "src/rng.sigil": "sha256:75158fca9629891b999729a7faaae92d19967a44a3bc5408f9df9105422791a2"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

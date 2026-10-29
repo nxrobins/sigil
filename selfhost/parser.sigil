@@ -162,6 +162,12 @@ const P_K_PERFORM: i64 = 87;
 // generic parse-error path (the oracle rejects it P029 — no differential
 // fixture may contain it).
 const P_K_FOR_RANGE: i64 = 88;
+// Effect Handlers (EH0b, SHP-5c-2 third review): one operation signature
+// inside an `effect` body, `fn name(params) ('->' type)? ';'`, projected like
+// a trait method signature (P_K_TRAIT_SIG): text = the operation name; value =
+// its byte-length; children = [param…, return-type?]; span = fn..`;`.
+// Matches `K_EFFECT_OP = 89` in parser_differential.rs.
+const P_K_EFFECT_OP: i64 = 89;
 
 // the oracle's tuple-arity cap (ast::MAX_TUPLE_ARITY).
 const P_MAX_TUPLE_ARITY: i64 = 12;
@@ -352,6 +358,9 @@ fn parser_kind_has_text(k: i64) -> bool {
         return true;
     } else {
     }
+    if k == P_K_EFFECT_OP {
+        return true;
+    }
     if k == P_K_SEND {
         return true;
     } else {
@@ -510,10 +519,15 @@ fn parser_args(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, k
 //     oracle's quirk, replicated exactly. (The actor/cap special names
 //     send/ask/restrict/… are the PR-5 exotica slice.)
 //   - otherwise + `(`            → Call: the callee path rides `text` (joined
-//     with `::`); the arguments are the children.
+//     with `::`); the arguments are the children. SHP-5c-3: a turbofish
+//     `::<T, …>` on a single-segment callee (the oracle's parse_path_from_first
+//     stops the path after it) parses its type args as the LEADING children,
+//     counted in `flags`; the arguments follow. A turbofish on a multi-segment
+//     path, or one not followed by `(`, bails (fail closed: the oracle's
+//     MethodCall fold and a bare instantiation value are not mirrored).
 //   - no `(`                     → a Path node (text = segments joined `::`).
-// Turbofish `::<T>` and `.`-segments that aren't plain idents are later slices
-// (the path scan stops; the stray token bails at the statement layer).
+// `.`-segments that aren't plain idents are later slices (the path scan stops;
+// the stray token bails at the statement layer).
 // PR-E3: parse an f-string from the lexer's token sequence — T_FSTR_BEGIN, then
 // (ALWAYS, ET-E3 strict alternation) a T_FSTR_CHUNK literal run and, if a hole
 // follows, T_FSTR_HOLE_START, the hole's expression tokens, T_FSTR_HOLE_END —
@@ -938,6 +952,8 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
         let mut pend: i64 = t.end;
         let mut p: i64 = pos + 1;
         let mut scanning: bool = true;
+        let mut targs: Vec<i64> = Vec::new();
+        let mut ntargs: i64 = 0;
         while scanning {
             let tj: Token = toks.get(p);
             let mut isjoin: bool = false;
@@ -951,6 +967,56 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
             }
             if isjoin {
                 let ts: Token = toks.get(p + 1);
+                // SHP-5c-3: turbofish `::<T, …>` — the type args parse with parser_type (so a
+                // parametric cap usage `Approval(2030)` reads as in an annotation) and the path
+                // stops after `>`, as the oracle's does. Only a single-segment path takes one:
+                // the oracle folds a multi-segment callee into a MethodCall below, a shape with
+                // no home for type args here, so that bails. An empty `<>` bails too.
+                let mut isturbo: bool = false;
+                if tj.kind == T_COLONCOLON {
+                    if ts.kind == T_LT {
+                        isturbo = true;
+                    }
+                }
+                if isturbo {
+                    if segcount != 1 {
+                        return parser_bail(toks, p + 1, nodes);
+                    }
+                    let mut pg: i64 = p + 2;
+                    let mut scanningt: bool = true;
+                    while scanningt {
+                        let tet: Token = toks.get(pg);
+                        if tet.kind == T_GT {
+                            scanningt = false;
+                        } else {
+                            if tet.kind == T_EOF {
+                                scanningt = false;
+                            } else {
+                                let (taid, pg2) = parser_type(src, toks, pg, 1, nodes, kids);
+                                let qta: i64 = targs.push(taid);
+                                pg = pg2;
+                                let tct: Token = toks.get(pg);
+                                if tct.kind == T_COMMA {
+                                    pg = pg + 1;
+                                } else {
+                                    scanningt = false;
+                                }
+                            }
+                        }
+                    }
+                    let tgt: Token = toks.get(pg);
+                    let closed: bool = tgt.kind == T_GT;
+                    if !closed {
+                        return parser_bail(toks, pg, nodes);
+                    }
+                    ntargs = targs.len();
+                    if ntargs == 0 {
+                        return parser_bail(toks, pg, nodes);
+                    }
+                    pend = tgt.end;
+                    p = pg + 1;
+                    scanning = false;
+                }
                 let mut issegment: bool = false;
                 if ts.kind == T_IDENT {
                     issegment = true;
@@ -987,6 +1053,13 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
             }
         }
         let tl: Token = toks.get(p);
+        if ntargs > 0 {
+            // SHP-5c-3: type args are parsed on a CALL only (fail closed, see above).
+            let tlpar: bool = tl.kind == T_LPAREN;
+            if !tlpar {
+                return parser_bail(toks, p, nodes);
+            }
+        }
         if tl.kind == T_LPAREN {
             // single-segment Ok/Err → ResultCtor (exactly one argument).
             let mut is_ctor: i64 = 0 - 1;
@@ -1000,6 +1073,12 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
                 } else {
                 }
             } else {
+            }
+            if ntargs > 0 {
+                // SHP-5c-3: `Ok::<T>(…)` / `Err::<T>(…)` are not mirrored (fail closed).
+                if is_ctor >= 0 {
+                    return parser_bail(toks, p, nodes);
+                }
             }
             if is_ctor >= 0 {
                 let (vid, pv) = parser_expr(src, toks, p + 1, nodes, kids);
@@ -1158,8 +1237,14 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
                 return (idm, pm);
             } else {
             }
-            // plain Call: the callee path rides text; the args are children.
+            // plain Call: the callee path rides text; the args are children. SHP-5c-3: the
+            // explicit type args LEAD the children, `flags` counting them.
             let mut localg: Vec<i64> = Vec::new();
+            let mut tgi: i64 = 0;
+            while tgi < ntargs {
+                let qtg: i64 = localg.push(targs.get(tgi));
+                tgi = tgi + 1;
+            }
             let (cend, pc) = parser_args(src, toks, p, nodes, kids, localg);
             if cend < 0 {
                 return parser_bail(toks, pc, nodes);
@@ -1167,7 +1252,7 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
             }
             let flen: i64 = full.len();
             let cstartg: i64 = parser_kids_commit(kids, localg);
-            let idg: i64 = nodes.allocate(PNode { kind: P_K_CALL, start: t.start, end: cend, value: flen, flags: 0, child_start: cstartg, child_count: localg.len(), text: full });
+            let idg: i64 = nodes.allocate(PNode { kind: P_K_CALL, start: t.start, end: cend, value: flen, flags: ntargs, child_start: cstartg, child_count: localg.len(), text: full });
             return (idg, pc);
         } else {
         }
@@ -1446,7 +1531,7 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
         } else {
             return parser_bail(toks, p2, nodes);
         }
-        let (dt, p3) = parser_taint(src, toks, p2 + 1);
+        let (dt, p3) = parser_taint(src, toks, p2 + 1, 0);
         if dt < 0 {
             return parser_bail(toks, p2 + 1, nodes);
         } else {
@@ -1522,7 +1607,7 @@ fn parser_primary(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut
         // expression position (the capital-`Fn` TYPE lives in parser_type).
         // Children [param…, return-type?, body]; span = fn..body.end.
         let mut localcl: Vec<i64> = Vec::new();
-        let (clend, clp) = parser_params(src, toks, pos + 1, nodes, kids, localcl);
+        let (clend, clp) = parser_params(src, toks, pos + 1, nodes, kids, localcl, 0);
         if clend < 0 {
             return parser_bail(toks, clp, nodes);
         } else {
@@ -2386,16 +2471,29 @@ fn parser_type(src: str, toks: Vec<Token>, pos: i64, allowrow: i64, nodes: Arena
 // Parse a `(`-led parameter list, appending K_PARAM ids to `plist`. `pos` is
 // AT the `(`. Returns (end_byte, new_pos); end_byte -1 when malformed (the
 // caller bails). param := IDENT ':' type annotation* — annotations are `@`-led:
-// `@in REGION` (text becomes `name;region`), taint labels, `@ReadOnly`/`@Mut`.
-// K_PARAM flags = mut-code (0 default / 1 readonly / 2 mut) + taint*4 +
-// has-region*32; span = name.start..type.end (annotations NOT in the span —
-// the oracle's param_span = name_span.join(ty.span)).
-fn parser_params(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, plist: Vec<i64> @Mut) -> (i64, i64) ! { Alloc } {
+// `@in REGION` (text becomes `name;region`), taint labels, `@ReadOnly`/`@Mut`,
+// classified by `parser_annots` (one classifier for every list). `allowflow`
+// 1 admits `@Flow` — an `fn` item's list, production's
+// parse_params_allowing_flow — and 0 refuses it, as production's parse_params
+// does on a closure's, a trait signature's, an extern fn's, an actor
+// member's and an effect operation's. K_PARAM flags = mut-code (0 default / 1 readonly /
+// 2 mut) + taint*4 + has-region*32; span = name.start..type.end (annotations
+// NOT in the span — the oracle's param_span = name_span.join(ty.span)). Once
+// the list is complete, every `@in r` must name an `r: Region` of this same
+// list (`parser_region_dangling` — production's P024); a dangling one is
+// refused at its own token.
+fn parser_params(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, plist: Vec<i64> @Mut, allowflow: i64) -> (i64, i64) ! { Alloc } {
     let t0: Token = toks.get(pos);
     if t0.kind == T_LPAREN {
     } else {
         return (0 - 1, pos);
     }
+    // The `Region`-typed parameter names and the `@in` targets (with their
+    // token positions) of this list, compared once it is complete: a region
+    // may be named before its parameter is declared.
+    let mut regnames: Vec<str> = Vec::new();
+    let mut inrefs: Vec<str> = Vec::new();
+    let mut inpos: Vec<i64> = Vec::new();
     let mut p: i64 = pos + 1;
     let mut scanning: bool = true;
     while scanning {
@@ -2418,89 +2516,54 @@ fn parser_params(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut,
                 }
                 let (tyid, p2) = parser_type(src, toks, p + 2, 1, nodes, kids);
                 let mut name: str = src.substr(tn.start, tn.end);
-                let mut mcode: i64 = 0;
-                let mut taint: i64 = 0;
-                let mut hasregion: i64 = 0;
-                let mut pa: i64 = p2;
-                let mut scanninga: bool = true;
-                while scanninga {
-                    let ta: Token = toks.get(pa);
-                    if ta.kind == T_AT {
-                        let ti: Token = toks.get(pa + 1);
-                        if ti.kind == T_KW_IN {
-                            let trg: Token = toks.get(pa + 2);
-                            if trg.kind == T_IDENT {
-                                let rname: str = src.substr(trg.start, trg.end);
-                                let j: str = name.concat(";");
-                                name = j.concat(rname);
-                                hasregion = 1;
-                                pa = pa + 3;
-                            } else {
-                                return (0 - 1, pa + 2);
+                let tynode: PNode = nodes.get(tyid);
+                // A `Region` parameter is the nominal `Region` with no ref
+                // flag and no generic argument (the oracle's
+                // type_expr_is_region). A deadline list does not unmake it
+                // (`Region(5)`, text `Region;5` — production never reads the
+                // deadline there), and a grouped `(Region)` is the inner
+                // node, as parser_type unwraps it.
+                if tynode.kind == P_K_TYPE {
+                    if tynode.flags == 0 {
+                        if tynode.child_count == 0 {
+                            let ttext: str = tynode.text;
+                            let mut isreg: bool = false;
+                            if ttext.bytes_eq("Region") {
+                                isreg = true;
                             }
-                        } else {
-                            if ti.kind == T_IDENT {
-                                let aname: str = src.substr(ti.start, ti.end);
-                                let mut known: bool = false;
-                                if aname.bytes_eq("Public") {
-                                    taint = 1;
-                                    known = true;
-                                } else {
+                            if ttext.len() > 7 {
+                                let thead: str = ttext.substr(0, 7);
+                                if thead.bytes_eq("Region;") {
+                                    isreg = true;
                                 }
-                                if aname.bytes_eq("Internal") {
-                                    taint = 2;
-                                    known = true;
-                                } else {
-                                }
-                                if aname.bytes_eq("Secret") {
-                                    taint = 3;
-                                    known = true;
-                                } else {
-                                }
-                                if aname.bytes_eq("SecretCT") {
-                                    taint = 4;
-                                    known = true;
-                                } else {
-                                }
-                                // Taint polymorphism. Parsed so the self-host
-                                // agrees with the oracle on a `@Flow` stdlib
-                                // file being syntactically clean; the taint
-                                // stage refuses to VERIFY code 5 rather than
-                                // decoding it as a label (tt_label_of_code).
-                                if aname.bytes_eq("Flow") {
-                                    taint = 5;
-                                    known = true;
-                                } else {
-                                }
-                                if aname.bytes_eq("ReadOnly") {
-                                    mcode = 1;
-                                    known = true;
-                                } else {
-                                }
-                                if aname.bytes_eq("Mut") {
-                                    mcode = 2;
-                                    known = true;
-                                } else {
-                                }
-                                if known {
-                                } else {
-                                    return (0 - 1, pa + 1);
-                                }
-                                pa = pa + 2;
-                            } else {
-                                return (0 - 1, pa + 1);
+                            }
+                            if isreg {
+                                let rn: str = src.substr(tn.start, tn.end);
+                                let qr: i64 = regnames.push(rn);
                             }
                         }
-                    } else {
-                        scanninga = false;
                     }
                 }
-                let tynode: PNode = nodes.get(tyid);
+                let (acode, rpos, pa) = parser_annots(src, toks, p2, allowflow);
+                if acode < 0 {
+                    return (0 - 1, pa);
+                }
+                let mut hasregion: i64 = 0;
+                if rpos >= 0 {
+                    let trg: Token = toks.get(rpos);
+                    let rname: str = src.substr(trg.start, trg.end);
+                    let j: str = name.concat(";");
+                    name = j.concat(rname);
+                    hasregion = 1;
+                    let rref: str = src.substr(trg.start, trg.end);
+                    let qi: i64 = inrefs.push(rref);
+                    let qo: i64 = inpos.push(rpos);
+                }
                 let nlen: i64 = name.len();
                 let mut localp: Vec<i64> = Vec::new();
                 let qp: i64 = localp.push(tyid);
                 let cstartp: i64 = parser_kids_commit(kids, localp);
-                let pid: i64 = nodes.allocate(PNode { kind: P_K_PARAM, start: tn.start, end: tynode.end, value: nlen, flags: mcode + taint * 4 + hasregion * 32, child_start: cstartp, child_count: 1, text: name });
+                let pid: i64 = nodes.allocate(PNode { kind: P_K_PARAM, start: tn.start, end: tynode.end, value: nlen, flags: acode + hasregion * 32, child_start: cstartp, child_count: 1, text: name });
                 let qq: i64 = plist.push(pid);
                 p = pa;
                 let tcm: Token = toks.get(p);
@@ -2514,10 +2577,138 @@ fn parser_params(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut,
     }
     let tr: Token = toks.get(p);
     if tr.kind == T_RPAREN {
+        let dangling: i64 = parser_region_dangling(regnames, inrefs);
+        if dangling >= 0 {
+            return (0 - 1, inpos.get(dangling));
+        }
         return (tr.end, p + 1);
     } else {
     }
     return (0 - 1, p);
+}
+
+// The `@`-annotation run after a parameter's type, classified WITHOUT
+// allocating a node: one classifier for every parameter list (`parser_params`
+// serves fn items, closures, trait signatures, extern fns, actor members and
+// effect operations). `pos` is the first token after the type (a run may be
+// empty). Returns (code, rpos, next):
+//   code = mut-code + taint*4 (K_PARAM's flags without the region bit;
+//          taint 1 Public / 2 Internal / 3 Secret / 4 SecretCT / 5 Flow),
+//          or -1 when production refuses the run — `next` is then the
+//          offending token, where the caller bails;
+//   rpos = the token index of the LAST `@in r` region name, -1 for none;
+//   next = the first token past the run.
+// Mirrors parse_param_annotations, each axis keeping its LAST writer
+// (`@Secret @Public` is public; a second `@in` replaces the first), and
+// refuses what it refuses: an unknown name, an `@` or `@in` without an
+// identifier, `@ReadOnly` beside `@Mut` (H3), `@Flow` beside a concrete
+// label (one label contract per parameter), and `@Flow` itself unless
+// `allowflow` is 1 — production admits it on an `fn` item's parameters only
+// (parse_params_allowing_flow) and refuses it on every other list
+// (parse_params, allow_flow false). The label names, their codes and that
+// `@Flow` rule are `parser_taint`'s — one table, handed this list's
+// allowflow; this classifier adds only the two mutability markers and the
+// region form.
+fn parser_annots(src: str, toks: Vec<Token>, pos: i64, allowflow: i64) -> (i64, i64, i64) ! { Alloc } {
+    let mut mcode: i64 = 0;
+    let mut taint: i64 = 0;
+    let mut rpos: i64 = 0 - 1;
+    let mut sawlabel: bool = false;
+    let mut sawflow: bool = false;
+    let mut p: i64 = pos;
+    let mut scanning: bool = true;
+    while scanning {
+        let ta: Token = toks.get(p);
+        if ta.kind == T_AT {
+            let ti: Token = toks.get(p + 1);
+            if ti.kind == T_KW_IN {
+                let trg: Token = toks.get(p + 2);
+                if trg.kind == T_IDENT {
+                    rpos = p + 2;
+                    p = p + 3;
+                } else {
+                    return (0 - 1, 0 - 1, p + 2);
+                }
+            } else {
+                if ti.kind == T_IDENT {
+                } else {
+                    return (0 - 1, 0 - 1, p + 1);
+                }
+                let aname: str = src.substr(ti.start, ti.end);
+                let mut ismut: bool = false;
+                if aname.bytes_eq("ReadOnly") {
+                    if mcode == 2 {
+                        return (0 - 1, 0 - 1, p + 1);
+                    }
+                    mcode = 1;
+                    ismut = true;
+                }
+                if aname.bytes_eq("Mut") {
+                    if mcode == 1 {
+                        return (0 - 1, 0 - 1, p + 1);
+                    }
+                    mcode = 2;
+                    ismut = true;
+                }
+                if ismut {
+                    p = p + 2;
+                } else {
+                    // A taint label, by parser_taint's table under this list's
+                    // allowflow: an unknown name is -1, and so is `@Flow` on a
+                    // list that does not admit it; an admitted `@Flow` is 5.
+                    let (tcode, tnext) = parser_taint(src, toks, p, allowflow);
+                    if tcode < 0 {
+                        return (0 - 1, 0 - 1, p + 1);
+                    }
+                    if tcode == 5 {
+                        sawflow = true;
+                    } else {
+                        sawlabel = true;
+                    }
+                    taint = tcode;
+                    p = tnext;
+                }
+            }
+        } else {
+            scanning = false;
+        }
+    }
+    // `@Flow` beside a concrete label, in either order: refused at the token
+    // after the run (production's span for it).
+    if sawflow {
+        if sawlabel {
+            return (0 - 1, 0 - 1, p);
+        }
+    }
+    return (mcode + taint * 4, rpos, p);
+}
+
+// Regions (DEF-2b, NC-2b-2 / R8): every `@in r` of a parameter list must
+// name a `Region` parameter of the SAME list, forward references included —
+// so the check runs once the list is complete. Returns the index into
+// `inrefs` of the first name no entry of `regnames` carries, or -1 when each
+// is named (production's P024 otherwise; the caller bails at that
+// reference's token).
+fn parser_region_dangling(regnames: Vec<str>, inrefs: Vec<str>) -> i64 {
+    let mut i: i64 = 0;
+    while i < inrefs.len() {
+        let want: str = inrefs.get(i);
+        let mut found: bool = false;
+        let mut j: i64 = 0;
+        while j < regnames.len() {
+            let have: str = regnames.get(j);
+            if have.bytes_eq(want) {
+                found = true;
+            }
+            j = j + 1;
+        }
+        if found {
+        } else {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
 }
 
 // ── statements & blocks ──────────────────────────────────────────────────────
@@ -2564,17 +2755,31 @@ fn parser_compound_op(k: i64) -> i64 {
     return 0;
 }
 
-// Optional `@Label` taint annotation → (code, new_pos). Codes: 0 = absent,
-// 1 = Public, 2 = Internal, 3 = Secret, 4 = SecretCT, 5 = Flow (taint
-// polymorphism), -1 = an unknown label (the oracle's P021 — the caller
-// bails). Mirrors parse_taint_annotation.
+// Optional `@Label` taint annotation → (code, new_pos): the one label table,
+// for every position a label may stand — a `let`, a `declassify(…)` target,
+// an `fn` item's return, an extern fn's return, and, through `parser_annots`,
+// every parameter list. Codes: 0 = absent, 1 = Public, 2 = Internal,
+// 3 = Secret, 4 = SecretCT, 5 = Flow (taint polymorphism), -1 = a label
+// production refuses here (P021 — the caller bails): an unknown name, or
+// `@Flow` where `allowflow` is 0.
 //
-// The oracle admits `@Flow` only in an `fn` item's return position and
-// rejects it elsewhere (P021). This helper is shared with `let`, so it
-// accepts code 5 in both and does not reproduce that position rule; the
-// self-host taint stage refuses to verify any function carrying code 5,
-// so a `@Flow` it should have rejected is never silently approved.
-fn parser_taint(src: str, toks: Vec<Token>, pos: i64) -> (i64, i64) ! { Alloc } {
+// Mirrors parse_taint_annotation_inner and its `allow_flow`. Production
+// admits `@Flow` in two positions only: an `fn` item's parameters
+// (parse_params_allowing_flow — `parser_params` hands its allowflow 1 to
+// `parser_annots`, which hands it here) and an `fn` item's return
+// (parse_taint_annotation_allowing_flow — `parser_fn` passes 1). Every other
+// position hands 0, and production refuses `@Flow` there (P021): a `let`, a
+// `declassify` target, an extern fn's return, and a closure's, a trait
+// signature's, an extern fn's, an actor member's and an effect operation's
+// parameters. A table that took code 5 everywhere and left the position rule
+// to the taint stage was fail-open: that stage refuses a non-generic
+// top-level `fn` whose signature carries code 5 (`tt_fn_uses_flow`), not a
+// `let`, a `declassify` target or an extern fn's return carrying it, so a
+// program holding one could compile to a module where production stops at
+// P021. Production's later refusals of a `@Flow` signature are not this
+// table's: a `@Flow` return with no `@Flow` parameter (its parse_fn), and
+// `@Flow` on a generic fn or an impl method (its type check).
+fn parser_taint(src: str, toks: Vec<Token>, pos: i64, allowflow: i64) -> (i64, i64) ! { Alloc } {
     let t: Token = toks.get(pos);
     if t.kind == T_AT {
         let tn: Token = toks.get(pos + 1);
@@ -2597,8 +2802,9 @@ fn parser_taint(src: str, toks: Vec<Token>, pos: i64) -> (i64, i64) ! { Alloc } 
             } else {
             }
             if name.bytes_eq("Flow") {
-                return (5, pos + 2);
-            } else {
+                if allowflow == 1 {
+                    return (5, pos + 2);
+                }
             }
             return (0 - 1, pos + 2);
         } else {
@@ -2636,7 +2842,7 @@ fn parser_let(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, ki
         p = p2;
     } else {
     }
-    let (taint, p3) = parser_taint(src, toks, p);
+    let (taint, p3) = parser_taint(src, toks, p, 0);
     if taint < 0 {
         return parser_bail(toks, p, nodes);
     } else {
@@ -3872,7 +4078,7 @@ fn parser_fn(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, kid
     } else {
     }
     p = ptp;
-    let (pend, pp) = parser_params(src, toks, p, nodes, kids, local);
+    let (pend, pp) = parser_params(src, toks, p, nodes, kids, local, 1);
     if pend < 0 {
         return parser_bail(toks, pp, nodes);
     } else {
@@ -3902,8 +4108,9 @@ fn parser_fn(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, kid
         p = p2;
     } else {
     }
-    // optional return-taint `@Internal` etc. — flags bits 1-3 (bit0 is pub).
-    let (rtaint, prt) = parser_taint(src, toks, p);
+    // optional return-taint `@Internal` etc. — flags bits 1-3 (bit0 is pub);
+    // `@Flow` is admitted here, as production's parse_fn admits it.
+    let (rtaint, prt) = parser_taint(src, toks, p, 1);
     if rtaint < 0 {
         return parser_bail(toks, p, nodes);
     } else {
@@ -4501,7 +4708,7 @@ fn parser_trait(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, 
                     return parser_bail(toks, p + 1, nodes);
                 }
                 let mut locals: Vec<i64> = Vec::new();
-                let (pend2, pp2) = parser_params(src, toks, p + 2, nodes, kids, locals);
+                let (pend2, pp2) = parser_params(src, toks, p + 2, nodes, kids, locals, 0);
                 if pend2 < 0 {
                     return parser_bail(toks, pp2, nodes);
                 } else {
@@ -4568,7 +4775,7 @@ fn parser_extern(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut,
         return parser_bail(toks, pos + 3, nodes);
     }
     let mut local: Vec<i64> = Vec::new();
-    let (pend, pp) = parser_params(src, toks, pos + 4, nodes, kids, local);
+    let (pend, pp) = parser_params(src, toks, pos + 4, nodes, kids, local, 0);
     if pend < 0 {
         return parser_bail(toks, pp, nodes);
     } else {
@@ -4581,8 +4788,9 @@ fn parser_extern(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut,
         p = p2;
     } else {
     }
-    // optional return-taint `@Internal` etc. — the extern's flags (no pub bit).
-    let (rtaint, prt) = parser_taint(src, toks, p);
+    // optional return-taint `@Internal` etc. — the extern's flags (no pub bit);
+    // `@Flow` is refused here, as production's parse_extern_fn_decl refuses it (P021).
+    let (rtaint, prt) = parser_taint(src, toks, p, 0);
     if rtaint < 0 {
         return parser_bail(toks, p, nodes);
     } else {
@@ -4616,10 +4824,26 @@ fn parser_extern(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut,
     return parser_bail(toks, p, nodes);
 }
 
-// effect := 'effect' IDENT (';' | '{' '}') — a marker declaration. THE SPAN
-// QUIRK: it ends at the NAME, not the terminator (the oracle's
-// `start.join(end_span)` where end_span is the ident's). text = the name.
-fn parser_effect_decl(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut) -> (i64, i64) ! { Alloc } {
+// effect := 'effect' IDENT (';' | '{' op* '}'), op := 'fn' IDENT params
+// ('->' type)? ';' — the marker form and the operation-bearing form (EH0b).
+// text = the name; value = its byte-length; children = [op…], each a
+// P_K_EFFECT_OP projected like a trait method signature (text = the
+// operation name; children = [param…, return-type?]; span = fn..`;`), so an
+// operation's parameters and types are ordinary nodes read by
+// `parser_params` (allowflow 0: production's parse_params refuses `@Flow`
+// here) and `parser_type` (allowrow 1: production attaches a `! { … }` to a
+// `Fn` return type here, as nothing suppresses the row outside an `fn`
+// item's own return slot). Refused, as production refuses them: a body or
+// anything else where `fn` must stand, a nameless operation, every
+// parameter-list shape parser_params refuses, a missing `;` (an effect row
+// after a non-`Fn` return type, an operator or a body in its place).
+// flags = 0: an operation parameter's label is its own K_PARAM taint code
+// (its LAST label), which the taint shadow's signal walk reads where it
+// reads every parameter's. span: the marker form ends at the NAME (the
+// oracle's `start.join(end_span)` with the ident's span — the legacy quirk,
+// kept); the braced form ends at its `}`, so every operation nests inside
+// the declaration (ET-P6).
+fn parser_effect_decl(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut) -> (i64, i64) ! { Alloc } {
     let t0: Token = toks.get(pos);
     if t0.kind == T_KW_EFFECT {
     } else {
@@ -4630,86 +4854,62 @@ fn parser_effect_decl(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> 
     } else {
         return parser_bail(toks, pos + 1, nodes);
     }
-    // Effect Handlers (EH0b): `effect Name { fn op(params) -> Ty; .. }`. The
-    // operation NAMES ride the text joined `;` (like StateDef's markers); a bare
-    // `effect Name;` has no suffix, so existing fixtures are unchanged. The span
-    // still ends at the NAME (the operations do not extend it — the span quirk).
     let name: str = src.substr(tn.start, tn.end);
-    let mut text: str = name;
+    let nlen: i64 = name.len();
+    let mut local: Vec<i64> = Vec::new();
+    let mut dend: i64 = tn.end;
     let mut p: i64 = pos + 2;
     let tt: Token = toks.get(p);
     if tt.kind == T_SEMI {
         p = p + 1;
-    } else {
-        if tt.kind == T_LBRACE {
-            p = p + 1;
-            let mut scanop: bool = true;
-            while scanop {
-                let to: Token = toks.get(p);
-                if to.kind == T_RBRACE {
-                    p = p + 1;
-                    scanop = false;
+    }
+    if tt.kind == T_LBRACE {
+        p = p + 1;
+        let mut scanop: bool = true;
+        while scanop {
+            let to: Token = toks.get(p);
+            if to.kind == T_RBRACE {
+                dend = to.end;
+                p = p + 1;
+                scanop = false;
+            } else {
+                if to.kind == T_KW_FN {
                 } else {
-                    if to.kind == T_EOF {
-                        return parser_bail(toks, p, nodes);
-                    } else {
-                    }
-                    if to.kind == T_KW_FN {
-                        let topn: Token = toks.get(p + 1);
-                        if topn.kind == T_IDENT {
-                        } else {
-                            return parser_bail(toks, p + 1, nodes);
-                        }
-                        let opname: str = src.substr(topn.start, topn.end);
-                        let j: str = text.concat(";");
-                        text = j.concat(opname);
-                        // Consume the op signature up to its terminating `;`
-                        // (paren depth 0; params/types carry no top-level `;`).
-                        let mut q: i64 = p + 2;
-                        let mut depth: i64 = 0;
-                        let mut scansig: bool = true;
-                        while scansig {
-                            let tq: Token = toks.get(q);
-                            if tq.kind == T_EOF {
-                                return parser_bail(toks, q, nodes);
-                            } else {
-                            }
-                            if tq.kind == T_LPAREN {
-                                depth = depth + 1;
-                            } else {
-                            }
-                            if tq.kind == T_LBRACKET {
-                                depth = depth + 1;
-                            } else {
-                            }
-                            if tq.kind == T_RPAREN {
-                                depth = depth - 1;
-                            } else {
-                            }
-                            if tq.kind == T_RBRACKET {
-                                depth = depth - 1;
-                            } else {
-                            }
-                            if tq.kind == T_SEMI {
-                                if depth == 0 {
-                                    scansig = false;
-                                } else {
-                                }
-                            } else {
-                            }
-                            q = q + 1;
-                        }
-                        p = q;
-                    } else {
-                        return parser_bail(toks, p, nodes);
-                    }
+                    return parser_bail(toks, p, nodes);
                 }
+                let topn: Token = toks.get(p + 1);
+                if topn.kind == T_IDENT {
+                } else {
+                    return parser_bail(toks, p + 1, nodes);
+                }
+                let mut locals: Vec<i64> = Vec::new();
+                let (pend, pp) = parser_params(src, toks, p + 2, nodes, kids, locals, 0);
+                if pend < 0 {
+                    return parser_bail(toks, pp, nodes);
+                }
+                let mut q: i64 = pp;
+                let ta: Token = toks.get(q);
+                if ta.kind == T_ARROW {
+                    let (tid, q2) = parser_type(src, toks, q + 1, 1, nodes, kids);
+                    let qs: i64 = locals.push(tid);
+                    q = q2;
+                }
+                let tse: Token = toks.get(q);
+                if tse.kind == T_SEMI {
+                } else {
+                    return parser_bail(toks, q, nodes);
+                }
+                let opname: str = src.substr(topn.start, topn.end);
+                let olen: i64 = opname.len();
+                let cstarto: i64 = parser_kids_commit(kids, locals);
+                let oid: i64 = nodes.allocate(PNode { kind: P_K_EFFECT_OP, start: to.start, end: tse.end, value: olen, flags: 0, child_start: cstarto, child_count: locals.len(), text: opname });
+                let ql: i64 = local.push(oid);
+                p = q + 1;
             }
-        } else {
         }
     }
-    let tlen: i64 = text.len();
-    let id: i64 = nodes.allocate(PNode { kind: P_K_EFFECT_DECL, start: t0.start, end: tn.end, value: tlen, flags: 0, child_start: 0, child_count: 0, text: text });
+    let cstart: i64 = parser_kids_commit(kids, local);
+    let id: i64 = nodes.allocate(PNode { kind: P_K_EFFECT_DECL, start: t0.start, end: dend, value: nlen, flags: 0, child_start: cstart, child_count: local.len(), text: name });
     return (id, p);
 }
 
@@ -4843,7 +5043,7 @@ fn parser_actor(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, 
                 } else {
                     if t.kind == T_KW_INIT {
                         let mut locali: Vec<i64> = Vec::new();
-                        let (pend2, pp2) = parser_params(src, toks, p + 1, nodes, kids, locali);
+                        let (pend2, pp2) = parser_params(src, toks, p + 1, nodes, kids, locali, 0);
                         if pend2 < 0 {
                             return parser_bail(toks, pp2, nodes);
                         } else {
@@ -4875,7 +5075,7 @@ fn parser_actor(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, 
                                 return parser_bail(toks, p + 1, nodes);
                             }
                             let mut localh: Vec<i64> = Vec::new();
-                            let (pend3, pp3) = parser_params(src, toks, p + 2, nodes, kids, localh);
+                            let (pend3, pp3) = parser_params(src, toks, p + 2, nodes, kids, localh, 0);
                             if pend3 < 0 {
                                 return parser_bail(toks, pp3, nodes);
                             } else {
@@ -5267,7 +5467,7 @@ fn parser_item(src: str, toks: Vec<Token>, pos: i64, nodes: Arena<PNode> @Mut, k
     } else {
     }
     if k == T_KW_EFFECT {
-        return parser_effect_decl(src, toks, kpos, nodes);
+        return parser_effect_decl(src, toks, kpos, nodes, kids);
     } else {
     }
     if k == T_KW_IMPL {

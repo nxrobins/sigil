@@ -1,0 +1,81 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc",
+      "FFI",
+      "KvIO",
+      "Unsafe"
+    ],
+    "grant_categories": [
+      "ffi"
+    ],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "trusted_outer"
+    ],
+    "stable_errors": [
+      "-400",
+      "-403",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-500"
+    ],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Internal"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": [
+      "module:tool"
+    ]
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:5ff2bd0c86a9d8239135d7972238a8ff81cc772dace91ab8b02764404bb77a2a",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/kv",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:036ad0c339568de340ec4c020669e4e4293487de406d270db134ef079e23c312",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/storage",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Public source autoresearch checkpoint transport; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:c02598333477d16817138440c83eb6c241ff20503a93a3fa78ad049a58d0d55a",
+    "api_contract_hash": "sha256:4eb2e813f8b303ce5974b338414d8c735bd198b655830f938e06b85490a9581b",
+    "charter_hash": "sha256:8f50d9b79ad7f87ad6dde844b5e2617fec897cee9a22678658fdab737964de59",
+    "evidence_manifest_hash": "sha256:60960635dc52ca85a8268fe1d55144431425942bec126cf50db7c8b8793c166d"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "autoresearch-store",
+  "version": "0.1.0-public.1"
+}

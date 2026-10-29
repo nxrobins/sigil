@@ -27,6 +27,7 @@ mod forge;
 mod info;
 mod json_envelope;
 mod package_artifacts;
+mod package_init;
 mod registry_cmd;
 mod translate;
 
@@ -83,7 +84,16 @@ fn dispatch_with_context(
     let cmd_name = command.kind().json_name();
 
     let result: anyhow::Result<()> = match command {
-        Command::PackageLock { root, .. } => package_artifacts::lock(root, fmt),
+        Command::PackageInit {
+            root,
+            namespace,
+            dependencies,
+            ..
+        } => package_init::run(root, namespace, dependencies, fmt),
+        Command::PackageRefresh { root, .. } => package_artifacts::refresh(root, fmt),
+        Command::PackageLock {
+            root, dependencies, ..
+        } => package_artifacts::lock(root, dependencies, fmt),
         Command::PackageEvidence {
             root, output_dir, ..
         } => package_artifacts::evidence(root, output_dir, fmt, context),

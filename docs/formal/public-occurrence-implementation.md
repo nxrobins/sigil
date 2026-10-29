@@ -34,7 +34,7 @@ claimed. The separate SecretCT result must be preserved.
 Only approved policy violations may newly reject. Unexplained clean-corpus rejection
 blocks integration. Completion also requires the audited Lean theorem chain and
 claim signatures, native/decoder/diagnostic parity and mutants, complete consumer and
-platform lanes, bounded memory, the existing five-second self-host canary and sub-1-ms
+platform lanes, bounded memory, the existing self-host scaling canary and sub-1-ms
 warm-verifier target, and a tagged dual-gate release with versioned evidence. No gate
 retirement is authorized. SR-013 and SR-017 remain unresolved; retirement eligibility
 remains false.

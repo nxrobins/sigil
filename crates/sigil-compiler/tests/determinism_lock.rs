@@ -27,12 +27,19 @@
 //! Iteration over collections inside the test uses `BTreeSet` so the
 //! per-fixture failure list is deterministic regardless of HashMap
 //! iteration order in the broader compiler.
+//!
+//! The SHP-P0 tests at the bottom lock one known leak the corpus double-compile could not
+//! see: a closure's capture order is its `__env` layout. They pin that layout at both ends
+//! (the construct's stores and the lifted body's loads, as exact offsets) and compile the
+//! multi-capture fixture sixteen times.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sigil_compiler::air::{AirFunctionKind, AirStmt, VarId};
 use sigil_compiler::compile_named_module;
+use sigil_compiler::typed_ast::TypedFunctionKind;
 
 const CORPORA: &[&str] = &["fixtures", "cve_corpus", "z3_corpus"];
 
@@ -169,4 +176,141 @@ fn compilation_is_byte_stable_across_runs() {
         }
         panic!("{msg}");
     }
+}
+
+// ── SHP-P0: closure capture order ───────────────────────────────────────────
+//
+// No fixture the corpora above compile holds a closure that captures anything (the one
+// capturing closure in them sits in an expect-error fixture, which never reaches codegen),
+// so they could not see the one known leak of `HashSet` order into bytes: a closure's
+// captures came from a randomly seeded `HashSet`, and that order IS the `__env` layout. A
+// closure with two or more captures compiled to a different module on every run. The
+// fixture below captures three locals whose first-use order is not their name order.
+
+const MULTI_CAPTURE: &str = include_str!("../../../tests/compile/closure_multi_capture.sigil");
+const MULTI_CAPTURE_NAMES: [&str; 3] = ["alpha", "mid", "zeta"];
+
+/// Index of the first artefact that differs from the first one, or `None` when all
+/// agree (an empty or single-element list trivially agrees).
+fn first_mismatch(artefacts: &[Vec<u8>]) -> Option<usize> {
+    let first = artefacts.first()?;
+    artefacts.iter().position(|a| a != first)
+}
+
+/// The anti-stub for the repeated-compile test below: the comparator must flag a
+/// planted difference, or its silence proves nothing.
+#[test]
+fn first_mismatch_flags_a_planted_difference() {
+    let same = vec![1u8, 2, 3];
+    let mut planted = same.clone();
+    planted[1] ^= 0x01;
+    assert_eq!(
+        first_mismatch(&[same.clone(), same.clone(), planted]),
+        Some(2)
+    );
+    assert_eq!(first_mismatch(&[same.clone(), same.clone(), same]), None);
+    assert_eq!(first_mismatch(&[]), None);
+}
+
+/// The layout itself, read three ways: the lifted closure's typed captures, the offsets its
+/// AIR prologue loads them from (`__env` is param 0; captures start after the 4-byte table
+/// index), and the offsets the enclosing function's closure construct stores them at. The
+/// loads and the stores must both be exactly the name-ordered slots, in statement order: a
+/// construct that stored in one order while the body loaded in another would be a miscompile
+/// that byte stability alone cannot see.
+#[test]
+fn closure_captures_are_laid_out_in_name_order() {
+    let compilation = compile_named_module("closure_multi_capture.sigil", MULTI_CAPTURE)
+        .expect("the multi-capture fixture compiles");
+
+    let closures: Vec<_> = compilation
+        .typed
+        .modules
+        .iter()
+        .flat_map(|m| m.functions.iter())
+        .filter(|f| matches!(f.kind, TypedFunctionKind::Closure))
+        .collect();
+    assert_eq!(closures.len(), 1, "the fixture lifts exactly one closure");
+    let typed_order: Vec<&str> = closures[0]
+        .captures
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        typed_order, MULTI_CAPTURE_NAMES,
+        "typed captures out of name order"
+    );
+
+    let lifted = compilation
+        .air
+        .functions
+        .iter()
+        .find(|f| matches!(f.kind, AirFunctionKind::Closure))
+        .expect("the lifted closure reaches AIR");
+    let loads: Vec<(u32, String)> = lifted
+        .blocks
+        .iter()
+        .flat_map(|b| b.stmts.iter())
+        .filter_map(|s| match s {
+            AirStmt::LoadField {
+                dst,
+                base_ptr: VarId(0),
+                offset,
+                ..
+            } => lifted.debug_names.get(dst).map(|n| (*offset, n.clone())),
+            _ => None,
+        })
+        .filter(|(_, name)| MULTI_CAPTURE_NAMES.contains(&name.as_str()))
+        .collect();
+    // Three i64 captures after the 4-byte table index.
+    let expected: Vec<(u32, String)> = [(4, "alpha"), (12, "mid"), (20, "zeta")]
+        .iter()
+        .map(|(offset, name)| (*offset, name.to_string()))
+        .collect();
+    assert_eq!(
+        loads, expected,
+        "the lifted body's prologue loads are not the name-ordered slots"
+    );
+
+    let stores: Vec<(u32, String)> = compilation
+        .air
+        .functions
+        .iter()
+        .filter(|f| !matches!(f.kind, AirFunctionKind::Closure))
+        .flat_map(|f| {
+            f.blocks
+                .iter()
+                .flat_map(|b| b.stmts.iter())
+                .filter_map(move |s| match s {
+                    AirStmt::StoreField { offset, val, .. } => {
+                        f.debug_names.get(val).map(|n| (*offset, n.clone()))
+                    }
+                    _ => None,
+                })
+        })
+        .filter(|(_, name)| MULTI_CAPTURE_NAMES.contains(&name.as_str()))
+        .collect();
+    assert_eq!(
+        stores, expected,
+        "the closure construct does not store the captures into the slots the body loads"
+    );
+}
+
+/// Sixteen compiles of the multi-capture fixture in one process. Each compile hashed
+/// its free variables with a fresh `RandomState`, so before the fix sixteen identical
+/// modules over three captures was vanishingly unlikely; now it is the only outcome.
+#[test]
+fn closure_capture_bytes_are_stable_across_compiles() {
+    let modules: Vec<Vec<u8>> = (0..16)
+        .map(|_| {
+            compile_named_module("closure_multi_capture.sigil", MULTI_CAPTURE)
+                .expect("the multi-capture fixture compiles")
+                .wasm_inner
+        })
+        .collect();
+    assert_eq!(
+        first_mismatch(&modules),
+        None,
+        "closure capture layout changed between compiles of the same source"
+    );
 }

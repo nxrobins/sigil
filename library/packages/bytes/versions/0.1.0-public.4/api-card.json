@@ -1,0 +1,80 @@
+{
+  "contract_hash": "sha256:18a228e6950c88b43c2e53962fb4c2241846c577d8865c76f47d3fca6564d84d",
+  "determinism": "state_relative",
+  "effects": [
+    "Alloc"
+  ],
+  "entry_points": [
+    {
+      "fuel_ceiling": 128,
+      "result": "big-endian u32 value or -400/-413",
+      "signature": "fn read_u32_be(ptr:i64@Public,len:i64@Public,offset:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::read_u32_be"
+    },
+    {
+      "fuel_ceiling": 128,
+      "result": "u32 value or -400/-413",
+      "signature": "fn read_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::read_u32_le"
+    },
+    {
+      "fuel_ceiling": 160,
+      "result": "offset+4 or -400/-413/-422",
+      "signature": "fn write_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public,value:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::write_u32_le"
+    },
+    {
+      "fuel_ceiling": "96 + 12 * count",
+      "result": "dst_offset+count or -400/-413; overlap-safe",
+      "signature": "fn copy_into(dst_ptr:i64@Public,dst_len:i64@Public,dst_offset:i64@Public,src_ptr:i64@Public,src_len:i64@Public,src_offset:i64@Public,count:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::copy_into"
+    },
+    {
+      "effects": [
+        "Alloc"
+      ],
+      "result": "fixed-capacity Builder, with sticky construction error",
+      "signature": "fn new(capacity:i64@Public)->Builder@Public!{Alloc}",
+      "symbol": "bytes_out::new"
+    },
+    {
+      "effects": [],
+      "result": "new length or sticky error",
+      "signature": "fn append(out:Builder@Public@Mut,src_ptr:i64@Public,src_len:i64@Public,src_offset:i64@Public,count:i64@Public)->i64@Public!{}",
+      "symbol": "bytes_out::append"
+    },
+    {
+      "effects": [],
+      "result": "new length or sticky error",
+      "signature": "fn append_output(out:Builder@Public@Mut,packed:i64@Public)->i64@Public!{}",
+      "symbol": "bytes_out::append_output"
+    },
+    {
+      "effects": [],
+      "result": "new length or sticky -400/-413/-422",
+      "signature": "fn push_byte(out:Builder@Public@Mut,value:i64@Public)->i64@Public!{}",
+      "symbol": "bytes_out::push_byte"
+    },
+    {
+      "effects": [],
+      "result": "packed output or first error",
+      "signature": "fn finish(out:Builder@Public@Mut)->i64@Public!{}",
+      "symbol": "bytes_out::finish"
+    }
+  ],
+  "grant_categories": [],
+  "host_imports": [],
+  "modules": [
+    "bytes",
+    "bytes_out"
+  ],
+  "omitted": [
+    "bytes_internal",
+    "bytes_secret"
+  ],
+  "ownership": "constructor-produced mutable Public record; caller-owned live Public source; no ownership proof",
+  "package": "sigil/bytes",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "trusted_surface": [],
+  "version": "0.1.0-public.4"
+}

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use super::super::resolve::{
-    is_machine_integer_type, render_type, resolve_type_expr, try_cap_deadline_diagnostic,
-    type_compatible,
+    is_machine_integer_type, render_type, resolve_int_literals_or_reject_with_hint,
+    resolve_type_expr, try_cap_deadline_diagnostic, type_compatible,
 };
 use super::super::{Type, TypeUniverse};
 use crate::ast::CallExpr;
@@ -93,7 +93,7 @@ pub(super) fn resolve_intrinsic_call(path: &crate::ast::Path) -> Option<Intrinsi
 pub(super) fn infer_intrinsic_call_expr(
     expr: &CallExpr,
     shape: IntrinsicShape,
-    args: Vec<TypedExpr>,
+    mut args: Vec<TypedExpr>,
     module_name: &str,
     universe: &TypeUniverse,
     diagnostics: &mut Vec<Diagnostic>,
@@ -327,20 +327,22 @@ pub(super) fn infer_intrinsic_call_expr(
             (TypedIntrinsicKind::SlotTake, cap_ty)
         }
         IntrinsicShape::CtEq | IntrinsicShape::CtLt => {
-            // ct_eq / ct_lt take two integer operands and return bool.
+            // ct_eq / ct_lt take two 8-byte integer operands and return bool.
+            let mut operands_ok = true;
             for (idx, arg) in args.iter().enumerate().take(2) {
-                if !is_machine_integer_type(&arg.ty) && !matches!(arg.ty, Type::Error) {
-                    diagnostics.push(Diagnostic::error(
-                        codes::T075,
-                        format!(
-                            "intrinsic `{name}` expects integer arguments, arg #{} is `{}`",
-                            idx + 1,
-                            render_type(&arg.ty)
-                        ),
-                        Some(arg.span),
-                    ));
+                if let Some(diagnostic) = ct_operand_diagnostic(name, "arguments", idx, arg) {
+                    diagnostics.push(diagnostic);
                     had_error = true;
+                    operands_ok = false;
                 }
+            }
+            // ct_lt also needs ONE signedness: its lowering is chosen by it.
+            if shape == IntrinsicShape::CtLt
+                && operands_ok
+                && let [lhs, rhs] = args.as_mut_slice()
+                && !unify_ct_lt_operands(lhs, rhs, expr, diagnostics)
+            {
+                had_error = true;
             }
             let kind = match shape {
                 IntrinsicShape::CtEq => TypedIntrinsicKind::CtEq,
@@ -365,16 +367,8 @@ pub(super) fn infer_intrinsic_call_expr(
                 had_error = true;
             }
             for (idx, arg) in args.iter().enumerate().skip(1).take(2) {
-                if !is_machine_integer_type(&arg.ty) && !matches!(arg.ty, Type::Error) {
-                    diagnostics.push(Diagnostic::error(
-                        codes::T075,
-                        format!(
-                            "intrinsic `ct_select` expects integer branch values, arg #{} is `{}`",
-                            idx + 1,
-                            render_type(&arg.ty)
-                        ),
-                        Some(arg.span),
-                    ));
+                if let Some(diagnostic) = ct_operand_diagnostic(name, "branch values", idx, arg) {
+                    diagnostics.push(diagnostic);
                     had_error = true;
                 }
             }
@@ -622,4 +616,146 @@ pub(super) fn infer_intrinsic_call_expr(
 
         refinement: None,
     }
+}
+
+/// The operand types the constant-time lowering takes as given: an 8-byte integer, an integer
+/// literal, or an upstream error, already reported. An integer literal is at most `i64::MAX` (a
+/// larger one is typed `u256`, and refused here) and may be negative (`-1` folds to one). Beside
+/// a `u64` in `ct_lt` it takes that type, and a negative one is refused there
+/// (`unify_ct_lt_operands`); the PIL post-pass defaults any other to `i64` before AIR.
+///
+/// `ct_eq`, `ct_lt` and `ct_select` lower to fixed i64 sequences applied to their operand locals
+/// as given (`wasm.rs`: `i64.xor` + `i64.eqz`, the overflow-safe `ct_lt` words, the i64 select
+/// mask).
+/// When these arms required only a machine integer, a 4-byte operand reached those opcodes as
+/// an i32 local: the checker accepted the program and wasmtime refused its module. That failed
+/// closed, but an accepted program must produce a module that validates, so the operand is
+/// refused here instead.
+///
+/// Why refuse it rather than widen it in AIR (`SignExtendI32` / `ExtendU32` ahead of the
+/// sequence): the emitted sequences stay exactly the 8-byte ones `docs/specs/secret-ct.md` §5
+/// audits; the widening stays visible at the call (`.as_i64()` / `.as_u64()`), as does
+/// `ct_select`'s `i64` result whatever its branches; and admitting 4-byte operands later only
+/// accepts more programs, where withdrawing an accepted form would break them. An allow-list,
+/// so a width added to `is_machine_integer_type` is refused here until the lowering handles it
+/// (fail closed). The emitter asserts the same width at the sequence (`emit_ct_operand` in
+/// `wasm.rs`), so an operand that reaches it some other way is an ICE, not an invalid module.
+fn is_ct_operand_type(ty: &Type) -> bool {
+    matches!(ty, Type::I64 | Type::U64 | Type::IntLit(_) | Type::Error)
+}
+
+/// Give a `ct_lt` call's two 8-byte operands one signedness, or refuse the pair as T075. Returns
+/// whether the pair is admitted.
+///
+/// `ct_lt` compares two `i64` operands as signed values and two `u64` operands as unsigned
+/// values; AIR lowering reads the order from the checked operand types this leaves behind
+/// (`AirStmt::IntrinsicCtLt`'s `unsigned`). So:
+/// - an integer-literal operand takes the other operand's type, as the type checker gives it
+///   beside `<`, and a literal that does not fit it is T075 with `CT_LT_LITERAL_RANGE_HINT`. Only
+///   a negative literal beside a `u64` is one (`-1` folds to a negative literal, and no literal is
+///   past `i64::MAX`). Literal arithmetic is checked leaf by leaf, so `0 - 1` beside a `u64` is
+///   accepted and is the `u64` 2^64 - 1. Two literals stay literals and default to `i64` (signed)
+///   in the PIL post-pass. A binding of an un-annotated literal (`let n = 5;`) checks the same
+///   way, and `ct_lt` gives it the checked order; `<` does not yet (the OPEN literal-binding entry
+///   in `tests/attack/KNOWN_GAPS.md`).
+/// - one `i64` and one `u64` have no single order to compare by: T075, where `<` refuses the
+///   same pair as T054. The fix names a conversion, which keeps all 64 bits and picks the order.
+///
+/// Runs after `ct_operand_diagnostic` admitted both operands, so each is an `i64`, a `u64`, an
+/// integer literal, or an upstream error (already reported, so admitted here).
+fn unify_ct_lt_operands(
+    lhs: &mut TypedExpr,
+    rhs: &mut TypedExpr,
+    call: &CallExpr,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let reported = diagnostics.len();
+    match (&lhs.ty, &rhs.ty) {
+        (Type::IntLit(_), Type::I64 | Type::U64) => {
+            let target = rhs.ty.clone();
+            resolve_int_literals_or_reject_with_hint(
+                lhs,
+                &target,
+                codes::T075,
+                Some(CT_LT_LITERAL_RANGE_HINT),
+                diagnostics,
+            );
+        }
+        (Type::I64 | Type::U64, Type::IntLit(_)) => {
+            let target = lhs.ty.clone();
+            resolve_int_literals_or_reject_with_hint(
+                rhs,
+                &target,
+                codes::T075,
+                Some(CT_LT_LITERAL_RANGE_HINT),
+                diagnostics,
+            );
+        }
+        (Type::I64, Type::U64) | (Type::U64, Type::I64) => {
+            diagnostics.push(Diagnostic::error_with_hint(
+                codes::T075,
+                format!(
+                    "intrinsic `ct_lt` expects two operands of one signedness (two `i64` or two \
+                     `u64`), found `{}` and `{}`",
+                    render_type(&lhs.ty),
+                    render_type(&rhs.ty)
+                ),
+                Some(call.span),
+                "`ct_lt` compares two `i64` operands as signed values and two `u64` operands as \
+                 unsigned values, so a mixed pair has no single order. Convert one operand with \
+                 `.as_i64()` or `.as_u64()`: the conversion keeps all 64 bits and picks the order.",
+            ));
+        }
+        _ => {}
+    }
+    diagnostics.len() == reported
+}
+
+/// The hint on a `ct_lt` integer-literal operand that does not fit the other operand's type: a
+/// negative literal beside a `u64`, the only one there is (`unify_ct_lt_operands`). The
+/// registry's T075 hint names `alloc`, `load8` and `store8`, so it would not fit.
+const CT_LT_LITERAL_RANGE_HINT: &str = "`ct_lt` gives an integer literal the other operand's \
+    type, and this one does not fit it: a `u64` has no negative value. To compare signed values, \
+    convert the `u64` operand with `.as_i64()`.";
+
+/// T075 for a `ct_*` operand the constant-time lowering cannot take (`is_ct_operand_type`), or
+/// `None` for one it can. Every refused operand draws the same message, so a caller who swaps a
+/// `bool` for an `i32` is not sent from one wording to another; the hint fits the operand: a
+/// 4-byte integer is widened, anything else is replaced. `what` names the operands in the
+/// intrinsic's own terms; `idx` is the operand's zero-based position.
+fn ct_operand_diagnostic(
+    name: &str,
+    what: &str,
+    idx: usize,
+    arg: &TypedExpr,
+) -> Option<Diagnostic> {
+    if is_ct_operand_type(&arg.ty) {
+        return None;
+    }
+    let message = format!(
+        "intrinsic `{name}` expects 8-byte integer {what} (`i64` or `u64`), arg #{} is `{}`",
+        idx + 1,
+        render_type(&arg.ty)
+    );
+    // `is_machine_integer_type` admits `IntLit` and `Error` too, but both pass the allow-list
+    // above, so a machine integer here is a 4-byte one. Either conversion widens it, so the hint
+    // names both and leaves the pick to the caller, who can see the other operand. It adds what
+    // `ct_lt` needs, one signedness, and the one pick that loses an order: `.as_u64()`
+    // sign-extends a negative `i32` into a `u64` of 2^63 or more, which `ct_lt` compares unsigned.
+    let hint = if is_machine_integer_type(&arg.ty) {
+        "`ct_eq`, `ct_lt` and `ct_select` lower to fixed i64 instruction sequences. Widen a \
+         4-byte operand with `.as_i64()` or `.as_u64()` first: both sign-extend an `i32` and \
+         zero-extend a `u32`. `ct_lt` needs two operands of one signedness and compares two \
+         `u64` as unsigned values, so widen an `i32` with `.as_i64()` to keep its order: a \
+         negative `i32` widened by `.as_u64()` orders above every non-negative one."
+    } else {
+        "`ct_eq`, `ct_lt` and `ct_select` lower to fixed i64 instruction sequences, so each \
+         operand must be an `i64`, a `u64` or an integer literal no larger than `i64::MAX`."
+    };
+    Some(Diagnostic::error_with_hint(
+        codes::T075,
+        message,
+        Some(arg.span),
+        hint,
+    ))
 }

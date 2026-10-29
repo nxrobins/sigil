@@ -109,6 +109,13 @@ const REQUIRED_FIXTURE_CODES: &[&str] = &[
     // through timing. The VALUE side is exempt (a public count has a
     // count-only latency); until this rule the shape compiled clean.
     "T034",
+    // Outer-ring host operations: the outer module has no `send`, `ask`,
+    // `spawn` or capability import, and until R009 such a shape passed every
+    // checker and panicked the emitter (the fixture is an unbound `mint`).
+    "R009",
+    // An actor declared in an outer-ring module, which the actor runtime
+    // never hosts (it bootstraps the inner module alone).
+    "R014",
 ];
 
 /// Codes documented as exempt from the fixture requirement, with

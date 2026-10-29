@@ -1,0 +1,34 @@
+{
+  "contract_hash": "sha256:2731def7fdaa2b298e15057d70d36819c02e71839745e222731aa682b971a08a",
+  "determinism": "state_relative",
+  "effects": [],
+  "entry_points": [
+    {
+      "fuel_ceiling": 128,
+      "result": "u32 value or -400/-413",
+      "signature": "fn read_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::read_u32_le"
+    },
+    {
+      "fuel_ceiling": 160,
+      "result": "offset+4 or -400/-413/-422",
+      "signature": "fn write_u32_le(ptr:i64@Public,len:i64@Public,offset:i64@Public,value:i64@Public)->i64@Public!{}",
+      "symbol": "bytes::write_u32_le"
+    }
+  ],
+  "grant_categories": [],
+  "host_imports": [],
+  "modules": [
+    "bytes"
+  ],
+  "omitted": [
+    "copy_into",
+    "bytes_internal",
+    "bytes_secret"
+  ],
+  "ownership": "caller-owned live borrowed Public region; no ownership transfer",
+  "package": "sigil/bytes",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "trusted_surface": [],
+  "version": "0.1.0-public.1"
+}

@@ -8,6 +8,32 @@
 //! {T001, T020-T027, T029-T032} (T028 send/ask DEMOTED — actor-only, AG-T13). The
 //! oracle MUST be called directly — no parallel re-impl. See
 //! `docs/specs/sh-security-checkers.md`.
+//!
+//! SHP-5a: the shadow carries production's control-flow join model (`if`/`while`/`for`/
+//! `match` merges, `break`/`continue`/`return` divergence, the continuation taint, block
+//! shadow restores, the loop-head fixpoint) and its M6 region model (`alloc` regions,
+//! aliases, raw stores), so nonpublic values under control flow are checked rather than
+//! refused.
+//!
+//! SHP-5c-1: the shadow reads the `split`/`draw` amount (T027 / T001) and carries
+//! production's intraprocedural heap floors — the raw-load and typed-read floors raised by
+//! an FFI boundary (S1), a heap-resident value at a non-public label (S2, at entry and at
+//! every materialisation), a raw store (S4/S6) and a projected-place write (S6/S7), and
+//! joined into every raw load and typed read (an element, field or slice projection, a `?`,
+//! an intrinsic, a heap-typed local, a `str` literal, S11) — on a syntactic typing that
+//! refuses what it cannot classify at a non-public label.
+//!
+//! SHP-5c-2: the shadow carries production's call-site summaries — per function, what a
+//! call to it can have written (S5: the floors raised at the site's taint joined with the
+//! callee's own annotation bound, and the regions of the arguments it writes through, by
+//! parameter slot) and read (S8: the caller's floors joined into the result), a syntactic
+//! scan closed over the call graph as production's — and refuses a call site whose callee
+//! it cannot name (a call through a local, a `grant` of a closure held in a local) or whose
+//! summary carries a fact its typing cannot decide, wherever a label makes the summaries
+//! live — an effect operation's parameter label included, which production's program-wide
+//! bound folds in and the shadow reads off the operation's own parameter nodes. Nothing the
+//! oracle derives from the heap floors stays oracle-only; every rule has a reject and a
+//! clean twin below, and every refusal of a program-wide-bound site a label-free twin.
 
 use sigil_compiler::CompileOptions;
 use sigil_compiler::compile_tool;
@@ -70,6 +96,17 @@ fn tt_wasm() -> &'static [u8] {
 }
 
 /// Full UTF-8 tool output for `src`.
+/// The property tests' case budget: `default_cases` (what CI runs) unless `PROPTEST_CASES`
+/// names another count, the way a larger local run is taken. An explicit `cases` field would
+/// otherwise override the variable `ProptestConfig::default()` reads, and a documented
+/// 256-case measurement would have run 32.
+fn case_budget(default_cases: u32) -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(default_cases)
+}
+
 fn full_output(src: &str) -> String {
     let result = execute_ephemeral(tt_wasm(), src.as_bytes(), FUEL, &IoGrants::none())
         .expect("taint_check tool executes");
@@ -338,20 +375,294 @@ const CORPUS_REJECT: &[(&str, &str, &[&str])] = &[
         "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @SecretCT) -> i64 {\n    let r: R @SecretCT = R { a: 0, b: s };\n    let g @SecretCT = fn() -> i64 { if r.a == 0 { return 1; } else { return 0; } };\n    return 0;\n}\n",
         &["T020"],
     ),
-    // M5b/M6 store8-launder REJECT fixtures were REMOVED at the agentic-bench
-    // merge (2026-07-29). The Rust oracle's M6 region-alias analysis
-    // (`taint_check.rs`) SHIPS and correctly emits T001 on both — `store8` a
-    // @Secret into an alloc region then return the base pointer, and the
-    // copy-alias-then-return variant. But the SELFHOST mirror
-    // (`selfhost/taint_check.sigil`) does NOT yet carry the region model — this
-    // merge took main's selfhost wholesale rather than the branch's selfhost
-    // rewrite (which conflicted with the composed byte-pins). A REJECT fixture
-    // asserts oracle==selfhost, which these cannot satisfy while the oracle is
-    // strictly stronger, so they are withdrawn rather than left red. The clean
-    // TWINS remain in CORPUS_ACCEPT (both sides agree on []). FOLLOW-UP: mirror
-    // the M6 region model into `selfhost/taint_check.sigil`, then restore these
-    // two rejects. Oracle-side coverage lives in the compiler crate's taint
-    // tests, so the feature itself stays gated.
+    // ── M6 region fixtures (SHP-5a) ──
+    // The M5b/M6 store8-launder rejects were withdrawn at the agentic-bench merge
+    // (2026-07-29) because the selfhost mirror lacked the region model. SHP-5a mirrors it
+    // (`tt_regions_of_value` / `tt_rt_*` in `selfhost/taint_check.sigil`), so they return:
+    // a @Secret stored through a pointer taints the pointer's REGION, and a sink that hands
+    // the pointer on unread (`return out`) reads that taint. The clean twins stay in
+    // CORPUS_ACCEPT.
+    (
+        "M6 store8 secret then return the base pointer -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(8);\n    store8(out, s);\n    return out;\n}\n",
+        &["T001"],
+    ),
+    // An alias taken BEFORE the store sees the taint: regions, not names, carry it.
+    (
+        "M6 alias taken before the secret store -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(8);\n    let q: i64 = out;\n    store8(out, s);\n    return q;\n}\n",
+        &["T001"],
+    ),
+    // The round-7 loop back-edge: `q` points into `out`'s region from the second iteration on,
+    // which only the loop-head fixpoint (region sets joined by union) can see.
+    (
+        "M6 pointer rebound across a loop back-edge taints the returned region -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let mut q: i64 = alloc(8);\n    let mut i: i64 = 0;\n    while i < 2 {\n        store8(q, s);\n        q = out;\n        i = i + 1;\n    }\n    return out;\n}\n",
+        &["T001"],
+    ),
+    // The same rebind split across `if` arms: after the merge `q` has BOTH candidates.
+    (
+        "M6 pointer rebound on one if-arm taints every candidate region -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let mut q: i64 = alloc(8);\n    if p > 0 {\n        q = out;\n    } else {\n        q = alloc(8);\n    }\n    store8(q, s);\n    return out;\n}\n",
+        &["T001"],
+    ),
+    // Round 8: `alloc(8) + 4` mints a region like a bare `alloc(8)`.
+    (
+        "M6 alloc plus an offset is a regioned local -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8) + 4;\n    store8(q, s);\n    return q;\n}\n",
+        &["T001"],
+    ),
+    // The ADDRESS is an operand too: a @Public byte at a secret-derived address changes WHICH
+    // cell the host sees, so the region takes the join of every operand.
+    (
+        "M6 public byte at a secret-derived address taints the region -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    store8(out + (s & 1), 9);\n    return out;\n}\n",
+        &["T001"],
+    ),
+    // ── SHP-5a control-flow join fixtures ──
+    // Each isolates one code produced ONLY by the join model (a straight-line reading of the
+    // same program is clean); its twin in CORPUS_ACCEPT is the same program with the sink
+    // annotated, so an over-approximating merge would fail the twin and a missing merge
+    // would fail the reject.
+    // A record raised under a secret pc on ONE path is secret after the merge.
+    (
+        "SHP-5a if-join: record raised on one path, read public after the merge -> T001",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret, p: i64) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    if s > 0 {\n        r.a = p;\n    } else {\n    }\n    let y: i64 @Public = r.b;\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // Reaching the code after a one-sided `return` reveals the condition: the continuation
+    // taint folds into the later `let`.
+    (
+        "SHP-5a one-sided return taints the continuation -> T001",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 @Secret {\n    if s > 0 {\n        return s;\n    } else {\n    }\n    let y: i64 = 0;\n    return s;\n}\n",
+        &["T001"],
+    ),
+    // A secret-guarded `break`: the loop exit joins the break frame, and the statements the
+    // exit skipped ran under the secret continuation, so `i` is secret at the return.
+    (
+        "SHP-5a secret-guarded break: the loop exit carries the condition -> T001",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 {\n    let mut i: i64 = 0;\n    while i < 10 {\n        if s > i {\n            break;\n        }\n        i = i + 1;\n    }\n    return i;\n}\n",
+        &["T001"],
+    ),
+    // The loop-head FIXPOINT: the read precedes the raise in the body, so only the second
+    // pass (head = pre ⊔ body end) sees the record secret at the read.
+    (
+        "SHP-5a loop-carried join reaches the read on the second pass -> T001",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret, n: i64) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    let mut i: i64 = 0;\n    while i < n {\n        let y: i64 @Public = r.b;\n        if s > 0 {\n            r.a = i;\n        } else {\n        }\n        i = i + 1;\n    }\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // A range over a secret bound fixes a secret body pc.
+    (
+        "SHP-5a for-range over a secret bound taints the body -> T001",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 @Secret {\n    for i in 0..s {\n        let y: i64 = 0;\n    }\n    return s;\n}\n",
+        &["T001"],
+    ),
+    // A for-in over a secret array binds a secret element.
+    (
+        "SHP-5a for-in over a secret array binds a secret element -> T001",
+        "module ext;\nfn f(arr: [i64; 4] @Secret) -> i64 @Secret {\n    let mut t: i64 @Secret = 0;\n    for x in arr {\n        let y: i64 = x;\n        t = x;\n    }\n    return t;\n}\n",
+        &["T001"],
+    ),
+    // A pattern binding under a secret scrutinee carries the scrutinee's taint.
+    (
+        "SHP-5a match arm: payload bound under a secret scrutinee -> T001",
+        "module ext;\nenum E { A(i64), B }\nfn f(e: E @Secret) -> i64 @Secret {\n    match e {\n        E::A(v) => { let y: i64 = v; },\n        E::B => { },\n    }\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // A `let` that shadows an outer secret inside a block is restored at the block's end:
+    // the read after the `if` is the OUTER secret `x`.
+    (
+        "SHP-5a block shadow restored: the outer secret is read after the block -> T001",
+        "module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 {\n    let x: i64 @Secret = s;\n    if p > 0 {\n        let x: i64 = 0;\n    } else {\n    }\n    let y: i64 = x;\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // A call under a secret pc hands the pc to the callee's @Public parameter.
+    (
+        "SHP-5a call argument under a secret pc -> T001",
+        "module ext;\nfn g(v: i64) -> i64 { return v; }\nfn f(s: i64 @Secret) -> i64 @Secret {\n    if s > 0 {\n        let r: i64 @Secret = g(1);\n    } else {\n    }\n    return s;\n}\n",
+        &["T001"],
+    ),
+    // ── SHP-5c-1 fixtures: the capability quantity rule and the intraprocedural heap floors ──
+    // Each isolates one code produced ONLY by the rule named (its twin in CORPUS_ACCEPT is the
+    // same program with the sink annotated or the source made public), so an over-
+    // approximating floor would fail the twin and a missing one would fail the reject.
+    (
+        "SHP-5c-1 split amount @Secret -> T001",
+        "module ext;\ncap type Fuel {}\nfn f(c: Fuel, s: i64 @Secret) -> i64 {\n    let d: Fuel = c.split(s);\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    (
+        "SHP-5c-1 draw amount @SecretCT -> T027",
+        "module ext;\ncap type Fuel {}\nfn f(c: Fuel, k: i64 @SecretCT) -> i64 {\n    let d: Fuel = c.draw(k);\n    return 0;\n}\n",
+        &["T027"],
+    ),
+    // S2 (the case the summary-lag pin held until SHP-5c-1): a non-@Public
+    // raw store raises the function's raw-load floor, so a later load8 through an UNRELATED
+    // region is secret — the floor is address-blind where the region is not.
+    (
+        "SHP-5c-1 S2 raw-load floor after a secret store -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(8);\n    let q: i64 = alloc(8);\n    store8(out, s);\n    let v: i64 = load8(q);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S1: the host wrote guest memory before the extern returned; every raw load after it is
+    // @Internal at best.
+    (
+        "SHP-5c-1 S1 extern call floors a later raw load -> T001",
+        "#[ring(outer)] module ext;\nextern \"C\" fn k(x: i64) -> i64 ! { FFI, Unsafe };\nfn f(p: i64) -> i64 @Internal ! { FFI, Unsafe, Alloc } {\n    let r: i64 @Internal = k(p);\n    let q: i64 = alloc(8);\n    let v: i64 = load8(q);\n    return r;\n}\n",
+        &["T001"],
+    ),
+    // S1 through a callee: a function whose effect row names FFI may have crossed the boundary.
+    (
+        "SHP-5c-1 S1 callee with FFI in its row floors the caller's raw loads -> T001",
+        "#[ring(outer)] module ext;\nextern \"C\" fn k(x: i64) -> i64 ! { FFI, Unsafe };\nfn g(p: i64) -> i64 @Internal ! { FFI, Unsafe } {\n    let r: i64 @Internal = k(p);\n    return r;\n}\nfn f(p: i64) -> i64 @Internal ! { FFI, Unsafe, Alloc } {\n    let r: i64 @Internal = g(p);\n    let q: i64 = alloc(8);\n    let v: i64 = load8(q);\n    return r;\n}\n",
+        &["T001"],
+    ),
+    // S1 through a user type's method, resolved by the impl table.
+    (
+        "SHP-5c-1 S1 method with FFI in its row floors the caller's raw loads -> T001",
+        "#[ring(outer)] module ext;\nextern \"C\" fn k(x: i64) -> i64 ! { FFI, Unsafe };\nrecord R { a: i64 }\nimpl R {\n    fn poke(self: R) -> i64 @Internal ! { FFI, Unsafe } {\n        let r: i64 @Internal = k(self.a);\n        return r;\n    }\n}\nfn f(r: R) -> i64 @Internal ! { FFI, Unsafe, Alloc } {\n    let x: i64 @Internal = r.poke();\n    let q: i64 = alloc(8);\n    let v: i64 = load8(q);\n    return x;\n}\n",
+        &["T001"],
+    ),
+    // S2 at entry: a heap-typed parameter's bytes are already in linear memory at its label.
+    (
+        "SHP-5c-1 S2 heap-typed @Secret parameter floors raw loads at entry -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: str @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    let v: i64 = load8(q);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S2 at a materialisation: a heap-resident value built under a secret pc is bytes in
+    // memory at that pc (a `str` literal here; the twin builds a scalar).
+    (
+        "SHP-5c-1 S2 str literal materialised under a secret pc floors raw loads -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    if s > 0 {\n        let t: str @Secret = \"abc\";\n    } else {\n    }\n    let v: i64 = load8(q);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S4: a raw store at an unchecked address may sit inside a live aggregate, so a later
+    // typed read — an element here, a method intrinsic and a heap-typed local below — is
+    // floored too.
+    (
+        "SHP-5c-1 S4 secret raw store floors a later element read -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, arr: [i64; 4]) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let y: i64 = arr[0];\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    (
+        "SHP-5c-1 S4 secret raw store floors a later str intrinsic -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, t: str) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let n: i64 = t.len();\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    (
+        "SHP-5c-1 S4 secret raw store floors a later heap-typed local read -> T001",
+        "#[ring(outer)] module ext;\nrecord R { a: i64 }\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let r: R = R { a: 1 };\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let y: R = r;\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // S11: a `str` literal's bytes are shared static data a raw store can change.
+    (
+        "SHP-5c-1 S11 str literal after a secret raw store reads floored static data -> T001",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let t: str = \"abc\";\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // S6: a @Public byte at a secret-derived index — WHICH element changed is the secret, and
+    // a later typed read of the array recovers it.
+    (
+        "SHP-5c-1 S6 public element write at a secret index floors typed reads -> T001",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 {\n    let mut a: [i64; 2] = [0, 0];\n    a[s & 1] = 1;\n    let y: i64 = a[0];\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // S7: a projected write labels the root name, but records are reference-semantic — an
+    // alias taken before the write reads the secret back through a typed read.
+    (
+        "SHP-5c-1 S7 secret projected write read back through an alias -> T001",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    let b: R = r;\n    r.a = s;\n    let y: i64 = b.b;\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    // ── SHP-5c-2 fixtures: the call-site summaries ──
+    // Each isolates one code produced ONLY by a callee's summary applied at its call site (its
+    // twin in CORPUS_ACCEPT keeps the call and removes what the summary carries), so a summary
+    // applied too widely fails the twin and one applied too narrowly fails the reject.
+    // S5: the callee stores its own secret through the CALLER's pointer; the summary taints the
+    // argument's region at the call site (the pointer reaches the sink unread).
+    (
+        "SHP-5c-2 S5 callee writes its secret through the caller's buffer -> T001",
+        "module tool;\nfn poke(out: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(out, s);\n    return 1;\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let n: i64 = poke(out);\n    return out << 32 | n;\n}\n",
+        &["T001"],
+    ),
+    // S5, by slot: the callee writes through its SECOND parameter, so the region tainted is the
+    // second argument's (the twin swaps the arguments).
+    (
+        "SHP-5c-2 S5 the callee writes through its second parameter -> T001",
+        "module tool;\nfn poke(out: i64, scratch: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(scratch, s & 1);\n    return 1;\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let scratch: i64 = alloc(8);\n    let n: i64 = poke(scratch, out);\n    return out << 32 | n;\n}\n",
+        &["T001"],
+    ),
+    // S5, transitively: the write is in a callee of the callee, reached through an alias of the
+    // parameter — the call-graph closure and the rooted map together.
+    (
+        "SHP-5c-2 S5 through an alias and a callee of the callee -> T001",
+        "module tool;\nfn inner(q: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    let r: i64 = q + 1;\n    store8(r, s & 1);\n    return 1;\n}\nfn poke(out: i64) -> i64 {\n    let alias: i64 = out;\n    return inner(alias);\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let n: i64 = poke(out);\n    return out << 32 | 2;\n}\n",
+        &["T001"],
+    ),
+    // S5, the floors: a callee that only MATERIALISES a secret aggregate (it stores nothing at an
+    // existing address) raises the caller's raw-load floor, so a later raw load is secret.
+    (
+        "SHP-5c-2 S5 a materialising callee floors the caller's raw loads -> T001",
+        "#[ring(outer)] module ext;\nfn mk() -> i64 {\n    let s: i64 @Secret = 1;\n    let a: [i64; 2] @Secret = [s, 0];\n    return 0;\n}\nfn f() -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    let z: i64 = mk();\n    let v: i64 = load8(q);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S5, the counted cost production pins (its `annotation` is a syntactic bound): a callee that
+    // MENTIONS a secret it never writes still floors the call site.
+    (
+        "SHP-5c-2 S5 a callee that mentions a secret it never writes still floors -> T001",
+        "module tool;\nfn poke(out: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(out, 7);\n    return 1;\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let n: i64 = poke(out);\n    return out << 32 | n;\n}\n",
+        &["T001"],
+    ),
+    // S5 through an impl method: the store goes through `self`, and the summary (keyed by the
+    // receiver's type) raises the caller's floors.
+    (
+        "SHP-5c-2 S5 an impl method storing its secret through self floors the caller -> T001",
+        "#[ring(outer)] module ext;\nrecord B { p: i64 }\nimpl B {\n    fn put(self: B) -> i64 {\n        let s: i64 @Secret = 1;\n        store8(self.p, s);\n        return 1;\n    }\n}\nfn f() -> i64 ! { Alloc } {\n    let b: B = B { p: alloc(8) };\n    let n: i64 = b.put();\n    let v: i64 = load8(b.p);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S8: the callee raw-reads memory the caller's secret store dirtied; its result carries the
+    // caller's raw-load floor.
+    (
+        "SHP-5c-2 S8 callee reads the caller's floored bytes into its result -> T001",
+        "#[ring(outer)] module ext;\nfn peek(p: i64) -> i64 {\n    let b: i64 = load8(p);\n    return b;\n}\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(8);\n    let q: i64 = alloc(8);\n    store8(out, s);\n    let v: i64 = peek(q);\n    return v;\n}\n",
+        &["T001"],
+    ),
+    // S8, typed: a callee whose only read is typed (a `str` literal's length) carries the
+    // caller's typed-read floor, raised here by a secret projected write.
+    (
+        "SHP-5c-2 S8 a callee's typed read carries the caller's typed floor -> T001",
+        "module ext;\nfn helper() -> i64 {\n    let t: str = \"abc\";\n    return t.len();\n}\nfn f(s: i64 @Secret) -> i64 {\n    let mut a: [i64; 2] = [0, 0];\n    a[0] = s;\n    let n: i64 = helper();\n    return n;\n}\n",
+        &["T001"],
+    ),
+    // S5, by slot through a nested call: the callee's write-through slot reaches the caller's
+    // parameter through an argument list whose FIRST argument is itself a call. Each edge's
+    // argument roots are its own (production's per-edge vector), not those of the call nested
+    // inside it (the twin swaps the outer arguments).
+    (
+        "SHP-5c-2 S5 the written-through slot is found past a call nested in the arguments -> T001",
+        "module tool;\nfn id(x: i64) -> i64 {\n    return x;\n}\nfn inner(a: i64, b: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(b, s & 1);\n    return 1;\n}\nfn poke(x: i64, y: i64) -> i64 {\n    return inner(id(y), x);\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let scratch: i64 = alloc(8);\n    let n: i64 = poke(out, scratch);\n    return out << 32 | n;\n}\n",
+        &["T001"],
+    ),
+    // SHP-5c-3: a region body is checked as a block of its function at the same pc — a
+    // downgrade inside it is the T001 of any block, and a secret written through a record
+    // bound before the body is read back after it.
+    (
+        "SHP-5c-3 downgrade inside a region body -> T001",
+        "#[ring(outer)] module ext;\nfn leak(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let exposed: i64 @Public = secret;\n    };\n    return 0;\n}\n",
+        &["T001"],
+    ),
+    (
+        "SHP-5c-3 a secret written through an outer record inside a region body, read after it -> T001",
+        "#[ring(outer)] module ext;\nrecord P { x: i64 }\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    let mut p: P = P { x: 0 };\n    region scratch(64) {\n        p.x = secret;\n    };\n    return p.x;\n}\n",
+        &["T001"],
+    ),
+    // SHP-5c-3: a region's limit is its allocation size, observable through the heap layout, so
+    // a @SecretCT limit is T029.
+    (
+        "SHP-5c-3 a @SecretCT region limit -> T029",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @SecretCT) -> i64 ! { Alloc } { region scratch(s) { let x: i64 = 1; }; return 0; }\n",
+        &["T029"],
+    ),
 ];
 
 /// ACCEPT fixtures (CLEAN — no in-core T-code on either side). The clean twins.
@@ -453,8 +764,9 @@ const CORPUS_ACCEPT: &[(&str, &str)] = &[
     // ── HB-2 all-public projection fixtures (tuple-let / break / continue) ──
     // The shadow now models these three statement kinds in the all-public domain (the oracle
     // desugars tuple lets pre-taint and its break/continue arms emit no codes — join-env
-    // machinery only). Public instances are clean on BOTH sides; the nonpublic variants live
-    // in `sh_taint_unsupported_shapes_are_explicit` (fail-closed, marker asserted).
+    // machinery only). Public instances are clean on BOTH sides. SHP-5a modelled the nonpublic
+    // `break`/`continue` (the join fixtures below); a tuple let under a nonpublic pc is still
+    // refused in `sh_taint_unsupported_shapes_are_explicit`.
     (
         "HB2 tuple let, all-public — clean",
         "module ext;\nfn mk() -> (i64, i64) {\n    return (1, 2);\n}\nfn f() -> i64 {\n    let (a, b) = mk();\n    return a + b;\n}\n",
@@ -466,6 +778,168 @@ const CORPUS_ACCEPT: &[(&str, &str)] = &[
     (
         "HB2 continue in a public loop — clean",
         "module ext;\nfn f() -> i64 {\n    let mut i: i64 = 0;\n    while i < 3 {\n        i = i + 1;\n        continue;\n    }\n    return i;\n}\n",
+    ),
+    // ── SHP-5a twins: the join-model rejects with their sink annotated — clean ──
+    (
+        "SHP-5a if-join twin — record raised on one path, read at @Secret — clean",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret, p: i64) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    if s > 0 {\n        r.a = p;\n    } else {\n    }\n    let y: i64 @Secret = r.b;\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5a continuation twin — the let after a one-sided return is @Secret — clean",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 @Secret {\n    if s > 0 {\n        return s;\n    } else {\n    }\n    let y: i64 @Secret = 0;\n    return s;\n}\n",
+    ),
+    (
+        "SHP-5a break twin — the loop counter returned at @Secret — clean",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 @Secret {\n    let mut i: i64 = 0;\n    while i < 10 {\n        if s > i {\n            break;\n        }\n        i = i + 1;\n    }\n    return i;\n}\n",
+    ),
+    (
+        "SHP-5a fixpoint twin — the loop-carried read is @Secret — clean",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret, n: i64) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    let mut i: i64 = 0;\n    while i < n {\n        let y: i64 @Secret = r.b;\n        if s > 0 {\n            r.a = i;\n        } else {\n        }\n        i = i + 1;\n    }\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5a for-range twin — the body let is @Secret — clean",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 @Secret {\n    for i in 0..s {\n        let y: i64 @Secret = i;\n    }\n    return s;\n}\n",
+    ),
+    (
+        "SHP-5a for-in twin — the element is bound at @Secret — clean",
+        "module ext;\nfn f(arr: [i64; 4] @Secret) -> i64 @Secret {\n    let mut t: i64 @Secret = 0;\n    for x in arr {\n        let y: i64 @Secret = x;\n        t = x;\n    }\n    return t;\n}\n",
+    ),
+    (
+        "SHP-5a match twin — the payload is bound at @Secret — clean",
+        "module ext;\nenum E { A(i64), B }\nfn f(e: E @Secret) -> i64 @Secret {\n    match e {\n        E::A(v) => { let y: i64 @Secret = v; },\n        E::B => { },\n    }\n    return 0;\n}\n",
+    ),
+    // The inverse shadow: a SECRET shadow inside the block must not leak onto the outer
+    // public `x` (a restore that kept the inner binding would be a false T001 here).
+    (
+        "SHP-5a shadow twin — an inner secret shadow does not reach the outer name — clean",
+        "module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 {\n    let x: i64 = 0;\n    if p > 0 {\n        let x: i64 @Secret = s;\n    } else {\n    }\n    let y: i64 = x;\n    return y;\n}\n",
+    ),
+    (
+        "SHP-5a call twin — the callee parameter is @Secret — clean",
+        "module ext;\nfn g(v: i64 @Secret) -> i64 @Secret { return v; }\nfn f(s: i64 @Secret) -> i64 @Secret {\n    if s > 0 {\n        let r: i64 @Secret = g(1);\n    } else {\n    }\n    return s;\n}\n",
+    ),
+    // The pc is restored after a secret-guarded `if` with no divergence: the code after it
+    // is public again (the shape the pre-SHP-5a shadow refused outright).
+    (
+        "SHP-5a secret guard with no leak — the pc is restored after the if — clean",
+        "module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 {\n    let mut x: i64 = p;\n    if s > 0 {\n    } else {\n    }\n    x = x + 1;\n    return x;\n}\n",
+    ),
+    // The two shapes SHP-5a lifted out of `sh_taint_unsupported_shapes_are_explicit`.
+    (
+        "SHP-5a early exit under a secret guard — clean (was a refused canary)",
+        "module ext; fn f(s: i64 @Secret) -> i64 @Secret { while s > 0 { break; } return s; }",
+    ),
+    (
+        "SHP-5a tuple let beside a secret parameter, public pc — clean (was a refused canary)",
+        "module ext; fn mk() -> (i64, i64) { return (1, 2); } fn f(s: i64 @Secret) -> i64 @Secret { let (a, b) = mk(); return s; }",
+    ),
+    // ── M6 twins: rebinding to a FRESH region drops the old one (no false alias positive) ──
+    (
+        "M6 loop rebind to a fresh alloc every iteration keeps the returned region clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let mut q: i64 = alloc(8);\n    let mut i: i64 = 0;\n    while i < 2 {\n        store8(q, s);\n        q = alloc(8);\n        i = i + 1;\n    }\n    return out;\n}\n",
+    ),
+    (
+        "M6 rebind to a fresh alloc on BOTH if-arms keeps the returned region clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let mut q: i64 = alloc(8);\n    if p > 0 {\n        q = alloc(8);\n    } else {\n        q = alloc(8);\n    }\n    store8(q, s);\n    return out;\n}\n",
+    ),
+    // A block shadow restores the outer REGION too: the secret went into the inner buffer.
+    (
+        "M6 secret stored into a shadowing inner buffer leaves the outer pointer clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, p: i64) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    if p > 0 {\n        let out: i64 = alloc(8);\n        store8(out, s);\n    } else {\n    }\n    return out;\n}\n",
+    ),
+    // ── SHP-5c-1 twins ──
+    (
+        "SHP-5c-1 split amount @Public — clean",
+        "module ext;\ncap type Fuel {}\nfn f(c: Fuel, s: i64) -> i64 {\n    let d: Fuel = c.split(s);\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-1 S1 twin — the raw load after the extern call is bound @Internal — clean",
+        "#[ring(outer)] module ext;\nextern \"C\" fn k(x: i64) -> i64 ! { FFI, Unsafe };\nfn f(p: i64) -> i64 @Internal ! { FFI, Unsafe, Alloc } {\n    let r: i64 @Internal = k(p);\n    let q: i64 = alloc(8);\n    let v: i64 @Internal = load8(q);\n    return r;\n}\n",
+    ),
+    // The critical no-false-positive: a SCALAR under a secret pc is a wasm local, not bytes in
+    // memory — no floor rises, and the later raw load stays public.
+    (
+        "SHP-5c-1 S2 twin — a scalar under a secret pc raises no floor — clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    if s > 0 {\n        let t: i64 @Secret = s + 1;\n    } else {\n    }\n    let v: i64 = load8(q);\n    return v;\n}\n",
+    ),
+    // A plain re-read of a heap-typed local allocates nothing: exempt from S2.
+    (
+        "SHP-5c-1 S2 twin — a public heap local re-read under a secret pc raises no floor — clean",
+        "#[ring(outer)] module ext;\nrecord R { a: i64 }\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let r: R = R { a: 1 };\n    let q: i64 = alloc(8);\n    if s > 0 {\n        let y: R @Secret = r;\n    } else {\n    }\n    let v: i64 = load8(q);\n    return v;\n}\n",
+    ),
+    (
+        "SHP-5c-1 entry twin — a heap-typed public parameter floors nothing — clean",
+        "#[ring(outer)] module ext;\nfn f(s: str) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    let v: i64 = load8(q);\n    return v;\n}\n",
+    ),
+    (
+        "SHP-5c-1 S4 twin — the element read after the secret store is bound @Secret — clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret, arr: [i64; 4]) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let y: i64 @Secret = arr[0];\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-1 S11 twin — the str literal after the secret store is bound @Secret — clean",
+        "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    store8(q, s);\n    let t: str @Secret = \"abc\";\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-1 S6 twin — a public element write at a public index floors nothing — clean",
+        "module ext;\nfn f(s: i64 @Secret) -> i64 {\n    let mut a: [i64; 2] = [0, 0];\n    a[1] = 1;\n    let y: i64 = a[0];\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-1 S7 twin — a public projected write under a public pc floors nothing — clean",
+        "module ext;\nrecord R { a: i64, b: i64 }\nfn f(s: i64 @Secret) -> i64 {\n    let mut r: R = R { a: 0, b: 0 };\n    let b: R = r;\n    r.a = 1;\n    let y: i64 = b.b;\n    return 0;\n}\n",
+    ),
+    // ── SHP-5c-2 twins ──
+    // The slots are positional: the callee writes through its second parameter, which is
+    // `scratch` here, so `out`'s region stays clean (the reject swaps the arguments).
+    (
+        "SHP-5c-2 S5 twin — the written-through argument is not the one returned — clean",
+        "module tool;\nfn poke(out: i64, scratch: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(scratch, s & 1);\n    return 1;\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let scratch: i64 = alloc(8);\n    let n: i64 = poke(out, scratch);\n    return out << 32 | n;\n}\n",
+    ),
+    // A callee whose own bound is @Public, called at a @Public site, raises nothing — whatever
+    // it materialises or stores — even in a program that carries a secret elsewhere.
+    (
+        "SHP-5c-2 S5 twin — a public callee at a public site floors nothing — clean",
+        "#[ring(outer)] module ext;\nfn mk() -> i64 {\n    let a: [i64; 2] = [1, 0];\n    return 0;\n}\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    let z: i64 = mk();\n    let v: i64 = load8(q);\n    return v;\n}\n",
+    ),
+    (
+        "SHP-5c-2 S5 twin — an impl method storing a public byte through self — clean",
+        "#[ring(outer)] module ext;\nrecord B { p: i64 }\nimpl B {\n    fn put(self: B) -> i64 {\n        store8(self.p, 7);\n        return 1;\n    }\n}\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let b: B = B { p: alloc(8) };\n    let n: i64 = b.put();\n    let v: i64 = load8(b.p);\n    return v;\n}\n",
+    ),
+    // S8 twins: a raw-reading callee under public floors returns a public value; a floored typed
+    // result bound at its label is no leak.
+    (
+        "SHP-5c-2 S8 twin — the callee raw-reads under public floors — clean",
+        "#[ring(outer)] module ext;\nfn peek(p: i64) -> i64 {\n    let b: i64 = load8(p);\n    return b;\n}\nfn f(s: i64 @Secret) -> i64 ! { Alloc } {\n    let q: i64 = alloc(8);\n    let v: i64 = peek(q);\n    return v;\n}\n",
+    ),
+    (
+        "SHP-5c-2 S8 twin — the floored typed result is bound @Secret — clean",
+        "module ext;\nfn helper() -> i64 {\n    let t: str = \"abc\";\n    return t.len();\n}\nfn f(s: i64 @Secret) -> i64 {\n    let mut a: [i64; 2] = [0, 0];\n    a[0] = s;\n    let n: i64 @Secret = helper();\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-2 S5 twin — the slot past the nested call is the buffer not returned — clean",
+        "module tool;\nfn id(x: i64) -> i64 {\n    return x;\n}\nfn inner(a: i64, b: i64) -> i64 {\n    let s: i64 @Secret = 1;\n    store8(b, s & 1);\n    return 1;\n}\nfn poke(x: i64, y: i64) -> i64 {\n    return inner(id(y), x);\n}\npub fn tool_main(input_ptr: i32, input_len: i32) -> i64 ! { Alloc } {\n    let out: i64 = alloc(64);\n    let scratch: i64 = alloc(8);\n    let n: i64 = poke(scratch, out);\n    return out << 32 | n;\n}\n",
+    ),
+    // SHP-5c-3 twins: a scalar region body beside a secret, the handle handed to a `Region`
+    // parameter, a body-local `let mut` rebound, a public write through an outer record, and
+    // a slot round trip beside a secret — clean on both sides.
+    (
+        "SHP-5c-3 twin — a scalar region body keeps its labels — clean",
+        "#[ring(outer)] module ext;\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let kept: i64 @Secret = secret;\n        let open: i64 = 1;\n    };\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-3 twin — the region handle handed to a Region parameter — clean",
+        "#[ring(outer)] module ext;\nfn use_region(r: Region) -> i64 {\n    return 0;\n}\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let n: i64 = use_region(scratch);\n    };\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-3 twin — a body-local let mut rebound inside the body — clean",
+        "#[ring(outer)] module ext;\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let mut n: i64 = 1;\n        n = n + 1;\n    };\n    return 0;\n}\n",
+    ),
+    (
+        "SHP-5c-3 twin — a public write through an outer record inside the body — clean",
+        "#[ring(outer)] module ext;\nrecord P { x: i64 }\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    let mut p: P = P { x: 0 };\n    region scratch(64) {\n        p.x = 1;\n    };\n    return p.x;\n}\n",
+    ),
+    (
+        "SHP-5c-3 twin — a slot round trip beside a secret — clean",
+        "module ext;\ncap type Fuel {}\nfn f(c: Fuel, secret: i64 @Secret) -> Fuel {\n    let s: Slot<Fuel> = slot_new::<Fuel>();\n    slot_put(s, c);\n    let back: Fuel = slot_take(s);\n    return back;\n}\n",
     ),
 ];
 
@@ -616,16 +1090,12 @@ fn sh_taint_ag_t14_subset_safe() {
 #[test]
 fn sh_taint_unsupported_shapes_are_explicit() {
     let cases = [
-        // Break/continue and tuple lets are supported ONLY in the all-public projection
-        // (HB-2 rung 1); their nonpublic contexts must still fail closed. The old all-public
-        // `while c { break; }` case moved to CORPUS_ACCEPT — clean on both sides now.
+        // SHP-5a modelled the control-flow join, so a nonpublic early exit is checked, not
+        // refused (`CORPUS_ACCEPT`). A tuple let keeps its all-public projection: a RHS that
+        // carries a nonpublic pc is still outside it and fails closed.
         (
-            "early exit under a secret guard",
-            "module ext; fn f(s: i64 @Secret) -> i64 @Secret { while s > 0 { break; } return s; }",
-        ),
-        (
-            "tuple let in a nonpublic context",
-            "module ext; fn mk() -> (i64, i64) { return (1, 2); } fn f(s: i64 @Secret) -> i64 @Secret { let (a, b) = mk(); return s; }",
+            "tuple let under a secret pc",
+            "module ext; fn mk() -> (i64, i64) { return (1, 2); } fn f(s: i64 @Secret) -> i64 @Secret { if s > 0 { let (a, b) = mk(); return s; } else { } return s; }",
         ),
         (
             "match guard",
@@ -639,9 +1109,48 @@ fn sh_taint_unsupported_shapes_are_explicit() {
             "closure capture model",
             "module ext; fn f(x: i64) -> i64 { let g = fn() -> i64 { return x; }; return 0; }",
         ),
+        // SHP-5c-3: a region body is admitted by the scalar-only rule (tt_region_body_scalar),
+        // which stands in for production's escape lattice, and refused otherwise: a body
+        // binding a record, a str or a slot, or handing a non-scalar to a call. Production
+        // accepts each program below.
         (
-            "region body",
-            "#[ring(outer)] module ext; fn f() -> i64 ! { Alloc } { region scratch(64) { let x = 1; }; return 0; }",
+            "region body binding a record",
+            "#[ring(outer)] module ext;\nrecord P { x: i64 }\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let p: P = P { x: 1 };\n    };\n    return 0;\n}\n",
+        ),
+        (
+            "region body binding a str",
+            "#[ring(outer)] module ext;\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let t: str = \"abc\";\n    };\n    return 0;\n}\n",
+        ),
+        (
+            "region body binding a slot",
+            "#[ring(outer)] module ext;\ncap type Fuel {}\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let s: Slot<Fuel> = slot_new::<Fuel>();\n    };\n    return 0;\n}\n",
+        ),
+        (
+            "region body handing a str to a call",
+            "#[ring(outer)] module ext;\nfn len_of(t: str) -> i64 {\n    return t.len();\n}\nfn f(secret: i64 @Secret) -> i64 ! { Alloc } {\n    region scratch(64) {\n        let n: i64 = len_of(\"abc\");\n    };\n    return 0;\n}\n",
+        ),
+        // SHP-5c-1: the heap floors read a syntactic typing. An alias is not resolved by it (an
+        // alias of a scalar typed as a nominal would raise a floor production does not), and a
+        // generic record's field is typed by its instance, out of view: both refuse rather than
+        // guess — the field only where a non-public label makes the floor rules read it.
+        (
+            "type alias",
+            "module ext; type Id = i64; fn f(x: Id) -> i64 { return 0; }",
+        ),
+        (
+            "generic record field at a secret label",
+            "module ext; record Box<T> { v: T } fn f(s: i64 @Secret) -> i64 @Secret { let b: Box<i64> = Box { v: 1 }; if s > 0 { let y: i64 @Secret = b.v; } else { } return s; }",
+        ),
+        // SHP-5c-2: a call site applies its callee's summary; a callee this shadow cannot name —
+        // a stdlib method with no body in view, a routed int method whose stdlib fn depends on
+        // the int's width — refuses while a label makes the summaries live.
+        (
+            "stdlib callee with no body in view while a label is non-public",
+            "module ext; fn f(s: i64 @Secret) -> i64 { let v: Vec<i64> = Vec::new(); return 0; }",
+        ),
+        (
+            "int to_string whose stdlib fn depends on the width, beside a secret",
+            "module ext; fn f(s: i64 @Secret) -> i64 { let t: str = s.to_string(); return 0; }",
         ),
     ];
     for (label, src) in cases {
@@ -650,6 +1159,178 @@ fn sh_taint_unsupported_shapes_are_explicit() {
             output.split(';').any(|item| item == TAINT_UNSUPPORTED),
             "SH-TAINT {label}: unsupported shape produced an apparently clean verdict: {output:?}"
         );
+    }
+}
+
+/// SHP-5c-2: a site where production applies its program-wide bound — a `grant` of a closure held
+/// in a local, an indirect call — refuses while the summaries are live, including in a program
+/// whose only non-public label is an effect operation's parameter (the shadow's signal walk reads
+/// it off the operation's K_PARAM, like any parameter's label). Each refused program has a twin
+/// identical but for the label that makes the summaries live: the oracle accepts it and the
+/// shadow checks it with no refusal, so the refusal is the label's, never the shape's alone.
+#[test]
+fn sh_taint_program_bound_sites_refuse_only_while_live() {
+    let pairs = [
+        (
+            "grant of a closure held in a local, beside a secret",
+            "module ext; cap type C {} fn f(c: C, g: Fn(&C) -> i64, s: i64 @Secret) -> i64 { let mut a: [i64; 2] = [0, 0]; let z: i64 = grant(&c, g); let y: i64 = a[0]; return y; }",
+            "module ext; cap type C {} fn f(c: C, g: Fn(&C) -> i64, s: i64) -> i64 { let mut a: [i64; 2] = [0, 0]; let z: i64 = grant(&c, g); let y: i64 = a[0]; return y; }",
+        ),
+        (
+            "indirect call where the only label is an effect operation's parameter",
+            "#[ring(outer)] module ext; effect Log { fn note(x: i64 @Secret) -> i64; } fn apply(g: Fn(i64) -> i64, p: i64) -> i64 ! { Alloc } { let q: i64 = alloc(8); let r: i64 = g(p); let v: i64 = load8(q); return v; }",
+            "#[ring(outer)] module ext; effect Log { fn note(x: i64) -> i64; } fn apply(g: Fn(i64) -> i64, p: i64) -> i64 ! { Alloc } { let q: i64 = alloc(8); let r: i64 = g(p); let v: i64 = load8(q); return v; }",
+        ),
+    ];
+    for (label, refused, twin) in pairs {
+        assert_eq!(
+            oracle_tcodes(refused),
+            vec!["T001".to_string()],
+            "SH-TAINT {label}: the program-wide bound floors the later read in the oracle:\n{refused}"
+        );
+        let output = full_output(refused);
+        assert!(
+            output.split(';').any(|item| item == TAINT_UNSUPPORTED),
+            "SH-TAINT {label}: a program-wide-bound site produced an apparently clean verdict: {output:?}"
+        );
+        assert!(
+            oracle_tcodes(twin).is_empty(),
+            "SH-TAINT {label}: the label-free twin must be taint-clean in the oracle:\n{twin}"
+        );
+        let twin_output = full_output(twin);
+        assert!(
+            !twin_output.split(';').any(|item| item == TAINT_UNSUPPORTED),
+            "SH-TAINT {label}: the label-free twin was refused, so the refusal is not the label's: {twin_output:?}"
+        );
+        assert!(
+            sigil_tcodes(twin).is_empty(),
+            "SH-TAINT {label}: the label-free twin carries a spurious T-code: {twin_output:?}"
+        );
+    }
+}
+
+/// A caller of a `@Flow` function: the shadow refuses the flow body (its instances are out of
+/// view) and checks the caller against the `@Flow` signature as production resolves it — the
+/// argument is accepted at its own label and the call's label is the argument's — so the output
+/// carries the refusal and no core T-code, where the oracle is clean. Before SHP-5c-2 the caller
+/// read the `@Flow` parameter and return as `@Public` and emitted a false T001 beside the refusal.
+#[test]
+fn sh_taint_flow_caller_refuses_without_a_false_code() {
+    let src = "#[ring(outer)] #[trusted]\nmodule flow_secret_only;\npub fn codec(value: i64 @Flow) -> i64 @Flow { return value; }\nfn secret_caller(value: i64 @Secret) -> i64 @Secret { return codec(value); }\n";
+    assert!(
+        oracle_tcodes(src).is_empty(),
+        "the oracle resolves the @Flow instance at the caller's label and accepts:\n{src}"
+    );
+    let output = full_output(src);
+    assert!(
+        output.split(';').any(|item| item == TAINT_UNSUPPORTED),
+        "the @Flow body is refused, never silently checked: {output:?}"
+    );
+    assert!(
+        sigil_tcodes(src).is_empty(),
+        "a caller of a @Flow function carries a false T-code beside the refusal: {output:?}"
+    );
+}
+
+/// M6's region masks name at most 62 regions per function; a 63rd `alloc` site is REFUSED
+/// (SH_TAINT_UNSUPPORTED), never silently unregioned. 62 sites are still checked exactly
+/// (the clean control), so the bound is the only thing this pins.
+#[test]
+fn sh_taint_region_overflow_is_explicit() {
+    let program = |sites: usize| {
+        let lets: String = (0..sites)
+            .map(|k| format!("    let p{k}: i64 = alloc(8);\n"))
+            .collect();
+        format!(
+            "#[ring(outer)] module ext;\nfn f(s: i64 @Secret) -> i64 ! {{ Alloc }} {{\n{lets}    store8(p0, s);\n    return p0;\n}}\n"
+        )
+    };
+    let within = program(62);
+    assert_eq!(oracle_tcodes(&within), vec!["T001".to_string()]);
+    assert_eq!(sigil_tcodes(&within), vec!["T001".to_string()]);
+    assert!(
+        !full_output(&within)
+            .split(';')
+            .any(|c| c == TAINT_UNSUPPORTED),
+        "62 regions are within the mask and must be checked, not refused"
+    );
+    let beyond = program(63);
+    assert!(
+        full_output(&beyond)
+            .split(';')
+            .any(|c| c == TAINT_UNSUPPORTED),
+        "a 63rd alloc site must refuse rather than drop a region"
+    );
+}
+
+// ── SHP-5a property test: the control-flow join over secret and public guards ────────────
+//
+// The join fixtures are hand-picked; this generates bodies over the whole join surface the
+// shadow models — public lets, secret- and public-guarded `if`s with assignments, a one-sided
+// `return`, a `while` with a secret-guarded `break`, a `match` on a secret, a range over a
+// public bound, a @SecretCT guard (the no-descent rule) — and asserts EXACT agreement: the
+// shadow's code set equals the oracle's and nothing is refused. Agreement here is not
+// cleanliness: most bodies leak through the pc or the continuation, so the property is that
+// both sides see the same leak. Each template is closed over its index so names never collide.
+mod joinmodel_prop {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn block(kind: u8, i: usize) -> String {
+        match kind {
+            0 => format!("    let a{i}: i64 = p + {i};\n"),
+            1 => {
+                format!("    if s > {i} {{\n        let b{i}: i64 = {i};\n    }} else {{\n    }}\n")
+            }
+            2 => format!(
+                "    if p > {i} {{\n        let c{i}: i64 @Secret = s;\n    }} else {{\n    }}\n"
+            ),
+            3 => format!(
+                "    let mut w{i}: i64 = 0;\n    while w{i} < 3 {{\n        if s > w{i} {{\n            break;\n        }}\n        w{i} = w{i} + 1;\n    }}\n    let x{i}: i64 = w{i};\n"
+            ),
+            4 => format!(
+                "    let mut v{i}: i64 @Secret = 0;\n    match s {{\n        0 => {{ v{i} = 1; }},\n        _ => {{ v{i} = 2; }},\n    }}\n"
+            ),
+            5 => format!(
+                "    for k{i} in 0..p {{\n        let d{i}: i64 @Secret = s + k{i};\n    }}\n"
+            ),
+            6 => format!(
+                "    let mut m{i}: i64 = p;\n    if s > 0 {{\n        m{i} = 1;\n    }} else {{\n        m{i} = 2;\n    }}\n    let n{i}: i64 = m{i};\n"
+            ),
+            7 => format!("    if s > {i} {{\n        return s;\n    }} else {{\n    }}\n"),
+            _ => {
+                format!("    if c == {i} {{\n        let e{i}: i64 = 1;\n    }} else {{\n    }}\n")
+            }
+        }
+    }
+
+    fn program(kinds: &[u8]) -> String {
+        let body: String = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, k)| block(*k, i))
+            .collect();
+        format!(
+            "module ext;\nfn f(s: i64 @Secret, p: i64, c: i64 @SecretCT) -> i64 @Secret {{\n{body}    return s;\n}}\n"
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: case_budget(32), ..ProptestConfig::default() })]
+        #[test]
+        fn joinmodel_surface_agrees_exactly(
+            kinds in proptest::collection::vec(0u8..9, 1..7)
+        ) {
+            let src = program(&kinds);
+            let oracle = oracle_tcodes(&src);
+            let shadow = sigil_tcodes(&src);
+            prop_assert_eq!(&shadow, &oracle, "shadow {:?} vs oracle {:?}:\n{}", shadow, oracle, src);
+            let raw = full_output(&src);
+            prop_assert!(
+                !raw.split(';').any(|c| c == TAINT_UNSUPPORTED),
+                "shadow refused a modelled join shape:\n{}\n{}", src, raw
+            );
+        }
     }
 }
 
@@ -695,7 +1376,7 @@ mod allpublic_prop {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: case_budget(32), ..ProptestConfig::default() })]
         #[test]
         fn allpublic_supported_surface_is_clean_both_sides(
             kinds in proptest::collection::vec(0u8..6, 1..8)

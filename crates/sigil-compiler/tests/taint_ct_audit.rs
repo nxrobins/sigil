@@ -31,6 +31,8 @@ use wasmparser::{Operator, Parser, Payload};
 /// CT-only fixture: every @SecretCT value flows through ct_eq, ct_select,
 /// and ct_lt only. If codegen ever introduces `if`, `br_if`, `select`,
 /// or division for one of these operations, the byte-scan catches it.
+/// `ct_lt` runs twice because it has two sequences: the signed one for two
+/// `i64` and the unsigned one for two `u64`.
 const CT_FIXTURE: &str = r#"module tool;
 
 pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 {
@@ -42,6 +44,9 @@ pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 {
     let eq_result: bool @SecretCT = ct_eq(a, b);
     let chosen: i64 @SecretCT = ct_select(eq_result, a, b);
     let lt_result: bool @SecretCT = ct_lt(a, b);
+    let ua: u64 @SecretCT = 42;
+    let ub: u64 @SecretCT = 99;
+    let unsigned_lt_result: bool @SecretCT = ct_lt(ua, ub);
     return 0;
 }
 "#;

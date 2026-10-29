@@ -1,0 +1,108 @@
+// Experimental private byte edit distance using bytes and fmt; no host authority.
+module tool;
+use sigil::bytes;
+use sigil::fmt;
+use sigil::bytes_scan;
+
+fn min3(a: i64, b: i64, c: i64) -> i64 {
+    let mut m = a;
+    if b < m {
+        m = b;
+    } else {
+    }
+    if c < m {
+        m = c;
+    } else {
+    }
+    return m;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let found = bytes_scan::find_byte(input_ptr, input_len, 0, 10);
+    if found < -1 { return found; } else {}
+    let mut split = input_len;
+    if found >= 0 { split = found; } else {}
+
+    let left_start = 0;
+    let left_end = split;
+    let mut right_start = input_len;
+
+    if split < input_len {
+        right_start = split + 1;
+    } else {
+        right_start = input_len;
+    }
+
+    let right_end = input_len;
+    let left_len = left_end - left_start;
+    let right_len = right_end - right_start;
+    let right_slots = right_len + 1;
+    let row_size = right_slots * 4;
+    let mut prev_ptr = alloc(row_size);
+    let mut curr_ptr = alloc(row_size);
+
+    let mut i = 0;
+    while i <= right_len {
+        let next = bytes::write_u32_le(prev_ptr, row_size, i * 4, i);
+        if next < 0 {
+            return next;
+        } else {
+        }
+        i = i + 1;
+    }
+
+    let mut row = 1;
+    while row <= left_len {
+        let next = bytes::write_u32_le(curr_ptr, row_size, 0, row);
+        if next < 0 {
+            return next;
+        } else {
+        }
+        let left_b = load8(input_ptr + left_start + row - 1);
+        let mut col = 1;
+
+        while col <= right_len {
+            let right_b = load8(input_ptr + right_start + col - 1);
+            let mut cost = 1;
+            if left_b == right_b {
+                cost = 0;
+            } else {
+            }
+            let prev_col = col - 1;
+            let deletion = bytes::read_u32_le(prev_ptr, row_size, col * 4);
+            let insertion = bytes::read_u32_le(curr_ptr, row_size, prev_col * 4);
+            let substitution = bytes::read_u32_le(prev_ptr, row_size, prev_col * 4);
+            if deletion < 0 {
+                return deletion;
+            } else {
+            }
+            if insertion < 0 {
+                return insertion;
+            } else {
+            }
+            if substitution < 0 {
+                return substitution;
+            } else {
+            }
+            let value = min3(deletion + 1, insertion + 1, substitution + cost);
+            let next = bytes::write_u32_le(curr_ptr, row_size, col * 4, value);
+            if next < 0 {
+                return next;
+            } else {
+            }
+            col = col + 1;
+        }
+
+        let tmp = prev_ptr;
+        prev_ptr = curr_ptr;
+        curr_ptr = tmp;
+        row = row + 1;
+    }
+
+    let result = bytes::read_u32_le(prev_ptr, row_size, right_len * 4);
+    if result < 0 {
+        return result;
+    } else {
+    }
+    return fmt::decimal_i64(result);
+}

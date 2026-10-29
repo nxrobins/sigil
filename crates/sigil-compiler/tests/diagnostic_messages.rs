@@ -88,6 +88,7 @@ fn hint_for(code: &str) -> &'static str {
         "T226" => "T226",
         "R003" => "R003",
         "R006" => "R006",
+        "R008" => "R008",
         "E003" => "E003",
         other => panic!("unknown code {other} — add to hint_for"),
     });
@@ -209,7 +210,7 @@ fn f() ! { Unsafe } {
 /// real. The fixture `tests/fixtures/R003.sigil` compiles cleanly
 /// against the pre-change commit (verified manually) and now emits
 /// R003 with the offending extern callee named in the message and
-/// both copyable fixes spelled out in the hint.
+/// the copyable fix spelled out in the hint.
 #[test]
 fn r003_message_names_extern_with_concrete_fix() {
     // NOTE: step 30 added E003 (inner-ring fn cannot declare Unsafe/FFI
@@ -257,12 +258,190 @@ fn use_it() -> i64 @Internal {
         "R003 hint must include the `#[ring(outer)] #[trusted]` fix path; got: {hint}"
     );
 
-    // CONCRETE FIX 2: the hint must reference the `grant` mechanism
-    // so a user who wants to KEEP the policy in inner ring knows the
-    // safe way to reach outer-ring FFI.
+    // NO FALSE ROUTE: inner-ring code has no way to reach FFI. A call
+    // into an outer-ring wrapper is a cross-ring call (R004), and one
+    // made inside a `grant` body is no exception, because the `grant`
+    // closure runs in the inner ring. An earlier hint offered
+    // `grant(&cap, fn(ref) -> ...)` as that route; the hint must now
+    // say a `grant` body does not cross, and must not offer the route.
     assert!(
-        hint.contains("grant"),
-        "R003 hint must reference the `grant` cross-ring mechanism; got: {hint}"
+        hint.contains("inside a `grant` body") && !hint.contains("grant(&cap"),
+        "R003 hint must say a `grant` body is no way across the ring boundary; got: {hint}"
+    );
+}
+
+/// R004 — the message names the callee and the fix for its direction. An inner-ring caller
+/// reaching an outer-ring module is told to escalate with `#[ring(outer)] #[trusted]`, as
+/// before. An outer-ring caller reaching an inner-ring module is already in the outer ring, and
+/// `#[trusted]` would not change its ring, so its message must not suggest that escalation: it
+/// says to leave the outer ring, removing `#[trusted]` too if present (alone it does not parse),
+/// or to stay in it. Each program compiles to exactly {R004}, so the message under test is the
+/// only diagnostic.
+#[test]
+fn r004_message_names_the_fix_for_each_direction() {
+    let inner_to_outer = "#[ring(outer)] #[trusted]\nmodule outer_lib;\n\
+         pub fn helper(x: i64) -> i64 ! { Alloc } { return x + 1; }\n\
+         module app;\nuse outer_lib;\n\
+         pub fn boot() -> i64 ! { Alloc } { return outer_lib::helper(41); }\n";
+    let outer_to_inner = "module core_lib;\npub fn twice(x: i64) -> i64 { return x * 2; }\n\
+         #[ring(outer)]\nmodule tool;\nuse core_lib;\n\
+         pub fn run() -> i64 { return core_lib::twice(21); }\n";
+
+    let message_for = |label: &str, source: &str| -> String {
+        let err = compile_named_module(format!("{label}.sigil"), source)
+            .expect_err("a cross-ring call must not compile");
+        let mut codes: Vec<&str> = err
+            .diagnostics()
+            .iter()
+            .map(|d| d.code().as_str())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes, ["R004"], "{label}: exact code set");
+        find_diagnostic_or_fail(&err, "R004").message().to_string()
+    };
+
+    let inner = message_for("inner_to_outer", inner_to_outer);
+    assert!(
+        inner.contains("`outer_lib::helper`"),
+        "the message must name the callee; got: {inner}"
+    );
+    assert!(
+        inner.contains("Add `#[ring(outer)] #[trusted]` to the calling module"),
+        "an inner-ring caller must be told how to escalate; got: {inner}"
+    );
+
+    let outer = message_for("outer_to_inner", outer_to_inner);
+    assert!(
+        outer.contains("`core_lib::twice`"),
+        "the message must name the callee; got: {outer}"
+    );
+    assert!(
+        !outer.contains("Add `#[ring(outer)] #[trusted]`"),
+        "an outer-ring caller is already in the outer ring; got: {outer}"
+    );
+    assert!(
+        outer.contains("Outer-ring code cannot call into the inner ring"),
+        "an outer-ring caller must be told the call cannot be made from there; got: {outer}"
+    );
+    assert!(
+        outer.contains("remove its `#[ring(outer)]` attribute, and `#[trusted]` if present"),
+        "an outer-ring caller must be told how to leave the outer ring; got: {outer}"
+    );
+}
+
+/// R008 — an outer-ring module declares an `extern` without `#[trusted]`. The message names
+/// the module and the extern, and the hint gives both fixes: add `#[trusted]`, or reach the host
+/// through a trusted module's wrapper. The program is exactly {R008}.
+#[test]
+fn r008_message_names_module_and_extern_with_concrete_fix() {
+    let source = "#[ring(outer)]\nmodule shell;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n";
+    let err = compile_named_module("shell.sigil", source)
+        .expect_err("an untrusted outer-ring extern declaration must not compile");
+    let mut codes: Vec<&str> = err
+        .diagnostics()
+        .iter()
+        .map(|d| d.code().as_str())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    assert_eq!(codes, ["R008"], "exact code set");
+    let msg = find_diagnostic_or_fail(&err, "R008").message();
+    assert!(
+        msg.contains("`shell`") && msg.contains("`fs_read`"),
+        "R008 message must name the module and the extern; got: {msg}"
+    );
+    let hint = hint_for("R008");
+    assert!(
+        hint.contains("Add `#[trusted]`"),
+        "R008 hint must give the attribute fix; got: {hint}"
+    );
+    assert!(
+        hint.contains("wrapper"),
+        "R008 hint must give the trusted-wrapper fix; got: {hint}"
+    );
+}
+
+/// R008, call half: generic code calls an `extern`, but a module governing the instance is not
+/// `#[trusted]`. The message names the module that defines the generic and every untrusted
+/// governing module, because the module to fix is not always the one whose text holds the call.
+/// An untrusted definer (`lib`) is named as the untrusted module. A trusted definer (`host`)
+/// whose instance an untrusted caller creates names that caller (`tool`). With two untrusted
+/// governing modules both are named, the definer first, beside the declaration half's own R008.
+/// The code set is exactly {R008} each time, and the messages are pinned whole.
+#[test]
+fn r008_call_half_message_names_the_definer_and_the_untrusted_modules() {
+    const TAIL: &str = "not `#[trusted]`: binding a host function requires every module governing \
+                        this instance to be `#[ring(outer)] #[trusted]`";
+    let untrusted_definer = "#[ring(outer)] #[trusted]\nmodule host;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+         pub fn boot(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { return g(1, p, n); }\n\
+         #[ring(outer)]\nmodule lib;\n\
+         pub fn g<T>(x: T, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n";
+    let untrusted_caller = "#[ring(outer)]\nmodule tool;\nuse sigil::host;\n\
+         pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let b: Reader<i64> = Reader { tag: 1 }; return b.read(p, n); }\n\
+         #[ring(outer)] #[trusted]\nmodule host;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+         record Reader<T> { tag: T }\n\
+         impl Reader<T> {\n\
+             pub fn read(self: Reader<T>, p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+         }\n";
+    let two_untrusted = untrusted_definer.replace(
+        "#[ring(outer)] #[trusted]\nmodule host;",
+        "#[ring(outer)]\nmodule host;",
+    );
+    assert_ne!(
+        two_untrusted, untrusted_definer,
+        "the rewrite must reach the attribute"
+    );
+
+    // Every R008 message of a program whose exact code set is {R008}, sorted.
+    let r008_messages = |label: &str, source: &str| -> Vec<String> {
+        let err = compile_named_module(format!("{label}.sigil"), source)
+            .expect_err("an extern call under an untrusted meet must not compile");
+        let mut codes: Vec<&str> = err
+            .diagnostics()
+            .iter()
+            .map(|d| d.code().as_str())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes, ["R008"], "{label}: exact code set");
+        let mut messages: Vec<String> = err
+            .diagnostics()
+            .iter()
+            .map(|d| d.message().to_string())
+            .collect();
+        messages.sort();
+        messages
+    };
+
+    assert_eq!(
+        r008_messages("untrusted_definer", untrusted_definer),
+        [format!(
+            "generic code defined in module `lib` calls extern function `fs_read`, but \
+             governing module `lib` is {TAIL}"
+        )]
+    );
+    assert_eq!(
+        r008_messages("untrusted_caller", untrusted_caller),
+        [format!(
+            "generic code defined in module `host` calls extern function `fs_read`, but \
+             governing module `tool` is {TAIL}"
+        )]
+    );
+    assert_eq!(
+        r008_messages("two_untrusted", &two_untrusted),
+        [
+            format!(
+                "generic code defined in module `lib` calls extern function `fs_read`, but \
+                 governing modules `lib` and `host` are {TAIL}"
+            ),
+            "outer-ring module `host` declares extern function `fs_read` but is not \
+             `#[trusted]`: binding a host function requires `#[ring(outer)] #[trusted]`"
+                .to_string(),
+        ]
     );
 }
 

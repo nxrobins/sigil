@@ -1,0 +1,7 @@
+// R014: an actor is declared in an outer-ring module, which the actor runtime never hosts.
+#[ring(outer)] module tool;
+entry actor Main {
+    on Start() -> i64 {
+        return 7;
+    }
+}

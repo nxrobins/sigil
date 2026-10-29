@@ -1,0 +1,17 @@
+{
+  "contract_hash": "sha256:4eb2e813f8b303ce5974b338414d8c735bd198b655830f938e06b85490a9581b",
+  "effects": [
+    "Alloc",
+    "FFI",
+    "KvIO",
+    "Unsafe"
+  ],
+  "host_imports": [],
+  "package": "autoresearch-store/tool",
+  "scope": "operator-approved Public checkpoint transport; stored results remain Internal",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "tool::tool_main(input_ptr:Public,input_len:Public)->Internal"
+  ],
+  "version": "0.1.0-public.1"
+}

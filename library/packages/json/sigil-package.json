@@ -1,0 +1,56 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-404",
+      "-429",
+      "-430"
+    ],
+    "taint_contracts": [
+      "json::array_len(input_ptr:Flow,input_len:Flow)->Flow",
+      "json::escape_string(input_ptr:Flow,input_len:Flow)->Flow",
+      "json::parse_field(input_ptr:Flow,input_len:Flow,key_ptr:Flow,key_len:Flow)->Flow",
+      "json::parse_index(input_ptr:Flow,input_len:Flow,index:Flow)->Flow",
+      "json::validate(input_ptr:Flow,input_len:Flow)->Flow"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Existing JSON codec packaged byte-identically for public source library use; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:10707e9f4255bac226d394a8b1702fd994e1019021f2895bc8805d103dc0127e",
+    "api_contract_hash": "sha256:24b297aae7e629e9bd0442429f8a0a80af0611ed1ae5aed1252f1eec304bf4f4",
+    "charter_hash": "sha256:c05b345f9863885d0ceb28ce0eb857be97abc3223e12c096b66c1231423449a2",
+    "evidence_manifest_hash": "sha256:94484e6596b85500b38d7af08d10cbe21e417c57e165028ca037eb63b68a975e"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "json"
+  ],
+  "name": "json",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

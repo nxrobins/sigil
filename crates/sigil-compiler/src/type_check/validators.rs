@@ -139,7 +139,7 @@ fn declared_type_arity(name: &str, universe: &TypeUniverse) -> Option<usize> {
 
 /// Arity-only recursive walk — mirrors the T231 arm of `validate_lowered_type`,
 /// descending every composite position. Emits ONLY T231 (no T066 / cap codes).
-fn check_type_arg_arity(
+pub(super) fn check_type_arg_arity(
     ty: &Type,
     universe: &TypeUniverse,
     span: Span,

@@ -470,8 +470,12 @@ pub(super) struct TypeUniverse {
     /// effect) and checks its argument count (E007). BTreeMap for deterministic
     /// diagnostic order.
     pub(super) effect_ops: std::collections::BTreeMap<String, Vec<EffectOpInfo>>,
-    /// Extern function names (for routing Call → ExternCall)
-    pub(super) extern_fns: HashSet<String>,
+    /// Every extern declaration, keyed by QUALIFIED name (`module::name`) and mapped to its
+    /// DECLARED name (`name`), for routing a call that RESOLVED to one into `ExternCall`.
+    /// Never test a bare callee name against the keys: a same-named local function must stay
+    /// an ordinary call. The value, never the callee's spelling, names the `ExternCall`: it is
+    /// the host import's name, and a qualified self-call spells the callee as a path.
+    pub(super) extern_fns: HashMap<String, String>,
     /// PR-3a (trait Wall): trait name → its resolved contract. Populated in
     /// pass 2 of `collect_type_universe`. The satisfaction check (PR-3b) verifies
     /// a concrete type provides every required method with a matching signature.
@@ -537,6 +541,22 @@ pub(crate) struct MonomorphTracker {
     /// Monotone across the entire check, including failed/cache-removed attempts.
     specialization_attempts: usize,
     pub(super) work_exhausted: bool,
+    /// The running speculations and the instance creations inside them,
+    /// innermost last (`begin_speculation`, `begin_creation`).
+    frames: Vec<SpeculationFrame>,
+    /// How many `SpeculationFrame::Speculation` entries `frames` holds.
+    speculations: usize,
+    /// What each creation attempt inside a speculation reported, with the
+    /// attempts its body used, by attempt; `None` while its creation is open
+    /// and once claimed (`claim`). A `used` list can name an open attempt (a
+    /// recursion back edge): claims run only with no frame open, when every
+    /// attempt has ended.
+    attempts: Vec<Option<PendingInstance>>,
+    /// The attempt whose creation of each instance name stands (still cached).
+    standing: HashMap<String, usize>,
+    /// The work limit's T151, reported while a speculation ran (`exhaust_work`)
+    /// and delivered when the outermost speculation ends.
+    held: Vec<crate::diagnostics::Diagnostic>,
     /// Current enclosing function's effects — closures inherit this.
     pub(super) current_effects: EffectSet,
     /// Wall 4 Step 7 / N15-S7, N25-S7: declared return refinement for
@@ -590,7 +610,12 @@ pub(crate) struct MonomorphTracker {
     /// correctly. `infer_path_expr` walks the stack top-down on
     /// single-segment local-variable lookups to attach the refinement
     /// to the returned `TypedExpr.refinement`.
-    pub(super) pattern_refinement_stack: Vec<HashMap<String, Vec<crate::ast::RefinementClause>>>,
+    /// DBC-0a: a frame holds one `RefinementEntry` per binding the scope
+    /// introduced (`check_block` pushes a frame per block; parameters, loop
+    /// variables, match bindings, closure parameters and handle binders get
+    /// frames or entries of their own), so a lookup stops at the innermost
+    /// binding of a name and a `mut` binding carries no fact.
+    pub(super) pattern_refinement_stack: Vec<super::refinement::RefinementFrame>,
     /// RANGE-FOR (RF-M2): the MUTATION/SHADOW-PROOF bounds-fact channel - one
     /// entry per lexically-enclosing `for v in 0..K` whose fact survived the
     /// gates (literal-`0` start; `K` resolved Z3-FREE from a literal or an
@@ -601,7 +626,10 @@ pub(crate) struct MonomorphTracker {
     /// `[lo, hi_exclusive)` at every body program point. Closure and
     /// handle-clause bodies are BARRIERED (the channel is `mem::take`n around
     /// their `check_block`) - they are lambda-lifted into DIFFERENT functions
-    /// whose binders may shadow the name. Sole writer: the `check_block`
+    /// whose binders may shadow the name - and so is every function body
+    /// (`check_function_block`), an instance body included: one first created
+    /// inside a range loop had its `a[i]` checks elided for every caller.
+    /// Sole writer: the `check_block`
     /// ForRange arm; sole consumer: `infer_index_expr`. Z3 is never consulted
     /// - the elision this feeds stays out of the memory-safety TCB (SC-6).
     pub(super) range_loop_facts: Vec<RangeLoopFact>,
@@ -630,8 +658,12 @@ pub(crate) struct MonomorphTracker {
     /// CRITICAL: let-annotations, return-type annotations, and
     /// function-arg expected-type DO NOT write this flag.
     /// "Immediate" means EXACTLY the parent `Expr::Borrow` AST
-    /// node; any wrapping (a let-binding's value, a return
-    /// expression, etc.) clears the flag before recursion.
+    /// node: `infer_expr` clears the flag for everything beneath any
+    /// expression but a slice, and a function body starts with it
+    /// clear (`check_function_block`). Left set beneath other
+    /// expressions, it admitted a bare slice in a borrowed call's
+    /// argument (`&g(arr[1..3])`), in a closure under a borrowed call,
+    /// and in an instance body first created under `&g(..)`.
     pub(super) parent_is_immediate_borrow: bool,
     /// Mutation-as-capability (PR-1, NC-1): names of `@ReadOnly` parameters AND
     /// locals that inherit readonly via propagation (`let b = p` makes `b`
@@ -654,6 +686,9 @@ pub(crate) struct MonomorphTracker {
     pub(super) current_region_depth: u32,
     /// break/continue: current loop nesting depth (0 outside any loop; `+1` per
     /// `while`/`for-in` body entered). `break`/`continue` are valid iff this is `> 0`.
+    /// It starts at 0 in every function body (`check_function_block`) and in
+    /// every closure or handle-clause body, since a loop of the body that
+    /// encloses one is a loop of a different function.
     pub(super) loop_depth: u32,
     /// Regions (DEF-2b, LD-2/LD-6): the param→region-slot map for the function body
     /// currently being checked. A `Region` parameter maps to its OWN position; an
@@ -763,6 +798,22 @@ impl RegionId {
     }
 }
 
+/// An entry of `MonomorphTracker::frames`.
+enum SpeculationFrame {
+    /// A running speculation (`begin_speculation`).
+    Speculation,
+    /// An instance creation attempt inside a speculation (`begin_creation`),
+    /// with the attempts its own body has used so far.
+    Creation { attempt: usize, used: Vec<usize> },
+}
+
+/// What one creation attempt inside a speculation reported, and the attempts
+/// its body used (`MonomorphTracker::end_creation`).
+struct PendingInstance {
+    diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    used: Vec<usize>,
+}
+
 impl MonomorphTracker {
     /// BUG-5b round 3: the governing home of an instance of a generic written in
     /// `definer` whose body is re-checked with `sigs_module`'s function sigs.
@@ -791,6 +842,11 @@ impl MonomorphTracker {
             depth: 0,
             specialization_attempts: 0,
             work_exhausted: false,
+            frames: Vec::new(),
+            speculations: 0,
+            attempts: Vec::new(),
+            standing: HashMap::new(),
+            held: Vec::new(),
             current_effects: EffectSet::empty(),
             current_return_refinement: None,
             workspace_sigs: std::collections::BTreeMap::new(),
@@ -824,7 +880,11 @@ impl MonomorphTracker {
         span: crate::span::Span,
         diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
     ) -> bool {
-        if self.work_exhausted || self.cache.contains(name) {
+        if self.cache.contains(name) {
+            self.note_use(name, diagnostics);
+            return false;
+        }
+        if self.work_exhausted {
             return false;
         }
         if self.specialization_attempts >= MAX_MONOMORPH_INSTANTIATIONS {
@@ -836,6 +896,157 @@ impl MonomorphTracker {
         true
     }
 
+    /// Begin a speculative inference: a typing whose diagnostics are discarded,
+    /// such as a generic method's arguments typed into a sink only to bind the
+    /// method's own type parameters. Pair it with `end_speculation`.
+    ///
+    /// Some work is done once and then remembered: an instance's body is checked
+    /// when the cache first takes its name (cache-before-check), and the work
+    /// limit reports T151 once and then makes every later expression `Error`
+    /// with no diagnostic. Done inside a speculation, that work reported into the
+    /// discarded buffer, and the real inference after it found the work done and
+    /// reported nothing: a type error in a generic body first reached through a
+    /// method's argument was never reported (`compile_tool` returned a module the
+    /// engine refused, or one that ran), and neither was the limit. So an
+    /// instance a speculation creates keeps its report (`begin_creation`) until
+    /// a real inference uses it (`claim`), and the limit's T151 is held until
+    /// the outermost speculation ends (`exhaust_work`). An instance that no real
+    /// inference reaches, directly or through the bodies of the instances it
+    /// reaches (the speculation typed its call against a type parameter not yet
+    /// bound, and the real inference reaches another instance), is the
+    /// speculation's artifact: its report is dropped, as it was. Nothing is
+    /// checked twice.
+    pub(super) fn begin_speculation(&mut self) {
+        self.frames.push(SpeculationFrame::Speculation);
+        self.speculations += 1;
+    }
+
+    /// End a speculative inference. The outermost one delivers the work
+    /// limit's T151, if a speculation hit it, into `diagnostics`, its caller's
+    /// buffer; an inner one leaves it held, since its caller's buffer may be
+    /// the outer speculation's sink.
+    pub(super) fn end_speculation(
+        &mut self,
+        diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+    ) {
+        let frame = self.frames.pop();
+        debug_assert!(
+            matches!(frame, Some(SpeculationFrame::Speculation)),
+            "end_speculation pairs with begin_speculation"
+        );
+        self.speculations -= 1;
+        if self.speculations == 0 {
+            diagnostics.append(&mut self.held);
+        }
+    }
+
+    /// Begin the creation of the instance `name`, just after its reservation.
+    /// Inside a speculation it is an attempt that reports into a buffer of its
+    /// own, handed to `end_creation`, and its number is returned: whether its
+    /// report counts is known only when a real inference uses it (`claim`). The
+    /// enclosing attempt, if any, records it as used by its body, failed or
+    /// not; a speculation's own typing records nothing, since it is discarded.
+    /// The attempt stands under `name` from here, while its body is checked, so
+    /// a use that recursion reaches before the body ends is recorded too:
+    /// recorded only once the body ended, such a back edge was lost, and with
+    /// it the report of an instance the program calls (`f<i64>` calling back
+    /// into `g<i64>`, whose own creation was still open).
+    pub(super) fn begin_creation(&mut self, name: &str) -> Option<usize> {
+        if self.speculations == 0 {
+            return None;
+        }
+        let attempt = self.attempts.len();
+        self.attempts.push(None);
+        if let Some(SpeculationFrame::Creation { used, .. }) = self.frames.last_mut() {
+            used.push(attempt);
+        }
+        self.frames.push(SpeculationFrame::Creation {
+            attempt,
+            used: Vec::new(),
+        });
+        self.standing.insert(name.to_owned(), attempt);
+        Some(attempt)
+    }
+
+    /// End the creation of the instance `name`. An attempt (`begin_creation`)
+    /// keeps its buffer, with the attempts its body used, until a real
+    /// inference uses it. A creation that took its name back out of the cache
+    /// (an impl method or associated function at the depth limit, or an
+    /// internal failure) checked no body, and stops standing under the name: it
+    /// is reached only through the attempt that used it, or else tried again by
+    /// the real inference, which reports for itself. Fails closed: if the work
+    /// limit stops that retry, the T151 is reported. A free function at the
+    /// depth limit keeps its name and checks no body, so its attempt stands,
+    /// with that limit's T151 as its report.
+    pub(super) fn end_creation(
+        &mut self,
+        attempt: Option<usize>,
+        name: &str,
+        diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    ) {
+        let Some(attempt) = attempt else {
+            return;
+        };
+        let used = match self.frames.pop() {
+            Some(SpeculationFrame::Creation {
+                attempt: open,
+                used,
+            }) if open == attempt => used,
+            _ => panic!("ICE: end_creation of `{name}` pairs with its begin_creation"),
+        };
+        self.attempts[attempt] = Some(PendingInstance { diagnostics, used });
+        if !self.cache.contains(name) && self.standing.get(name) == Some(&attempt) {
+            self.standing.remove(name);
+        }
+    }
+
+    /// A cache hit on the instance `name`. If a speculation created it, or is
+    /// creating it, and its report is pending: inside an attempt's own body the
+    /// hit is one of that attempt's uses; in a speculation's own typing it is
+    /// no use at all, since that typing is discarded; outside every speculation
+    /// it is a real use, which claims the report.
+    fn note_use(&mut self, name: &str, diagnostics: &mut Vec<crate::diagnostics::Diagnostic>) {
+        let Some(&attempt) = self.standing.get(name) else {
+            return;
+        };
+        match self.frames.last_mut() {
+            Some(SpeculationFrame::Creation { used, .. }) => used.push(attempt),
+            Some(SpeculationFrame::Speculation) => {}
+            None => self.claim(attempt, diagnostics),
+        }
+    }
+
+    /// Deliver into `diagnostics` what `attempt` reported and, transitively,
+    /// what every attempt its body used reported: a real inference uses the
+    /// instance, so those bodies are part of the program. Each report goes
+    /// through `report_once`, so a span already reported is not reported again,
+    /// as when two instances of one generic body are checked into one buffer.
+    fn claim(&mut self, attempt: usize, diagnostics: &mut Vec<crate::diagnostics::Diagnostic>) {
+        let mut attempts = vec![attempt];
+        while let Some(attempt) = attempts.pop() {
+            if let Some(pending) = self.attempts[attempt].take() {
+                for diagnostic in pending.diagnostics {
+                    super::resolve::report_once(diagnostics, diagnostic);
+                }
+                attempts.extend(pending.used.into_iter().rev());
+            }
+        }
+    }
+
+    /// Close the speculation bookkeeping at the end of the check. Fails closed:
+    /// the work limit's T151 is delivered when the outermost speculation ends,
+    /// so `held` is empty here unless a speculation was left open, and then it
+    /// is reported rather than dropped. What attempts still hold is the report
+    /// of instances no real inference used, the speculations' artifacts, and is
+    /// dropped (`begin_speculation`).
+    pub(super) fn finish_speculations(
+        &mut self,
+        diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+    ) {
+        debug_assert!(self.frames.is_empty(), "a speculation was left open");
+        diagnostics.append(&mut self.held);
+    }
+
     fn exhaust_work(
         &mut self,
         reason: &str,
@@ -843,13 +1054,20 @@ impl MonomorphTracker {
         diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
     ) {
         if !self.work_exhausted {
-            diagnostics.push(crate::diagnostics::Diagnostic::error(
+            let limit = crate::diagnostics::Diagnostic::error(
                 crate::diagnostics::codes::T151,
                 format!(
                     "type expansion work limit exceeded ({reason}); simplify generic expansion"
                 ),
                 Some(span),
-            ));
+            );
+            // Reported once, then every later expression is `Error` with no
+            // diagnostic: inside a speculation it is held (`begin_speculation`).
+            if self.speculations > 0 {
+                self.held.push(limit);
+            } else {
+                diagnostics.push(limit);
+            }
             self.work_exhausted = true;
         }
     }
@@ -951,10 +1169,13 @@ impl Drop for ExpectedTypeGuard<'_> {
 /// into its inner expression; the guard's `Drop` restores the prior
 /// flag value when the inner inference returns.
 ///
-/// Per N22-AF, this struct is the SOLE writer of
-/// `MonomorphTracker.parent_is_immediate_borrow`. Two writer sites
-/// total: `enter()` (set true) and `Drop::drop` (restore prior).
-/// CI grep-lint in commit #6 enforces this canonicality.
+/// Per N22-AF, this struct is the SOLE writer that SETS
+/// `MonomorphTracker.parent_is_immediate_borrow`: `enter()` sets it
+/// and `Drop::drop` restores the prior value. Three other sites only
+/// CLEAR it, each restoring it after: `infer_expr` for everything
+/// beneath any expression but a slice, `infer_slice_expr` for a
+/// slice's own children, and `check_function_block` for a function
+/// body. So only the borrow's direct child ever sees it set.
 ///
 /// Critical correctness note: ANY recursion into a non-Borrow
 /// child of a Borrow expression must clear the flag first. The

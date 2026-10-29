@@ -790,7 +790,7 @@ pub(crate) fn load_cert_file_with_policy(
         .map_err(|error| map_certificate_document_error(path, error))
 }
 
-fn load_package_cert_file_with_policy(
+pub(crate) fn load_package_cert_file_with_policy(
     path: &std::path::Path,
     policy: &CertificateProvenancePolicy,
 ) -> Result<LoadedCertificate<sigil_compiler::package::PackageCertificateJson>, GateFailure> {

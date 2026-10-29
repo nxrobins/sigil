@@ -3,7 +3,7 @@
 //! `cert_gate`, execute it on the runtime, or serve it (`--serve`).
 //! Also owns the wat rendering helpers `forge` borrows.
 
-use std::fs;
+use std::{fs, io::Write};
 
 use anyhow::{Context, bail};
 use serde_json::json;
@@ -15,13 +15,15 @@ use sigil_runtime::RuntimeHost;
 
 use crate::json_envelope::{
     Envelope, OutputFormat, compile_error_to_json, runtime_error_to_diagnostic,
+    tool_error_to_diagnostic,
 };
 
 use crate::args::{CommandKind, CompileCommand};
 
 use crate::cert_gate::{
     GateFailure, certificate_from_compilation, emit_gate_failure, gate_cert,
-    load_cert_file_with_policy, require_solver_verified_from_env,
+    load_cert_file_with_policy, load_package_cert_file_with_policy,
+    require_solver_verified_from_env,
 };
 use crate::cert_provenance::serialize_certificate_document;
 
@@ -34,10 +36,7 @@ pub(crate) fn run_check_or_run(
     context: &CompilerContext,
 ) -> anyhow::Result<()> {
     if let Some(package_root) = &command.package_root {
-        if kind != CommandKind::Check {
-            bail!("--package is supported only by `sigil check`");
-        }
-        return run_package_check(command, package_root, fmt, context);
+        return run_package(command, package_root, kind, fmt, context);
     }
     // Foreign-frontend: when `--from <lang>` is set, translate the source DSL
     // to SIGIL first, then compile the emitted SIGIL through the normal
@@ -278,30 +277,57 @@ fn emit_check_success(
     Ok(())
 }
 
-fn run_package_check(
+fn run_package(
     command: &CompileCommand,
     package_root: &std::path::Path,
+    kind: CommandKind,
     fmt: OutputFormat,
     context: &CompilerContext,
 ) -> anyhow::Result<()> {
     let options = CompileOptions {
         build_deadline: command.build_deadline,
     };
-    let package = match sigil_compiler::package::compile_local_package_with_context(
-        package_root,
-        options,
-        context,
-    ) {
+    // Package execution always re-resolves and obtains a fresh solver witness.
+    // The legacy single-source unverified override cannot weaken this path.
+    let result = if kind == CommandKind::Run {
+        if let Some(path) = &command.cert_path {
+            let loaded =
+                match load_package_cert_file_with_policy(path, &command.cert_provenance_policy) {
+                    Ok(loaded) => loaded,
+                    Err(failure) => return emit_gate_failure(kind, fmt, failure),
+                };
+            sigil_compiler::package::verify_local_package_certificate_with_context(
+                package_root,
+                &loaded.certificate,
+                options,
+                context,
+            )
+        } else {
+            if command.cert_provenance_policy.requires_authenticated() {
+                return emit_gate_failure(kind, fmt, GateFailure::ProvenanceMismatch {
+                    reason: "authenticated certificate provenance is required, but no --cert was supplied".to_owned(),
+                });
+            }
+            sigil_compiler::package::compile_local_package_with_context(
+                package_root,
+                options,
+                context,
+            )
+        }
+    } else {
+        sigil_compiler::package::compile_local_package_with_context(package_root, options, context)
+    };
+    let package = match result {
         Ok(package) => package,
         Err(sigil_compiler::package::PackageCompileError::Package(error))
             if error.code == "E_SOLVER_UNVERIFIED" =>
         {
-            return emit_gate_failure(CommandKind::Check, fmt, GateFailure::SolverUnverified);
+            return emit_gate_failure(kind, fmt, GateFailure::SolverUnverified);
         }
         Err(sigil_compiler::package::PackageCompileError::Package(error)) => {
             if fmt.is_json() {
                 Envelope::error_with_data(
-                    CommandKind::Check.json_name(),
+                    kind.json_name(),
                     Vec::new(),
                     json!({
                         "code": error.code,
@@ -318,16 +344,16 @@ fn run_package_check(
             let fallback = package_root.join("sigil-package.json");
             let source = SourceFile::new(fallback.display().to_string(), String::new());
             if fmt.is_json() {
-                Envelope::error(
-                    CommandKind::Check.json_name(),
-                    compile_error_to_json(&error, &source),
-                )
-                .emit();
+                Envelope::error(kind.json_name(), compile_error_to_json(&error, &source)).emit();
                 bail!("package source compilation failed");
             }
             bail!("{}", error.render(&source));
         }
     };
+
+    if kind == CommandKind::Run {
+        return run_package_tool(command, &package, fmt);
+    }
 
     if let Some(out) = &command.wasm_out_path {
         fs::write(out, &package.compilation.wasm_inner)
@@ -367,6 +393,116 @@ fn run_package_check(
         if let Some(outer) = &package.compilation.wasm_outer {
             print_wat("outer module", outer)?;
         }
+    }
+    Ok(())
+}
+
+/// First developer execution profile: a root-owned, Public, host-free tool ABI.
+/// Reuse the production ephemeral runtime with explicit finite budgets, not the
+/// private admission judge or its experimental runtime bridge.
+fn run_package_tool(
+    command: &CompileCommand,
+    package: &sigil_compiler::package::PackageCompilation,
+    fmt: OutputFormat,
+) -> anyhow::Result<()> {
+    use sigil_compiler::{
+        ast::{Ring, TaintLabel},
+        type_check::Type,
+        typed_ast::TypedFunctionKind,
+    };
+    let compilation = &package.compilation;
+    let entry = compilation
+        .typed
+        .modules
+        .iter()
+        .find(|module| module.name == "tool")
+        .and_then(|module| {
+            module
+                .functions
+                .iter()
+                .find(|function| function.export_name == "tool__tool_main")
+        });
+    let owned = package
+        .graph
+        .sources
+        .iter()
+        .any(|source| source.package == package.graph.root_package && source.module == "tool");
+    let public_abi = entry.is_some_and(|entry| {
+        entry.kind == TypedFunctionKind::ModuleFunction
+            && entry.externally_callable
+            && entry.captures.is_empty()
+            && entry.ret == Type::I64
+            && entry.ret_taint == TaintLabel::Public
+            && !entry.ret_flow
+            && entry.params.len() == 2
+            && entry.params.iter().all(|parameter| {
+                parameter.ty == Type::I64
+                    && parameter.taint == TaintLabel::Public
+                    && !parameter.flow
+            })
+    });
+    let host_free = compilation.wasm_outer.is_none()
+        && compilation.typed.modules.iter().all(|module| {
+            module.ring == Ring::Inner && !module.trusted && module.externs.is_empty()
+        })
+        && compilation
+            .effects_required
+            .iter()
+            .all(|effect| effect == "Alloc");
+    if !owned || !public_abi || !host_free {
+        let message = "package run requires a root-owned Public tool::tool_main(i64, i64)->i64, inner ring, and Alloc-only effects; no host imports or grants";
+        if fmt.is_json() {
+            crate::json_envelope::emit_generic_error(
+                CommandKind::Run.json_name(),
+                sigil_compiler::diagnostics::codes::R800,
+                message.to_owned(),
+            );
+        }
+        bail!("{message}");
+    }
+    let input = command.package_input.as_deref().unwrap_or("").as_bytes();
+    let output = match sigil_runtime::execute_ephemeral_with_budgets(
+        &compilation.wasm_inner,
+        input,
+        command.package_fuel.unwrap_or(100_000),
+        10_000_000,
+        16 * 1024 * 1024,
+        &sigil_runtime::IoGrants::default(),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            if fmt.is_json() {
+                Envelope::error(
+                    CommandKind::Run.json_name(),
+                    vec![tool_error_to_diagnostic(&error)],
+                )
+                .emit();
+            }
+            bail!("{error}");
+        }
+    };
+    if fmt.is_json() {
+        // `proof_tier` is derived from the capability witness, never written
+        // as a literal: `run_package` reaches here only through the
+        // solver-requiring loaders, so today it always reads
+        // `solver_verified`, and the derivation keeps the envelope honest if
+        // a later refactor loosens those loaders.
+        Envelope::ok(
+            CommandKind::Run.json_name(),
+            json!({
+                "root_package": package.graph.root_package,
+                "package_graph_hash": package.graph.graph_hash,
+                "source_framing_hash": package.graph.source_framing_hash,
+                "output": output.output,
+                "output_text": std::str::from_utf8(&output.output).ok(),
+                "fuel_consumed": output.fuel_consumed,
+                "proof_tier": package.proof_tier(), "admission": "not_evaluated",
+            }),
+        )
+        .emit();
+    } else {
+        // Exact bytes, with no decoration or lossy UTF-8 conversion.
+        std::io::stdout().lock().write_all(&output.output)?;
     }
     Ok(())
 }

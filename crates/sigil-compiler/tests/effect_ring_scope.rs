@@ -17,8 +17,9 @@
 //! beside them so its limits are not mistaken for coverage:
 //!
 //! * R003 — inner-ring code cannot call an `extern` (the host-effect primitive). LOAD-BEARING.
-//! * R004 — inner-ring code cannot call an outer-ring wrapper directly (only `grant` crosses).
-//!   LOAD-BEARING.
+//! * R004 — no call crosses the ring boundary, in either direction, so inner-ring code cannot
+//!   call an outer-ring wrapper; a call made inside a `grant` body is no exception, because the
+//!   `grant` closure runs in its caller's ring. LOAD-BEARING.
 //! * E003 — an inner-ring free fn cannot NAME `FFI` / `Unsafe` in a declared row. NOT
 //!   load-bearing: it does nothing about a `handle Unsafe` block in a row-less inner-ring fn
 //!   (pinned clean below), and its validator walks free `FnDef` items only, so an inner-ring
@@ -219,8 +220,9 @@ fn inner_ring_privilege_row_is_fenced_by_e003() {
 }
 
 /// Host-boundary fence 2 (R004): inner-ring code cannot reach host I/O through an outer-ring
-/// wrapper by a direct cross-ring call; only `grant` crosses the boundary. Exact set {R004}: the
-/// outer wrapper itself is legal (it is `#[trusted]` and declares its row), so nothing else fires.
+/// wrapper by a cross-ring call. Exact set {R004}. R004 is a type-check error, so the pipeline
+/// stops before the security passes run: the wrapper compiled alone is a T001 (it returns an
+/// FFI-derived `@Internal` value under a `@Public` signature), which never surfaces here.
 #[test]
 fn inner_to_outer_cross_ring_call_is_fenced_by_r004() {
     assert_codes(
@@ -235,6 +237,246 @@ fn inner_to_outer_cross_ring_call_is_fenced_by_r004() {
         "cross_ring_call",
         &["R004"],
     );
+}
+
+/// `grant` is not a way across the ring boundary. It lends a borrowed capability to a closure
+/// that runs in the caller's own ring, so a call into an outer-ring function made inside a
+/// `grant` body is a cross-ring call like any other: exact set {R004}. Earlier diagnostics and
+/// docs described `grant` as the bridge; this pins that it is not. The control below is the same
+/// program without the call. Both use an outer helper with no FFI, so no other diagnostic can
+/// mask or join the verdict (the FFI-backed `io` wrapper above is itself a T001, hidden there
+/// because R004 stops the pipeline first).
+#[test]
+fn inner_ring_grant_body_calling_the_outer_ring_is_fenced_by_r004() {
+    assert_codes(
+        "#[ring(outer)] #[trusted]\n\
+         module outer_lib;\n\
+         pub fn helper(x: i64) -> i64 ! { Alloc } { return x + 1; }\n\
+         module app;\n\
+         use outer_lib;\n\
+         cap type Fuel { burn }\n\
+         pub fn boot(f: Fuel) -> i64 ! { Alloc } {\n\
+             let r: i64 = grant(&f, fn(c: &Fuel) -> i64 { return outer_lib::helper(41); });\n\
+             return r;\n\
+         }\n",
+        "grant_cross_ring_call",
+        &["R004"],
+    );
+}
+
+/// Control for the test above: the same program with the outer-ring call taken out of the
+/// `grant` body compiles clean, so the {R004} above belongs to the call, not to `grant`.
+#[test]
+fn inner_ring_grant_without_a_cross_ring_call_compiles() {
+    assert_codes(
+        "#[ring(outer)] #[trusted]\n\
+         module outer_lib;\n\
+         pub fn helper(x: i64) -> i64 ! { Alloc } { return x + 1; }\n\
+         module app;\n\
+         use outer_lib;\n\
+         cap type Fuel { burn }\n\
+         pub fn boot(f: Fuel) -> i64 ! { Alloc } {\n\
+             let r: i64 = grant(&f, fn(c: &Fuel) -> i64 { return 41; });\n\
+             return r;\n\
+         }\n",
+        "grant_in_ring",
+        &[],
+    );
+}
+
+/// R004 holds in both directions: outer-ring code cannot call an inner-ring function either.
+/// Exact set {R004}.
+#[test]
+fn outer_to_inner_cross_ring_call_is_fenced_by_r004() {
+    assert_codes(
+        "#[ring(outer)] #[trusted]\n\
+         module shell;\n\
+         use core_lib;\n\
+         pub fn run(x: i64) -> i64 ! {} { return core_lib::twice(x); }\n\
+         module core_lib;\n\
+         pub fn twice(x: i64) -> i64 { return x * 2; }\n",
+        "outer_to_inner_call",
+        &["R004"],
+    );
+}
+
+/// A `grant` closure gains no host access either: an `extern` call inside an inner-ring `grant`
+/// body is still exactly {R003}, because the closure runs in the inner ring.
+#[test]
+fn inner_ring_grant_body_calling_an_extern_is_fenced_by_r003() {
+    assert_codes(
+        "module app;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+         cap type Fuel { burn }\n\
+         fn boot(f: Fuel) -> i64 ! {} {\n\
+             return grant(&f, fn(c: &Fuel) -> i64 { return fs_read(0, 0); });\n\
+         }\n",
+        "grant_extern_call",
+        &["R003"],
+    );
+}
+
+/// R008: an outer-ring module may declare an `extern` only if it is `#[trusted]`, because a
+/// declaration binds a host function. Exact set {R008} for the declaration alone and for one
+/// that is called; the trusted twin is clean. The inner ring is out of scope on purpose: an
+/// inner-ring declaration nothing calls is clean, and an inner-ring call is R003 (above).
+#[test]
+fn outer_ring_extern_without_trusted_is_fenced_by_r008() {
+    let declared = "#[ring(outer)]\nmodule shell;\n\
+                    extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n";
+    assert_codes(declared, "untrusted_outer_extern_decl", &["R008"]);
+
+    let called = format!(
+        "{declared}pub fn run(p: i32, n: i32) -> i64 ! {{ FFI, Unsafe }} {{\n\
+         let r: i64 @Internal = fs_read(p, n);\n\
+         return 0;\n\
+         }}\n"
+    );
+    assert_codes(&called, "untrusted_outer_extern_call", &["R008"]);
+
+    let trusted = called.replace("#[ring(outer)]\n", "#[ring(outer)] #[trusted]\n");
+    assert_codes(&trusted, "trusted_outer_extern_call", &[]);
+
+    let inner_declared = declared.replace("#[ring(outer)]\n", "");
+    assert_codes(&inner_declared, "inner_extern_decl_only", &[]);
+}
+
+/// The `ffi` imports a compiled ring module asks the host for.
+fn ffi_imports(wasm: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let wasmparser::Payload::ImportSection(reader) =
+            payload.expect("compiler-emitted Wasm must parse")
+        {
+            for import in reader.into_imports() {
+                let import = import.expect("compiler-emitted import must parse");
+                if import.module == "ffi" {
+                    names.push(import.name.to_owned());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// An extern call is a call that RESOLVED to an extern declaration. Here an untrusted outer-ring
+/// module's own `fn fs_read` shares its name with an extern that an inner-ring module declares
+/// and never calls. The call stays an ordinary call, and neither ring imports anything from the
+/// host. Matching bare names program-wide once made that call an FFI import, so untrusted code
+/// read host files with no `#[trusted]` anywhere in the program. The result is bound `@Internal`
+/// and never returned so that the old rule's program compiles: an extern's result is
+/// `@Internal`, and a `@Public` binding would have been rejected by the taint gate before any
+/// import was emitted, hiding the import from this test. The control, in which the call does
+/// resolve to an extern, shows the import detector firing.
+#[test]
+fn a_local_function_named_like_an_extern_elsewhere_stays_a_local_call() {
+    let shadowed = "#[ring(outer)]\nmodule u;\n\
+                    fn fs_read(path: i32, path_len: i32) -> i64 { return 5; }\n\
+                    pub fn run(p: i32, n: i32) -> i64 { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+                    module decl;\n\
+                    extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n";
+    let compilation = compile_named_module("u.sigil", shadowed)
+        .expect("a local call next to an unused same-named extern compiles clean");
+    let outer = compilation
+        .wasm_outer
+        .as_deref()
+        .expect("a two-ring program emits an outer-ring module");
+    assert_eq!(
+        ffi_imports(outer),
+        Vec::<String>::new(),
+        "the outer ring must not import the host function"
+    );
+    assert_eq!(
+        ffi_imports(&compilation.wasm_inner),
+        Vec::<String>::new(),
+        "the inner ring calls no extern either"
+    );
+
+    let resolved = "#[ring(outer)] #[trusted]\nmodule u;\n\
+                    extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+                    pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+                    module decl;\n\
+                    fn nothing() -> i64 { return 0; }\n";
+    let compilation =
+        compile_named_module("u.sigil", resolved).expect("a trusted extern call compiles");
+    assert_eq!(
+        ffi_imports(
+            compilation
+                .wasm_outer
+                .as_deref()
+                .expect("outer-ring module")
+        ),
+        vec!["fs_read".to_string()],
+        "control: a call that resolves to the extern imports it"
+    );
+}
+
+/// A module may call its own extern qualified with its own name: `u::fs_read(p, n)` inside `u`,
+/// or `sigil::u::fs_read(p, n)`, which the method-call reroute (`type_check/expressions/methods.rs`)
+/// reduces to the same two-segment path. The
+/// call resolves to the extern, and its `ExternCall` is named by the extern's DECLARED name, the
+/// host import. It was named by its spelling, which the formal gate refuses as an import name, so
+/// the program failed with the internal-error code I013 although the bare spelling compiles. Each
+/// qualified spelling now compiles clean to Wasm byte-identical to the bare spelling's, with the
+/// same `ffi.fs_read` import. The fences treat it as an extern call too: in an untrusted declarer
+/// it is exactly {R008}, in the inner ring exactly {R003}. Externs stay private: the same
+/// qualified call from another module is exactly {T155} in both spellings.
+#[test]
+fn a_qualified_self_call_to_an_extern_compiles_like_the_bare_call() {
+    let bare = "#[ring(outer)] #[trusted]\nmodule u;\n\
+                extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+                pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n";
+    let control = compile_named_module("u.sigil", bare).expect("the bare spelling compiles");
+    assert_eq!(
+        ffi_imports(control.wasm_outer.as_deref().expect("outer-ring module")),
+        vec!["fs_read".to_string()],
+        "control: the bare call imports the extern"
+    );
+    for (label, spelling) in [
+        ("module_qualified", "u::fs_read(p, n)"),
+        ("crate_qualified", "sigil::u::fs_read(p, n)"),
+    ] {
+        let qualified = bare.replace("= fs_read(p, n)", &format!("= {spelling}"));
+        assert_ne!(qualified, bare, "{label}: the rewrite must reach the call");
+        assert_codes(&qualified, &format!("{label}_self_call"), &[]);
+        let compilation = compile_named_module("u.sigil", qualified.as_str())
+            .expect("an empty code set is a clean compile");
+        assert_eq!(
+            ffi_imports(
+                compilation
+                    .wasm_outer
+                    .as_deref()
+                    .expect("outer-ring module")
+            ),
+            vec!["fs_read".to_string()],
+            "{label}: the same host import as the bare call"
+        );
+        assert!(
+            compilation.wasm_outer == control.wasm_outer
+                && compilation.wasm_inner == control.wasm_inner,
+            "{label}: `{spelling}` must emit the bare spelling's bytes"
+        );
+
+        let untrusted = qualified.replace("#[ring(outer)] #[trusted]\n", "#[ring(outer)]\n");
+        assert_codes(&untrusted, &format!("{label}_untrusted"), &["R008"]);
+        let inner = qualified
+            .replace("#[ring(outer)] #[trusted]\n", "")
+            .replace(" ! { FFI, Unsafe } { let r", " { let r");
+        assert_codes(&inner, &format!("{label}_inner_ring"), &["R003"]);
+    }
+
+    let from_another_module = "#[ring(outer)] #[trusted]\nmodule u;\n\
+         extern \"C\" fn fs_read(path: i32, path_len: i32) -> i64 ! { FFI, Unsafe };\n\
+         pub fn own(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = fs_read(p, n); return 0; }\n\
+         #[ring(outer)] #[trusted]\nmodule tool;\nuse sigil::u;\n\
+         pub fn run(p: i32, n: i32) -> i64 ! { FFI, Unsafe } { let r: i64 @Internal = u::fs_read(p, n); return 0; }\n";
+    assert_codes(from_another_module, "module_qualified_other", &["T155"]);
+    let crate_qualified = from_another_module.replace("= u::fs_read(", "= sigil::u::fs_read(");
+    assert_ne!(
+        crate_qualified, from_another_module,
+        "the rewrite must reach the call"
+    );
+    assert_codes(&crate_qualified, "crate_qualified_other", &["T155"]);
 }
 
 // ── The SECOND E001 emitter: ring-blind, type-check, generic callees ─
@@ -371,7 +613,8 @@ fn handle_at_the_call_site_does_not_silence_the_generic_row_check() {
 // legal code with the other ring's code. Measured shape of the class there (the CLI built from
 // ae026aec, every generic against its non-generic twin in both first-module orders): R001
 // (parameter, return, `let`; free fn and generic impl method), R002 and R003 escaped; R004
-// (type-check, keyed on the DEFINING module's ring) and R006 (a module attribute) did not.
+// (type-check, keyed on the ring of the module being checked, never the filing module's) and
+// R006 (a module attribute) did not.
 //
 // Integrated tree: the governing-meet fix (p2b/routing, `effect_ring_routing.rs`) checks each
 // instance under the meet of its definer and the modules whose scope resolved its names, so
@@ -560,11 +803,13 @@ fn ring_routing_mirror_direction_rejects_legal_generics() {
     );
 }
 
-/// Controls that must NOT flip: R004 is raised by the type checker against the DEFINING module's
-/// ring (`tracker.current_module_ring`), and R006 is a module-attribute check, so neither rides
-/// the monomorph routing. A generic cross-ring caller is exactly {R004} and a generic in an
-/// inner-ring `#[trusted]` module is exactly {R006}, identical to their non-generic twins, under
-/// both first-module rings.
+/// Controls that must NOT flip: R004 is raised by the type checker against the ring of the module
+/// being checked (`tracker.current_module_ring`), and R006 is a module-attribute check, so neither
+/// rides the monomorph routing. Each generic here is defined and called in one module, so that ring
+/// is also its definer's; `r004_in_a_generic_body_is_judged_against_the_instantiating_module` in
+/// `effect_ring_routing.rs` pins R004 with the two apart. A generic cross-ring caller is exactly
+/// {R004} and a generic in an inner-ring `#[trusted]` module is exactly {R006}, identical to their
+/// non-generic twins, under both first-module rings.
 #[test]
 fn ring_routing_r004_and_r006_do_not_escape_for_generics() {
     let r004 = "#[ring(outer)] #[trusted]\nmodule io;\neffect FsIO;\n\

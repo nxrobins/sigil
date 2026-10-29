@@ -1,0 +1,14 @@
+// One `i64` and one `u64` operand to `ct_lt`, which compares two `i64` as signed values and two `u64` as unsigned values, so the mixed pair has no single order: convert one with `.as_i64()` or `.as_u64()` first.
+// expect-error: T075
+// The marked line rebinds `b` as a `u64`; deleting it leaves the `i64` parameter, the accept twin.
+module tool;
+
+fn ct_min(a: i64, b: i64) -> i64 {
+    let b: u64 = 9; // MUTATION_SITE
+    let lt: bool = ct_lt(a, b);
+    return ct_select(lt, a, b);
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    return ct_min(input_ptr, input_len);
+}

@@ -430,8 +430,11 @@ fn ring_violation_has_full_structured_metadata() {
         "expected harness substring preserved"
     );
     assert!(
-        first.hint.as_ref().is_some_and(|h| h.contains("grant")),
-        "registry hint should suggest using grant"
+        first
+            .hint
+            .as_ref()
+            .is_some_and(|h| h.contains("in an inner-ring module")),
+        "registry hint should keep capability-owning code in the inner ring, not offer a grant"
     );
 }
 

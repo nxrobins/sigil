@@ -177,6 +177,11 @@ const K_PERFORM: i64 = 87;
 /// bounded_map's probe loops moved to the capped-scan `for i in 0..64` shape
 /// (the loop-aware-budget arc).
 const K_FOR_RANGE: i64 = 88;
+/// Effect Handlers (EH0b, SHP-5c-2 third review): one operation signature inside
+/// an `effect` body, `fn name(params) -> Ty;`, projected like a K_TRAIT_SIG: text =
+/// the operation name; children = [param…, return-type?]; span = fn..`;`. Matches
+/// `selfhost/parser.sigil`'s `P_K_EFFECT_OP = 89`.
+const K_EFFECT_OP: i64 = 89;
 const K_ERR: i64 = 900;
 /// AST kinds this slice doesn't parse yet (the SIGIL parser never emits
 /// this, so a corpus node of an unhandled kind is caught as a divergence).
@@ -220,6 +225,7 @@ fn kind_has_text(k: i64) -> bool {
             | K_TRAIT_SIG
             | K_EXTERN_FN
             | K_EFFECT_DECL
+            | K_EFFECT_OP
             | K_SEND
             | K_ASK
             | K_CAP_RESTRICT
@@ -765,26 +771,45 @@ fn flatten_item(item: &Item, out: &mut Vec<FlatNode>) {
                 flatten_type(rt, out);
             }
         }
-        // Effect Handlers (EH0b): `effect Name { fn op(..) -> Ty; .. }`. A LEAF —
-        // text = `Name(;op)*` (the operation NAMES ride the text, joined `;`,
-        // like StateDef's markers); a bare `effect Name;` is just `Name` (no
-        // suffix), so existing fixtures are unchanged. span = `effect`..name-end
-        // (the operations do not extend the decl span — parity with the oracle).
+        // Effect Handlers (EH0b, third review): `effect Name;` or
+        // `effect Name { fn op(..) -> Ty; .. }`. text = the name; children =
+        // [op…], each a K_EFFECT_OP projected like a K_TRAIT_SIG (text = the
+        // operation name; children = [param…, return-type?]; span = fn..`;`), so
+        // an operation's parameters and types are compared node-for-node and the
+        // self-hosted parser reads them with its ordinary parameter and type
+        // parsers (no signature scan, no fail-open bound). flags = 0: an
+        // operation parameter's label rides its own K_PARAM taint code (its last
+        // one, which is the `taint` this AST keeps), where the taint shadow's
+        // signal walk reads it like any parameter's. span: the marker form ends
+        // at the NAME (the oracle's legacy quirk), the braced form at its `}`
+        // (ET-P6 containment).
         Item::EffectDecl(e) => {
-            let mut text = e.name.clone();
-            for op in &e.ops {
-                text.push(';');
-                text.push_str(&op.name);
-            }
             out.push(FlatNode {
                 kind: K_EFFECT_DECL,
                 start: e.span.start as i64,
                 end: e.span.end as i64,
-                value: text.len() as i64,
+                value: e.name.len() as i64,
                 flags: 0,
-                child_count: 0,
-                text: Some(text),
+                child_count: e.ops.len() as i64,
+                text: Some(e.name.clone()),
             });
+            for op in &e.ops {
+                out.push(FlatNode {
+                    kind: K_EFFECT_OP,
+                    start: op.span.start as i64,
+                    end: op.span.end as i64,
+                    value: op.name.len() as i64,
+                    flags: 0,
+                    child_count: op.params.len() as i64 + i64::from(op.return_type.is_some()),
+                    text: Some(op.name.clone()),
+                });
+                for p in &op.params {
+                    flatten_param(p, out);
+                }
+                if let Some(rt) = &op.return_type {
+                    flatten_type(rt, out);
+                }
+            }
         }
         // Typestate (Epic 1, R3): `[pub] state Name { S1, S2, … }`. text =
         // `Name;S1;S2;…` (protocol name + its closed marker set, joined `;` —
@@ -1355,31 +1380,25 @@ fn flatten_expr(e: &Expr, out: &mut Vec<FlatNode>) {
             flatten_expr(&b.inner, out);
         }
         Expr::Call(c) => {
-            // Turbofish type-args are a later slice (PR-4 types).
-            if c.callee.type_args.is_empty() {
-                let name = c.callee.segments.join("::");
-                out.push(FlatNode {
-                    kind: K_CALL,
-                    start: c.span.start as i64,
-                    end: c.span.end as i64,
-                    value: name.len() as i64,
-                    flags: 0,
-                    child_count: c.args.len() as i64,
-                    text: Some(name),
-                });
-                for a in &c.args {
-                    flatten_expr(a, out);
-                }
-            } else {
-                out.push(FlatNode {
-                    kind: UNHANDLED,
-                    start: c.span.start as i64,
-                    end: c.span.end as i64,
-                    value: 0,
-                    flags: 0,
-                    child_count: 0,
-                    text: None,
-                });
+            // SHP-5c-3: explicit type args (`slot_new::<Fuel>()`) are the LEADING children,
+            // `flags` counting them; the arguments follow. The self-hosted parser takes a
+            // turbofish on a single-segment callee followed by `(` and bails on every other
+            // placement, so only that shape is in the corpus.
+            let name = c.callee.segments.join("::");
+            out.push(FlatNode {
+                kind: K_CALL,
+                start: c.span.start as i64,
+                end: c.span.end as i64,
+                value: name.len() as i64,
+                flags: c.callee.type_args.len() as i64,
+                child_count: (c.callee.type_args.len() + c.args.len()) as i64,
+                text: Some(name),
+            });
+            for t in &c.callee.type_args {
+                flatten_type(t, out);
+            }
+            for a in &c.args {
+                flatten_expr(a, out);
             }
         }
         Expr::MethodCall(m) => {
@@ -2270,8 +2289,14 @@ fn corpus() -> Vec<&'static str> {
         // extern fns: with and without effect rows
         "module t;\nextern \"C\" fn fs_read(ptr: i64, len: i64) -> i64 ! { FsIO, Alloc, FFI, Unsafe };\n",
         "module t;\nextern \"C\" fn noop();\n",
-        // effect declarations: semi form and braced form (span ends at the NAME)
-        "module t;\neffect FsIO;\neffect Z3Solve { }\n",
+        // effect declarations: the marker form (span ends at the NAME), the empty
+        // braced form (span ends at `}`) and the operation-bearing form, whose
+        // operations are children (K_EFFECT_OP) with their parameters and types.
+        "module t;\neffect FsIO;\neffect Z3Solve { }\neffect Log { fn note(x: i64 @Secret, v: Vec<i64> @in r, r: Region) -> i64; fn done(); }\n",
+        // `@in` targets on an fn item: a grouped `(Region)` and a `Region(5)` (production's
+        // type_expr_is_region unwraps the group and never reads the deadline).
+        "module t;\nfn rg(v: Vec<i64> @in r, r: (Region)) -> i64 { return 0; }\n",
+        "module t;\nfn rd(v: Vec<i64> @in r, r: Region(5)) -> i64 { return 0; }\n",
         // fn generics + bounds + effect rows (incl. the empty row `! { }`)
         "module t;\nfn keyed<K: Hash + Eq, V>(k: K) -> i64 { return 0; }\n",
         "module t;\npub fn mapv<U>(v: Vec<U>) -> Vec<U> ! { Alloc } { return v; }\n",
@@ -2279,6 +2304,9 @@ fn corpus() -> Vec<&'static str> {
         // return-taint on fns and externs (flags bits): the FFI-module shape
         "module t;\npub fn sha(p: i32, l: i32) -> i64 @Internal ! { Alloc, FFI, Unsafe } { return ffi_call(p, l); }\n",
         "module t;\nfn leak() -> str @Secret { return s; }\n",
+        // `@Flow` on an `fn` item's parameter and return: the two positions production admits it
+        // (code 5 in the same fields); every other position refuses it (the error corpus).
+        "module t;\nfn fl(x: i64 @Flow) -> i64 @Flow { return x; }\n",
         "module t;\nextern \"C\" fn crypto_sha256(ptr: i32, len: i32) -> i64 @Internal ! { Alloc, FFI, Unsafe };\n",
         // module attributes + visibility (flags; attrs never extend the span)
         "#[ring(outer)] #[trusted]\nmodule tool;\nextern \"C\" fn f() -> i64 ! { FFI };\n",
@@ -2299,6 +2327,12 @@ fn corpus() -> Vec<&'static str> {
         "module t;\nfn d2() -> i64 { let p = declassify(s, c) @Public; return p; }\n",
         "module t;\nfn d3() -> i64 { let p = declassify_ct(ct_val, ct_cap); return p; }\n",
         "module t;\nfn r1() -> i64 { region scratch(4096) { let v = build(); }; return 0; }\n",
+        // SHP-5c-3: a turbofish on a call — the type args lead the children (`flags` counts
+        // them): a plain cap, a parametric cap usage, a user generic with one and two args.
+        "module t;\ncap type Fuel { burn }\nfn t1() -> i64 { let s = slot_new::<Fuel>(); return 0; }\n",
+        "module t;\ncap type Approval(deadline_ms: i64) {}\nfn t2() -> i64 { let s = slot_new::<Approval(2030)>(); return 0; }\n",
+        "module t;\nfn id<T>(x: T) -> T { return x; }\nfn t3() -> i64 { let a: i64 = id::<i64>(1); return a; }\n",
+        "module t;\nfn pair<A, B>(a: A, b: B) -> i64 { return 0; }\nfn t4() -> i64 { return pair::<i64, bool>(1, true); }\n",
         // capabilities-as-values: `mint <Cap> [(<deadline>…)] for <target>` (R1).
         // non-parametric, single + multi deadline param (the `flags` count), and
         // `mint` as an ORDINARY identifier (fn name / call / let binding / bare
@@ -2441,7 +2475,7 @@ fn differential_caps_typestate_hkt_adversarial() {
 #[test]
 fn differential_effect_handlers() {
     let cases: &[&str] = &[
-        // operation-bearing effect (op NAMES ride the decl text); + a perform.
+        // operation-bearing effect (the operation is a K_EFFECT_OP child); + a perform.
         "module t;\neffect Reader { fn get() -> i64; }\nfn g() -> i64 { let x = perform Reader.get(); return x; }\n",
         // an op with a param and a `-> never` (abortive) return; an abortive perform.
         "module t;\neffect Fail { fn raise(msg: str) -> never; }\nfn h(n: i64) -> i64 { perform Fail.raise(n); return n; }\n",
@@ -2455,9 +2489,92 @@ fn differential_effect_handlers() {
         // C-PATHSEP REGRESSION: a bare `handle E { stmts }` (no `=>`) must route
         // to the legacy bare form (K_HANDLE), NOT the clause path.
         "module t;\neffect Audit;\nfn b() -> i64 { handle Audit { let z = 1; }; return 2; }\n",
+        // The accept twin of the signature refusals in `differential_parser_errors`:
+        // every type shape an operation's parameter can carry (a fn type with its
+        // row, a tuple, an array, a generic with a comma inside), a mutability
+        // marker, a region parameter named by an `@in` declared before it, a
+        // trailing comma, `-> never`, and a second operation.
+        "module t;\neffect Io { fn run(f: Fn(i64) -> i64 ! { Alloc }, p: (i64, str), a: [i64; 2], m: Map<i64, i64> @ReadOnly, v: Vec<i64> @in r, r: Region,) -> never; fn done() -> i64; }\n",
+        // Third review: a grouped `(Region)` and a deadline-bearing `Region(5)` are
+        // `@in` targets (production's type_expr_is_region unwraps the group and never
+        // reads the deadline); a `Fn` return type keeps its row (nothing suppresses
+        // it outside an `fn` item's own return slot); an operation without a return
+        // type has no return child.
+        "module t;\neffect Io { fn run(v: Vec<i64> @in r, r: (Region)) -> i64; }\n",
+        "module t;\neffect Io { fn run(v: Vec<i64> @in r, r: Region(5)) -> i64; }\n",
+        "module t;\neffect Io { fn mk() -> Fn(i64) -> i64 ! { Alloc }; fn done(); }\n",
     ];
     for src in cases {
         assert_parses_like_oracle(src);
+    }
+    // An operation PARAMETER's label rides its own K_PARAM taint code, where the taint shadow's
+    // signal walk reads it like any parameter's (production's program-wide heap-floor bound
+    // folds those labels in); the declaration carries no flag. Compared node-for-node like
+    // every flag, and pinned here by value too, so a parser and a projection that both lost a
+    // label cannot agree vacuously: a label after a bracketed type is still the parameter's, an
+    // explicit `@Public` is code 1 and not an absence, a parameter's last label is its label
+    // (production keeps the last one), and a mutability or region annotation leaves the label
+    // as it was. Each list is the operation's K_PARAM taint codes in order (flags =
+    // mut-code + taint*4 + has-region*32).
+    let labelled: &[(&str, &[i64])] = &[
+        (
+            "module t;\neffect Log { fn note(x: i64 @Secret) -> i64; }\n",
+            &[3],
+        ),
+        (
+            "module t;\neffect Log { fn note(x: i64 @Public, y: [i64; 2] @Internal) -> i64; }\n",
+            &[1, 2],
+        ),
+        (
+            "module t;\neffect Log { fn note(x: i64 @Public) -> i64; }\n",
+            &[1],
+        ),
+        (
+            "module t;\neffect Log { fn note(x: i64 @Secret @Public, y: i64) -> i64; }\n",
+            &[1, 0],
+        ),
+        (
+            "module t;\neffect Log { fn note(x: i64 @Public @Secret) -> i64; }\n",
+            &[3],
+        ),
+        (
+            "module t;\neffect Log { fn note(x: Vec<i64> @Secret @Mut) -> i64; }\n",
+            &[3],
+        ),
+        // A comma inside a parameter's type (generic arguments do not change the depth) ends no
+        // parameter early: the label after the type is still the parameter's.
+        (
+            "module t;\neffect Log { fn note(x: Map<i64, i64> @Secret) -> i64; }\n",
+            &[3],
+        ),
+        // A region annotation after the label leaves the label as it was.
+        (
+            "module t;\neffect Log { fn note(x: i64 @Secret @in r, r: Region) -> i64; }\n",
+            &[3, 0],
+        ),
+    ];
+    for (src, want) in labelled {
+        assert_parses_like_oracle(src);
+        let nodes = sigil_nodes(src);
+        let effect = nodes
+            .iter()
+            .find(|n| n.kind == K_EFFECT_DECL)
+            .expect("the self-hosted parse carries the effect declaration");
+        assert_eq!(
+            effect.flags, 0,
+            "the effect declaration carries no label flag on {src:?}"
+        );
+        // Every K_PARAM of these sources is an operation's: the module holds the effect alone.
+        let codes: Vec<i64> = nodes
+            .iter()
+            .filter(|n| n.kind == K_PARAM)
+            .map(|n| (n.flags % 32) / 4)
+            .collect();
+        assert_eq!(
+            codes.as_slice(),
+            *want,
+            "the operation parameters' taint codes on {src:?}"
+        );
     }
 }
 
@@ -2577,6 +2694,7 @@ fn et_p1_corpus_covers_every_kind() {
     expected.extend(30..=50); // expressions + type overlays + params/closures
     expected.extend(51..=63); // items
     expected.extend(64..=80); // the exotica
+    expected.push(K_EFFECT_OP); // EH0b (third review): the op-bearing effect in corpus()
     let missing: Vec<i64> = expected
         .iter()
         .copied()
@@ -2607,6 +2725,39 @@ fn differential_parser_errors() {
         "module t; enum E { 5 }",
         "module t; wat",
         "module t; fn f() -> i64 { match v { 1 => { } 2 => { } } return 0; }",
+        // Effect-operation signatures (SHP-5c-2 third review). The self-hosted parser
+        // projects each operation as a node of its own (`P_K_EFFECT_OP`) and reads its
+        // parameters and types with `parser_params` and `parser_type`, so what
+        // production's parse_effect_op refuses is refused on this side too, and on these
+        // shapes the bail survives at the very token production reports first: an unknown
+        // annotation, a contradictory mutability pair, an `@in` without a name, a missing
+        // `(`, junk between the list and the `;`, a body, a missing `,` between
+        // parameters, junk after the return type, an effect row after a non-`Fn` return
+        // type, and an operator where only `,`, `)`, `;` or `->` may stand. Before the
+        // third review every one of these parsed on this side with no K_ERR (the
+        // signature was skipped token by token to its `;`); the first is the shape the
+        // fail-open was reported with.
+        "module tool; effect Log { fn note(x: i64 @Bogus) -> i64; } pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 { return 0; }",
+        "module t; effect Log { fn note(x: i64 @ReadOnly @Mut) -> i64; }",
+        "module t; effect Log { fn note(x: i64 @Mut @ReadOnly) -> i64; }",
+        "module t; effect Log { fn note(x: i64 @in) -> i64; }",
+        "module t; effect Log { fn note x: i64) -> i64; }",
+        "module t; effect Log { fn note(x: i64) wat; }",
+        "module t; effect Log { fn note(x: i64) -> i64 { return 0; } }",
+        "module t; effect Log { fn note(x: i64 y: i64) -> i64; }",
+        "module t; effect Log { fn note(x: i64) -> i64 wat; }",
+        "module t; effect Log { fn note(x: i64) -> i64 ! { Alloc }; }",
+        "module t; effect Log { fn note(x: i64) -> i64 -> i64; }",
+        "module t; effect Log { fn note(x: i64 -> i64) -> i64; }",
+        "module t; effect Log { fn note(x: i64) -> i64 & str; }",
+        "module t; effect Log { fn note(x: i64) -> i64 !; }",
+        // The annotation classifier is shared by every parameter list, so an `fn` item's
+        // list refuses the same mutability pair and `@Flow` beside a concrete label, in
+        // either order (both accepted on this side before the third review), at the
+        // token production reports.
+        "module t; fn f(x: i64 @ReadOnly @Mut) -> i64 { return 0; }",
+        "module t; fn f(x: i64 @Flow @Secret) -> i64 { return 0; }",
+        "module t; fn f(x: i64 @Secret @Flow) -> i64 { return 0; }",
     ];
     // PRESENCE-only fixtures: the error fires deep inside an expression whose
     // partial subtree the bailing production DISCARDS (an orphan, absent from
@@ -2615,6 +2766,39 @@ fn differential_parser_errors() {
     let presence_cases: Vec<&str> = vec![
         "module t; fn f() -> i64 { return 1 + ; }",
         "module t; fn f() -> i64 { x = ( ; return 0; }",
+        // Effect-operation and parameter-list refusals whose FIRST positions legitimately
+        // differ (measured at the third review): `@Flow` where it is not admitted
+        // (production reports on the parameter name; this side bails on the `Flow` token,
+        // or inside a closure's list on a later cascade token), a dangling `@in`
+        // (production reports on the parameter's span; this side bails on the region-name
+        // token once the list is complete), and a malformed type (this side's type-parser
+        // bail is discarded with the partial signature and a later cascade bail survives;
+        // production reads `::` as a path continuation and reports the token after it).
+        "module t; effect Log { fn note(x: i64 @Flow) -> i64; }",
+        "module t; effect Log { fn note(x: i64 @in q) -> i64; }",
+        "module t; effect Log { fn note(x: i64 @in q, q: i64) -> i64; }",
+        "module t; effect Log { fn note(x: i64) -> ; }",
+        "module t; effect Log { fn note(x: ) -> i64; }",
+        "module t; effect Log { fn note(x: i64 :: ) -> i64; }",
+        // An `fn` item's list refuses a dangling `@in` too (accepted on this side before
+        // the third review: nothing checked the region name against the list), and
+        // `@Flow` is admitted on an `fn` item's list only: a closure's and a trait
+        // signature's refuse it, as production's parse_params does (the self-hosted
+        // parser admitted it on every list before, deferring to the taint stage).
+        "module t; fn f(x: i64 @in q) -> i64 { return 0; }",
+        "module t; fn f(x: i64 @in q, q: i64) -> i64 { return 0; }",
+        "module t; fn f() -> i64 { let g = fn(x: i64 @Flow) -> i64 { return x; }; return 0; }",
+        "module t; trait T { fn m(x: i64 @Flow) -> i64; }",
+        // `@Flow` outside a parameter list is admitted on an `fn` item's return only: a `let`, a
+        // `declassify` target and an extern fn's return refuse it, as production's
+        // parse_taint_annotation does (P021). The self-hosted label table took it at all three
+        // before (parser_taint had no `allow_flow`), and the chain compiled each to a module.
+        // Each is a corpus fixture with its concrete label swapped for `@Flow` (`l6`, `d2`,
+        // `crypto_sha256` are the accept twins). Presence only, measured: production reports the
+        // `Flow` token, and this side bails on the `@`, as it does for an unknown label there.
+        "module t;\nfn l6() -> i64 { let k: i64 @Flow = 1; return k; }\n",
+        "module t;\nfn d2() -> i64 { let p = declassify(s, c) @Flow; return p; }\n",
+        "module t;\nextern \"C\" fn crypto_sha256(ptr: i32, len: i32) -> i64 @Flow ! { Alloc, FFI, Unsafe };\n",
     ];
     for src in position_cases {
         let sigil = sigil_nodes(src);

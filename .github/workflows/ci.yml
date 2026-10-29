@@ -7,16 +7,31 @@ on:
   merge_group:
     branches: [main]
 
-# Cancel an in-progress run when a new commit lands on the same branch / PR.
+# Cancel an in-progress run when a new commit lands on the same pull request.
 # Without this, push + pull_request triggers race for runners and starve each
 # other in the queue (observed: both runs sat for 15 min then got cancelled).
+#
+# A push to main is NEVER cancelled: its group is keyed by SHA, so consecutive
+# merges run side by side instead of the newer one killing the older. Measured
+# 2026-09-04..2026-10-04, before this keying: 13 of 52 push-to-main runs were
+# cancelled by the next merge. Each cancellation threw away two things only a
+# main run produces -- the portability evidence (that lane runs on main alone)
+# and the Cargo cache save, which only a job that finishes writes (the `test`
+# job's cache step records why that kept main cold). Pull requests keep
+# cancel-in-progress: there the superseded commit's verdict is worthless.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+# Hygiene is a required merge check and finishes before the Rust builds. A
+# failed sign-off, token sweep, workflow validation, or interpreter pin already
+# blocks the revision: starting the expensive lanes cannot make it mergeable.
+# Fail closed through `needs`: a failed/cancelled hygiene job stops the builds;
+# successful hygiene releases every existing lane in parallel, with no path
+# filters and no change to the required-check names or test commands.
 jobs:
   hygiene:
     runs-on: ubuntu-latest
@@ -90,6 +105,18 @@ jobs:
 
       - name: Every workflow file parses
         run: python tools/validate_workflows.py
+
+      - name: Public library revision inventories
+        # Document hashes and the copied-module byte contract must agree before
+        # native tests use the graph. This does not replace runtime validation.
+        run: python -W error::ResourceWarning -m unittest -v library.tests.test_public_revisions
+
+      - name: Disk-eviction runner self-test (fail-closed fence)
+        # scripts/free-runner-disk.sh backgrounds the SDK eviction in the Rust
+        # lanes and is the join those lanes build behind. Prove its refusals
+        # fire -- a missing worker, a failed deletion, an empty path list -- so
+        # no lane can proceed onto a full disk because the join went dead.
+        run: bash scripts/free-runner-disk.sh --self-test
 
       - name: Release-evidence validator self-test
         run: python tools/validate_release_evidence.py --self-test
@@ -167,24 +194,37 @@ jobs:
   # the committed Cargo.lock. Added per the security audit — the workspace had
   # no advisory scan at all.
   #
-  # GATING: fails the check on any vulnerability. The advisory backlog present
+  # GATING: fails the check on any vulnerability or warning; no advisory is
+  # ignored (see below; no `.cargo/audit.toml`). The advisory backlog present
   # when this job was introduced has been cleared — wasmtime was bumped to
   # 43.0.2 (fixing the critical Cranelift/Winch sandbox-escape advisories,
   # RUSTSEC-2026-0095/0096, which are directly load-bearing for a wasm sandbox),
   # and crossbeam-epoch / rustls-webpki / anyhow were bumped to patched
   # releases. wasmtime moved again to 47.0.4 on 2026-09-02 for the WASIp3
   # stream allocation and trailing-slash sandbox-escape advisories
-  # (RUSTSEC-2026-0268/0269).
+  # (RUSTSEC-2026-0268/0269), to 48.0.3 on 2026-10-02 for RUSTSEC-2026-0315
+  # (`call_ref` and exception `catch` could drop fuel accounting) and -0316
+  # (component-model hostcall fuel), and to 48.0.5 on 2026-10-03 for
+  # RUSTSEC-2026-0325/0326 (GC heap corruption) and the critical -0327 (a native
+  # stack buffer overflow in component async-lifted callbacks); 48.0.5 is 48.0.4
+  # re-released.
   #
   # The advisory *warnings* have since been cleaned up AT THE SOURCE: lru 0.12
   # -> 0.16.4 (RUSTSEC-2026-0002 unsound `IterMut`), fastrand 2.4.0 -> 2.4.1 and
   # gimli 0.33.1 -> 0.33.0 (both yanked), and the unmaintained rustls-pemfile
   # (RUSTSEC-2025-0134) was REMOVED by dropping ureq's `native-certs` feature
   # (the default `tls` feature already bundles webpki-roots — see
-  # sigil-runtime/Cargo.toml). NO advisories are currently ignored. The gate
-  # runs with `--deny warnings`, so any NEW vulnerability OR warning fails the
-  # build. If a future advisory has no available fix, add a justified entry to a
-  # `.cargo/audit.toml` `[advisories] ignore` list rather than reintroducing
+  # sigil-runtime/Cargo.toml). The gate runs with `--deny warnings`, so any NEW
+  # vulnerability OR warning fails the build.
+  #
+  # No advisory is ignored: there is no `.cargo/audit.toml`. The lane's one
+  # ignore (RUSTSEC-2026-0295, a use-after-free in z3 0.12.1's `ApplyResult`,
+  # residual risk SR-031) ran from 2026-10-03 until #762 upgraded z3 to 0.21.1,
+  # where it is fixed. It set the bar for any future ignore: the advisory
+  # cannot reach SIGIL, fences keep it so, and it carries an Accepted
+  # residual-risk row with a tracking issue, all pinned by z3_guard_fences.rs
+  # in the same commit. That test now pins that no audit config exists, this
+  # job's steps and keys, and the solver lane's clippy runs. Never reintroduce
   # continue-on-error.
   supply-chain:
     name: Supply-chain audit
@@ -203,11 +243,14 @@ jobs:
           # the ~5.7 min cargo-audit build again. The other five sites already
           # carry this.
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: Audit dependencies for security advisories
-        # `--deny warnings`: fail on vulnerabilities AND warnings. No advisories
-        # are ignored — all four prior warnings were fixed at the source.
+        # `--deny warnings`: fail on vulnerabilities AND warnings, with no
+        # ignore (there is no .cargo/audit.toml; see the job comment); the
+        # four prior warnings were fixed at the source.
         run: cargo audit --deny warnings
 
   # The workspace test suite — the CI critical path. Split into its own job so
@@ -226,8 +269,8 @@ jobs:
   # interpreter's lineage does not pass through the Rust oracle (docs/CLAIMS.md claim 40, HB-3).
   #
   # WHY A SEPARATE LANE. Running it inside `cargo test --workspace` cancelled the `test` lane at
-  # its 30-minute timeout. No job in this workflow declares `needs:`, so lanes run in PARALLEL and
-  # a PR's wall-clock is the SLOWEST lane rather than the sum — moving this out returns `test` to
+  # its 30-minute timeout. After the required hygiene gate, the Rust lanes run in PARALLEL and
+  # their wall-clock is the SLOWEST lane rather than the sum — moving this out returns `test` to
   # ~22 minutes and makes the comparison effectively free. That beats speeding the interpreter up,
   # and risks nothing about correctness.
   #
@@ -235,6 +278,7 @@ jobs:
   # this file and fails if no job invokes the target with its feature. A feature-gated proof that
   # nothing runs is the same hole as an `#[ignore]`d one.
   interp-ddc:
+    needs: hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -269,6 +313,8 @@ jobs:
           # is retried often -- paying a cold dependency build each time was the
           # worst place in the file to be missing this.
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # `-- --nocapture` so the comparison's own output reaches the log, and the `1 passed` check
       # because `cargo test` EXITS 0 when it runs zero tests. A `#[cfg]`-disabled or filtered-out
@@ -282,6 +328,7 @@ jobs:
         run: cargo test -p sigil-runtime --test interp_ddc --no-default-features --features ddc -- --nocapture 2>&1 | tee ddc.log; grep -qE "test result:[[:space:]]ok\. 1 passed" ddc.log
 
   test:
+    needs: hygiene
     runs-on: ubuntu-latest
     # 60, raised from 30 on 2026-08-25. The 30 was set against WARM-CACHE runs and
     # does not clear a cold one, so any new branch could be killed here on its
@@ -308,7 +355,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Free up disk space
+      - name: Start evicting preinstalled tooling (background)
         # Only this job builds the full ~196-binary test set, so it is the one
         # that hits the runner-disk wall (os error 28 / ld SIGBUS). The
         # `[profile.dev] debug = "line-tables-only"` shrink plus this eviction
@@ -321,14 +368,22 @@ jobs:
         # and runs the system python3), the Docker images, and the remaining
         # large SDKs; the `df` line and the post-build disk step below are
         # the evidence for the next tightening.
+        #
+        # Backgrounded 2026-10-04. As a serial step this measured 162 s cold and
+        # 232 s warm (runs 37142337416 / 37227497795) at the head of the
+        # critical path, for deletions nothing needs until the build. The worker
+        # now runs while the toolchains install and the cache restores, none of
+        # which touch the evicted paths (this job installs its own Rust and Lean
+        # and runs the system python3). The join step before the build fails
+        # closed if the worker has not finished; scripts/free-runner-disk.sh has
+        # the contract and the hygiene lane runs its self-test.
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
-          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
-          sudo rm -rf /usr/local/lib/node_modules /usr/share/miniconda /opt/az /usr/lib/jvm
-          sudo rm -rf /usr/lib/google-cloud-sdk /usr/local/aws-cli /usr/local/aws-sam-cli /opt/microsoft
-          sudo rm -rf /usr/local/julia* /usr/local/share/chromium /usr/lib/firefox
-          sudo docker image prune --all --force > /dev/null 2>&1 || true
-          df -h /
+          bash scripts/free-runner-disk.sh start --docker-prune \
+            /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell \
+            /usr/local/lib/node_modules /usr/share/miniconda /opt/az /usr/lib/jvm \
+            /usr/lib/google-cloud-sdk /usr/local/aws-cli /usr/local/aws-sam-cli /opt/microsoft \
+            /usr/local/julia* /usr/local/share/chromium /usr/lib/firefox
           command -v python3 && python3 --version
 
       - name: Install Rust toolchain
@@ -344,6 +399,40 @@ jobs:
           # cache — no collision. Save on failure so the next run can reuse
           # compiled dependencies.
           cache-on-failure: "true"
+          # Saved on main only (2026-10-04), here and at every other rust-cache
+          # site in the repository. Entries are scoped to the ref that writes
+          # them, so with the default every pull request wrote its own ~3.7 GB
+          # copy of all seven lanes' caches; the repository sat at 11.0 GB
+          # against the 10 GB cap and main's entries were the ones evicted.
+          # Measured the day of the change: this job on a push to main restored
+          # nothing and spent 1048 s on the build step (239 dependency crates
+          # recompiled), while a pull-request run the same day restored its own
+          # copy and spent 406 s (runs 37142337416 / 37227497795). Pull requests
+          # may restore the default branch's entries, so only main writes: one
+          # copy, and nothing evicts it. A pull request that changes Cargo.lock
+          # misses the exact key, falls back to main's prefix match, and
+          # recompiles the changed crates on every push until it merges -- the
+          # accepted cost. cache-on-failure still applies: a red main run banks
+          # its dependencies for the fix that follows.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Wait for the eviction to finish (fail-closed join)
+        # Nothing above writes to the disk in bulk; the build below may assume the
+        # eviction is done or that the disk already has room for it. Returns when
+        # the worker finishes, or while it is still running once / measures 40G
+        # free; refuses on a reported failed deletion, a dead worker, or a timeout
+        # with the space short. Prints the free-space evidence line.
+        #
+        # 40 = the GiB this job may proceed on before the worker finishes. A warm
+        # build measured +33G on / (25G used at the join, 58G at the end, 34G of
+        # target/debug/deps; every green run of 2026-10-07/08); a cold one about
+        # +34-35G from the join (run 37142337416: 19G used before the toolchain
+        # installs, 57G after the build). So 40 keeps 5-7G over it, before the
+        # worker frees what it has left. Run 37685207144 refused at 600 s with 42G
+        # free and the worker on its 13th of 18 paths; the join measured 0-429 s.
+        # A join on free space leaves the eviction running, so the step after the
+        # build joins again without the space rule.
+        run: bash scripts/free-runner-disk.sh wait 600 40
 
       - name: Build test binaries (no-default-features)
         # Split build from run so CI exposes compile/link time separately from
@@ -352,11 +441,70 @@ jobs:
 
       - name: Disk after the test build
         # Evidence, not a gate: a linker SIGBUS is indistinguishable from a
-        # broken link line without the free-space figure next to it.
+        # broken link line without the free-space figure next to it. The
+        # eviction log shows what the worker did after a join on free space.
         if: always()
         run: |
           df -h /
           du -sh target/debug/deps target/debug/build 2>/dev/null || true
+          cat "$RUNNER_TEMP/free-runner-disk.log" 2>/dev/null || true
+
+      - name: Join the eviction before the tests (fail-closed)
+        # The join before the build may have returned on free space with the
+        # worker still deleting. Before the tests, which this job does not size,
+        # the eviction must have finished: refuses on a failed deletion (reported
+        # by the worker at once), a dead worker, or no finish within 900 s. After
+        # a completed join this returns at once.
+        run: bash scripts/free-runner-disk.sh wait 900
+
+      - name: Named required suites exist (fail-closed)
+        # The workspace pass below runs every test target, but it would silently stop
+        # running a suite whose file was deleted or renamed. These suites carry the CSIR v9
+        # rollout and constructor inventory, the linked verifier, occurrence enforcement,
+        # the host-profile and runtime-binding boundary, and the v8 SSA/pc-join regressions,
+        # so each is named here: cargo refuses a `--test` name that matches no target, which
+        # turns a silent loss into a red required lane. The flags match the build above, so
+        # every unit is already fresh and this step takes seconds; the workspace pass runs
+        # the suites. What they pin (each file's own docs carry the detail):
+        #   * formal_rollout_contract, production_lean_composition_profile: the complete numeric
+        #     record/instruction/policy vocabulary, the production Lean composition profile, and
+        #     the non-retirement release boundary before schema-v10 evidence exists.
+        #   * formal_security: the statically linked CombinedKernel + SemanticKernel entry that
+        #     production uses (decoder/static-policy drift, caller-pc/capture/return
+        #     propagation, certificate fingerprints) without relying on the Lean proof job.
+        #   * public_region_probes: production rejects the known repeated Public action, the
+        #     immutable v8 loop-header bytes stay accepted as evidence of the historical gap,
+        #     and the acyclic backward escape pins the retained verifier's flow rejection.
+        #   * host_contract through host_profile_binding: declaration-only acceptance beside the
+        #     authorizing v9 verdict; runtime binding must match the exact emitted requirement.
+        #   * taint_join_early_exit, large_sibling_statements: strong updates, divergent-path
+        #     exclusion, lexical shadowing, structured pc restore, and the sparse-phi record
+        #     bound that keeps long flat CFGs below the CSIR ceiling.
+        #
+        # Until 2026-10-05 they ran a second time in `checks` as `cargo test -p <crate>`.
+        # Selecting one crate resolves features for that crate alone, so `checks` built a
+        # second copy of the compiler stack to repeat tests this lane already runs: those
+        # steps took 193 s of a 747 s warm `checks` job (#806). `--no-run` leaves one way for
+        # a named suite to build here yet never run: a `[[test]]` table in its Cargo.toml
+        # that turns it off. workflow_yaml_lint.rs pins this list and asserts no such table
+        # names any of them (ci_keeps_production_v9_and_release_enforcement_commands).
+        run: >-
+          cargo test --workspace --no-default-features --no-run
+          --test formal_rollout_contract
+          --test production_lean_composition_profile
+          --test formal_security
+          --test public_region_probes
+          --test host_contract
+          --test host_profile_lean_parity
+          --test host_profile_parity
+          --test v9_declaration_parity
+          --test v9_production_verifier
+          --test formal_v9_declarations
+          --test compiler_context
+          --test host_profile_wasm
+          --test host_profile_binding
+          --test taint_join_early_exit
+          --test large_sibling_statements
 
       - name: Test (workspace, --no-default-features)
         # Reuses the binaries built above, so this step's wall-clock is the
@@ -383,6 +531,7 @@ jobs:
   # Formatting, lint, feature-specific checks, and the tools sweep run in
   # parallel with the workspace test lane.
   checks:
+    needs: hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -390,13 +539,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Free up disk space
+      - name: Start evicting preinstalled tooling (background)
         # Feature-distinct builds accumulate in target/. Reclaim preinstalled
-        # tooling this job does not use.
+        # tooling this job does not use. Backgrounded 2026-10-04: 146 s as a
+        # serial step (run 37142337416); the join below precedes the first cargo
+        # step, and scripts/free-runner-disk.sh has the contract.
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
-          df -h /
+          bash scripts/free-runner-disk.sh start \
+            /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -412,6 +563,14 @@ jobs:
           # Preserve compiled dependencies after failures. rust-cache also
           # exports CARGO_INCREMENTAL=0.
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Wait for the eviction to finish (fail-closed join)
+        # Nothing above writes to the disk in bulk; everything below may assume
+        # the eviction is done. Fails if the worker has not finished or reported
+        # a failed deletion, and prints the free-space evidence line.
+        run: bash scripts/free-runner-disk.sh wait
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -423,16 +582,27 @@ jobs:
         run: bash scripts/clippy-workspace.sh no-default
 
       - name: Lint (json feature on sigil-compiler)
+        # Also the standalone-json compile check: clippy type-checks every target of
+        # `-p sigil-compiler --no-default-features --features json`, so a json code path that
+        # stops compiling without the rest of the workspace fails here. A separate
+        # `cargo check` of that exact selection ran later in this job until 2026-10-05,
+        # re-checking what this step had already checked (77 s on #806).
+        #
+        # The json-gated TESTS (json_diagnostics.rs) run in the `test` job's workspace pass
+        # only because sigil-cli, sigil-mcp and sigil-test-utils force features=["json"] on
+        # sigil-compiler there. If a refactor drops that edge, add a
+        # `cargo test -p sigil-compiler --no-default-features --features json` step here.
         run: bash scripts/clippy-workspace.sh json
 
       - name: Formal verifier scaling canary
         # The production v9 envelope retains the complete v8 prefix and adds occurrence records
-        # across the self-host trio. This fixed five-second bound (SELFHOST_TRIO_CANARY_MS in
-        # crates/sigil-corpus/src/schema.rs) caught two accidental O(n²) verifier scans. Keep the
+        # across the self-host trio. This fixed bound (SELFHOST_TRIO_CANARY_MS in
+        # crates/sigil-corpus/src/schema.rs, which records the runner distribution it was last
+        # re-baselined on) caught two accidental O(n²) verifier scans. Keep the
         # real linked-verifier path here, in a required lane, so widening a timeout cannot
         # disguise a scaling regression.
         #
-        # The env line ARMS the five-second assertion. This step runs the test ALONE, so its
+        # The env line ARMS the bound's assertion. This step runs the test ALONE, so its
         # wall clock measures the verifier and nothing else. The parallel workspace `test` lane
         # runs the same test unarmed and asserts only the corpus extractor's wider drop bound
         # (VALIDATE_BUDGET_MS): on PR #765 the trio passed here twice and failed only there,
@@ -445,67 +615,15 @@ jobs:
           SIGIL_CORPUS_SCALING_CANARY: "1"
         run: cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget -- --exact --nocapture
 
-      - name: CSIR v9 dual-gate rollout and retained constructor inventory
-        # Pins the complete numeric record/instruction/policy vocabulary, the
-        # production Lean composition profile, and the non-retirement release
-        # boundary before schema-v10 evidence exists.
-        run: |
-          cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract
-          cargo test -p sigil-runtime --no-default-features --test production_lean_composition_profile
-
-      - name: CSIR v9 linked verifier and retained-v8 raw-security parity
-        # Exercises the same statically linked CombinedKernel + SemanticKernel entry used by
-        # production. This catches decoder/static-policy drift, including caller-pc/capture/return
-        # propagation and certificate-fingerprint changes, without relying on the Lean proof job.
-        run: cargo test -p sigil-compiler --no-default-features --test formal_security
-
-      - name: CSIR v9 occurrence enforcement and historical-v8 counterexamples
-        # Production source must reject the known repeated Public action; the immutable v8
-        # loop-header bytes stay accepted as evidence of the historical gap, and the acyclic
-        # backward escape pins the retained verifier's kernel-checked flow rejection.
-        run: cargo test -p sigil-compiler --no-default-features --test public_region_probes
-
-      - name: Production v9 occurrence, host-profile, and runtime binding boundary
-        # Declaration-only acceptance is deliberately tested beside the authorizing v9 verdict.
-        # Runtime binding must match the exact emitted requirement before instantiation.
-        run: |
-          cargo test -p sigil-abi --test host_contract
-          cargo test -p sigil-abi --test host_profile_lean_parity
-          cargo test -p sigil-formal-bridge --test host_profile_parity
-          cargo test -p sigil-formal-bridge --test v9_declaration_parity
-          cargo test -p sigil-formal-bridge --test v9_production_verifier
-          cargo test -p sigil-compiler --no-default-features --test formal_v9_declarations
-          cargo test -p sigil-compiler --no-default-features --test compiler_context
-          cargo test -p sigil-compiler --no-default-features --test host_profile_wasm
-          cargo test -p sigil-runtime --no-default-features --test host_profile_binding
-
       - name: CSIR linked-verifier warm latency
         # Initialization is excluded and recorded separately in release evidence. This pins the
         # original retirement criterion on repeated in-process calls over the small fixture.
+        # It stays here, run ALONE, when the other CSIR suites moved to the `test` lane's
+        # named-suites step: it asserts a latency bound, and this is the one place that bound
+        # is measured with nothing else running.
         run: >-
           cargo test -p sigil-formal-bridge --test v9_production_verifier
           production_v9_warm_small_fixture_median_stays_below_one_millisecond -- --exact
-
-      - name: CSIR v8 SSA and pc-join regressions
-        # Pins strong updates, divergent-path exclusion, lexical shadowing, structured pc restore,
-        # and the sparse-phi record bound that keeps long flat CFGs below the CSIR ceiling.
-        run: >-
-          cargo test -p sigil-compiler --no-default-features
-          --test taint_join_early_exit --test large_sibling_statements
-
-      - name: Check JSON path (sigil-compiler with json feature, no Z3)
-        # Catches the case where the json code path compiles standalone
-        # without pulling in the rest of the workspace's deps. This is a
-        # `cargo check` (not `test`): the json-gated tests (json_diagnostics.rs)
-        # already RUN in the `test` job's workspace pass — Cargo feature
-        # unification turns json ON for the sigil-compiler lib there because
-        # sigil-cli/-mcp/-test-utils force features=["json"] on it. So the only
-        # property left to verify here is standalone-with-json compilation;
-        # --all-targets extends that to the test targets without the codegen +
-        # link + run the full `cargo test` was paying (~87s -> ~20s).
-        # NOTE: this redundancy is load-bearing on that forced-json dep edge —
-        # if a refactor drops it, restore `cargo test` here.
-        run: cargo check -p sigil-compiler --no-default-features --features json --all-targets
 
       - name: Lint — Cap<Z3> TCB isolation (NC5/CM5)
         # The Z3 runtime capability (the `z3_check` host shim) is gated behind
@@ -839,6 +957,7 @@ jobs:
           fi
 
   bench-tests:
+    needs: hygiene
     # Python tests for the AutoForge benchmark harness. Spawns the real
     # sigil-mcp binary, exercises the wire + agent loop with stub
     # generators. Does NOT need ANTHROPIC_API_KEY (LLM calls are gated
@@ -867,6 +986,8 @@ jobs:
           # Preserve compiled dependencies after failures. rust-cache also
           # exports CARGO_INCREMENTAL=0.
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build bench integration binaries
         run: cargo build --release -p sigil -p sigil-mcp
@@ -901,39 +1022,56 @@ jobs:
           python bench/fuel-overhead/check_doc.py
 
   solver:
+    needs: hygiene
     # Required solver-feature lane. It installs the pinned Z3 release and runs
-    # the compiler, runtime, and frontend solver lint and test suites.
+    # the compiler, runtime, and frontend solver lint and test suites, and the
+    # CLI's solver-gated package suites.
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     env:
       # Pinned Z3 release (ET-Z10): version + SHA256 of the exact asset,
       # computed from the artifact itself. apt is NOT used — ubuntu's
-      # libz3 (4.8.x) predates z3-sys 0.8.1's API surface. Bumping the
-      # pin means re-running the docs/z3-theory-inventory.md §7 update
-      # protocol (re-measure rlimit headroom; re-audit the fence list).
-      Z3_VERSION: "4.12.2"
-      Z3_ASSET: "z3-4.12.2-x64-glibc-2.35"
-      Z3_SHA256: "29604c87d74855690f5f43fa2ecb8e214af89bdddffac378ce403e29c6ea30ec"
+      # libz3 (4.8.x) predates z3-sys 0.13.1's supported floor (4.13.3).
+      # Bumping the pin means re-running the docs/z3-theory-inventory.md §7
+      # update protocol (re-measure rlimit headroom; re-audit the fence list).
+      Z3_VERSION: "4.16.0"
+      Z3_ASSET: "z3-4.16.0-x64-glibc-2.39"
+      Z3_SHA256: "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e"
       # EVERY Z3 resolution path is pinned to the unzipped asset —
-      # bindgen (header), linker (-L), and loader (LD_LIBRARY_PATH).
+      # bindgen (header), linker (-L, with pkg-config switched off below),
+      # and loader (LD_LIBRARY_PATH).
       # Copying into /usr/{lib,include} is insufficient because the runner also
       # carries Z3 under /usr/local. Pin the header, linker, and loader to the
       # same asset so enum values cannot drift across versions.
       Z3_SYS_Z3_HEADER: ${{ github.workspace }}/z3-pinned/include/z3.h
       LD_LIBRARY_PATH: ${{ github.workspace }}/z3-pinned/bin
       RUSTFLAGS: -L ${{ github.workspace }}/z3-pinned/bin
+      # z3-sys 0.13 also asks pkg-config for z3 and would add whatever
+      # `z3.pc` the runner carries to the link search. The pkg-config
+      # crate's `<LIB>_NO_PKG_CONFIG` switch makes that probe fail closed,
+      # so the linker sees only the -L above.
+      Z3_NO_PKG_CONFIG: "1"
+      # z3-sys detects the linked Z3's version through pkg-config or a `z3`
+      # on PATH, and neither points at the pinned asset. Name the version
+      # instead so z3's version-gated API surface matches the library
+      # actually linked. Must equal Z3_VERSION; the install step fails if
+      # the pinned binary reports anything else.
+      Z3_SYS_Z3_VERSION: "4.16.0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Free up disk space
+      - name: Start evicting preinstalled tooling (background)
         # Solver integration binaries statically link the compiler and can fill
         # the runner disk. Reclaim preinstalled tooling this job does not use.
+        # Backgrounded 2026-10-04: 251 s as a serial step (run 37142337416),
+        # longer than the Z3, Rust and Lean installs it now overlaps; the join
+        # below precedes the first cargo step (scripts/free-runner-disk.sh).
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+          bash scripts/free-runner-disk.sh start \
+            /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
 
       - name: Install pinned Z3 (official release binary, SHA256-verified)
         # `sha256sum -c` under `set -euo pipefail`: a hash mismatch fails
@@ -952,10 +1090,16 @@ jobs:
           echo "--- pre-eviction z3 artifacts on the runner:"
           ldconfig -p | grep -i libz3 || true
           ls /usr/local/include/z3*.h /usr/local/lib/libz3* /usr/local/bin/z3 2>/dev/null || true
-          sudo rm -f /usr/local/bin/z3 /usr/local/lib/libz3* /usr/local/include/z3*.h /usr/lib/libz3* /usr/include/z3*.h
+          sudo rm -f /usr/local/bin/z3 /usr/local/lib/libz3* /usr/local/include/z3*.h /usr/lib/libz3* /usr/lib/x86_64-linux-gnu/libz3* /usr/include/z3*.h
           sudo ldconfig
           echo "--- pinned Z3:"
           ./z3-pinned/bin/z3 --version
+          # grep without -q reads all input: under pipefail an early-exiting
+          # grep could SIGPIPE the writer and fail the check spuriously.
+          if ! ./z3-pinned/bin/z3 --version | grep -F "Z3 version ${Z3_SYS_Z3_VERSION} " >/dev/null; then
+            echo "::error::Z3_SYS_Z3_VERSION=${Z3_SYS_Z3_VERSION} does not match the pinned Z3 binary"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -971,6 +1115,14 @@ jobs:
           # Preserve compiled dependencies after failures. rust-cache also
           # exports CARGO_INCREMENTAL=0.
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Wait for the eviction to finish (fail-closed join)
+        # Nothing above writes to the disk in bulk; everything below may assume
+        # the eviction is done. Fails if the worker has not finished or reported
+        # a failed deletion, and prints the free-space evidence line.
+        run: bash scripts/free-runner-disk.sh wait
 
       - name: Lint (sigil-compiler, solver feature)
         # Apply the workspace solver chokepoint and quantifier fences to code
@@ -1007,7 +1159,138 @@ jobs:
         # `sigil-frontends/solver`; the per-package invocation does.
         run: cargo test -p sigil-frontends --features solver
 
+      - name: Test (sigil CLI, solver) — package execution and certificate gates
+        # The CLI's `package_tools` and `package_cli` suites gate their
+        # execution and certificate tests on `feature = "solver"`: the
+        # split-count consumer's exact `3` against the frozen oracle
+        # `tools/task018_split_count.sigil`, the fuel-exhaustion refusal, the
+        # non-Public-entry refusal, the certificate-mismatch refusal, and the
+        # package check / verify-cert round trip. Neither the `test` lane's
+        # `--no-default-features` workspace pass nor the per-crate steps above
+        # reach them: `-p sigil` is the one selection that turns `sigil/solver`
+        # on. Until 2026-10-14 no hosted lane ran them, while library/GOAL.md
+        # said this lane did.
+        #
+        # Fail closed on a feature mismatch. `cargo test` exits 0 when a
+        # `#[cfg]`-gated test compiles out, and the ungated tests in these
+        # files still report `ok`, so neither the exit status nor a non-zero
+        # `passed` count proves the gated tests ran (the interp-ddc lane's
+        # `1 passed` grep works there because that suite has one test). Each
+        # solver-gated test is named here and must report `ok` in the log;
+        # bench/tests/test_ci_hygiene.py pins this list against the
+        # `#[cfg(feature = "solver")]` tests in the selected files, so a gated test
+        # added later must be named here before it counts as covered.
+        run: |
+          set -euo pipefail
+          cargo test -p sigil --features solver --test package_tools --test package_cli --test numeric_tools --test autodiff_tools --test autoresearch_cpu --test rng_tools --test optim_tools --test records_tools --test checkpoint_tools --test exchange_tools --test autoresearch_storage 2>&1 | tee cli-solver.log
+          for gated in \
+            storage_host_public_import_preserves_grants_bounds_and_previous_bytes \
+            storage_host_policy_does_not_change_compiler_labels_or_package_run \
+            composed_exchange_matches_every_independent_search_transition \
+            composed_exchange_refusals_preserve_retry_and_checkpoint_identity \
+            composed_exchange_maximum_candidate_and_failed_worker_keep_limits \
+            exchange_round_trips_maximum_messages_statuses_and_exact_identity \
+            exchange_refuses_noncanonical_bounds_and_every_request_mismatch \
+            exchange_live_matching_and_canonicality_faults_are_detected \
+            exchange_decoding_and_refusals_preserve_prior_bytes \
+            exchange_labels_and_independent_resource_limits_remain_enforced \
+            composed_search_replays_both_arms_and_preserves_complete_state \
+            composed_search_refuses_corrupt_state_and_exhausted_budget \
+            composed_search_matches_independent_torch_and_upstream_pcg_at_every_transition \
+            composed_search_live_selection_and_fitting_faults_cannot_match_the_oracle \
+            composed_search_checkpoint_restore_matches_uninterrupted_and_refuses_other_jobs \
+            composed_search_maximum_generation_and_candidate_bounds_keep_runtime_limits \
+            composed_search_fresh_command_line_workflow_resumes_without_host_search_logic \
+            checkpoint_round_trip_revision_and_previous_payload_are_exact \
+            checkpoint_refuses_noncanonical_incompatible_and_oversized_states \
+            checkpoint_publication_round_trips_and_refusals_preserve_storage \
+            checkpoint_live_revision_canonical_and_publication_faults_are_detected \
+            checkpoint_labels_host_profile_and_resource_limits_remain_closed \
+            records_build_nested_json_escape_controls_and_keep_prior_objects \
+            records_refusals_preserve_previous_bytes_and_propagate_errors \
+            records_exact_words_floats_and_blobs_round_trip_without_loss \
+            records_labels_cannot_lower_classification_and_runtime_limits_stay_enforced \
+            records_live_copy_hex_and_validation_faults_are_observed \
+            autoresearch_native_records_preserve_every_fitting_bit_and_refuse_schema_faults \
+            optim_sign_clipping_commit_conflict_and_rollback_preserve_state \
+            optim_late_errors_aliases_and_invalid_shapes_are_transactional \
+            optim_maximum_shape_reuses_storage_and_live_faults_are_detected \
+            autoresearch_fit_matches_torch_acceptance_rollback_gradients_and_replay \
+            autoresearch_fit_refuses_bad_requests_and_keeps_runtime_limits \
+            autoresearch_fit_live_faults_cannot_pass_the_reference \
+            optim_public_only_labels_and_fresh_fitting_workflow_are_enforced \
+            autoresearch_cpu_matches_pytorch_all_seeds_opcodes_and_boundaries \
+            autoresearch_cpu_refuses_malformed_inputs_and_preserves_resource_limits \
+            autoresearch_cpu_live_mutants_change_observations_or_refuse \
+            autoresearch_cpu_fresh_wrapper_and_stale_certificate_refusal \
+            rng_matches_pinned_c_reference_streams_bounds_and_allocation \
+            rng_snapshot_and_invalid_calls_preserve_state_and_cells \
+            rng_live_faults_labels_and_retry_exhaustion_are_observed \
+            rng_proposal_fresh_workflow_replay_and_cpu_composition_execute \
+            candidate_fit_matches_pytorch_gradients_updates_and_repeatability \
+            candidate_fit_refuses_bad_inputs_budgets_and_stale_certificates \
+            candidate_fit_live_mutants_and_validation_isolation_are_observable \
+            autodiff_shared_operands_repeat_backward_and_reset_are_observable \
+            autodiff_graph_gradients_match_pytorch_without_allocation \
+            autodiff_linear_regression_matches_pytorch_with_the_real_package_budgets \
+            autodiff_refusals_preserve_graph_gradients_and_query_cells \
+            autodiff_replay_and_backward_overflow_preserve_the_previous_publication \
+            autodiff_live_mutants_and_confidential_parameters_are_detected \
+            numeric_operators_match_pytorch_float64_and_preserve_input_data_without_allocation \
+            numeric_errors_preserve_outputs_for_shape_alias_nonfinite_and_overflow \
+            numeric_wrong_gradients_updates_and_public_label_violations_are_detected \
+            numeric_native_training_matches_torch_and_refuses_stale_evidence_and_budgets \
+            byte_scan_matches_live_python_and_rust_without_memory_or_allocation_changes \
+            byte_scan_scalar_errors_and_empty_views_refuse_before_access \
+            byte_scan_mutants_labels_and_consumer_error_paths_are_checked \
+            byte_scan_upgrade_keeps_previous_roots_and_certificates_usable \
+            output_builder_bounds_errors_memory_and_allocation_are_observable \
+            output_builder_mutations_and_confidential_inputs_are_rejected \
+            output_builder_consumers_refuse_capacity_and_separator_failures \
+            fresh_starter_builder_upgrade_and_refresh_preserve_rollback \
+            copy_into_matches_fixed_and_overlapping_ranges_without_allocation \
+            copy_into_mutations_and_confidential_arguments_are_rejected \
+            copy_consumers_refuse_errors_from_each_output_copy_site \
+            fresh_starter_copy_edit_runs_and_refuses_stale_certificates \
+            explicit_bytes_upgrade_and_rollback_execute_both_preserved_graphs \
+            fresh_starter_uses_big_endian_bytes_then_refreshes_an_edit \
+            big_endian_reads_preserve_memory_and_meet_allocation_and_fuel_bounds \
+            big_endian_mutations_and_confidential_arguments_are_rejected \
+            refreshed_png_runs_edits_and_refuses_old_certificates_and_exhausted_fuel \
+            png_dimensions_match_fixed_headers_and_reject_malformed_inputs \
+            png_cli_uses_hex_input_and_preserves_certificate_and_budget_refusals \
+            starter_cli_compiles_runs_and_preserves_refusals \
+            word_frequency_migration_preserves_byte_counts_order_and_error_refusal \
+            word_frequency_cli_runs_the_composed_graph_and_enforces_fuel \
+            bytes_fixed_vectors_preserve_memory_allocation_and_resource_bounds \
+            bytes_mutations_are_detected_and_consumer_errors_are_not_distances \
+            bytes_public_api_rejects_confidential_arguments_without_a_labeled_variant \
+            edit_distance_migration_matches_fixed_byte_cases_and_kills_offset_results \
+            edit_distance_cli_runs_two_line_inputs_and_enforces_fuel \
+            bracket_migration_matches_fixed_byte_cases_and_kills_inverted_results \
+            bracket_cli_runs_both_results_and_enforces_fuel \
+            migrated_tool_preserves_outputs_on_the_production_runtime \
+            package_check_run_and_supplied_certificate_round_trip_without_overwrite \
+            non_public_entry_and_missing_root_entry_cannot_run \
+            explicit_package_check_and_verification_round_trip \
+            solver_only_refinement_violation_is_rejected_by_package_check
+          do
+            grep -qE "^test ${gated} \.\.\. ok$" cli-solver.log
+          done
+
+      - name: Test Public checkpoint storage workflow
+        # The workflow must actually import from KV and resume, not silently
+        # skip its native case when an executable environment variable is absent.
+        run: |
+          set -euo pipefail
+          cargo build -p sigil --features solver --example autoresearch-storage
+          SIGIL_INTEGRATION_CLI="$PWD/target/debug/sigil" SIGIL_STORAGE_HOST="$PWD/target/debug/examples/autoresearch-storage" python3 -W error::ResourceWarning -m unittest -v library.tests.test_autoresearch_storage 2>&1 | tee storage-workflow.log
+          grep -qE '^Ran 5 tests in ' storage-workflow.log
+          grep -qE '^OK$' storage-workflow.log
+          if grep -q 'skipped=' storage-workflow.log; then exit 1; fi
+
   portability:
+    needs: hygiene
     # GATED, not always-on. macOS bills at 10x and Windows at 2x, and measured
     # 2026-08-23 this lane is 4.5 + 15.6 min warm / 11.9 + 35.6 cold, i.e. ~76
     # billed minutes on a warm pull request and ~190 on a cold one. 154 of the
@@ -1226,6 +1509,8 @@ jobs:
           # artifacts.
           key: ${{ matrix.target }}
           cache-on-failure: "true"
+          # Saved on main only; the `test` job's cache step records why.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the release artifact
         # --release specifically: this is the binary the release workflow

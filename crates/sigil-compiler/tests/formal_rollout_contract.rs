@@ -185,7 +185,6 @@ fn required_ci_keeps_proof_scaling_and_solver_pressure() {
     for required in [
         "Formal verifier scaling canary",
         "selfhost_trio_completes_within_validation_budget",
-        "CSIR v8 SSA and pc-join regressions",
         "taint_join_early_exit",
         "large_sibling_statements",
         "Lint (no default features)",

@@ -72,7 +72,8 @@ per call; no shared solver state). Z3-using tools may therefore use
 `expected_output_strategy: capture_from_reference`, unlike `time`/`random`.
 
 Caveat (AG5): like the compiler's compile-time Z3 use, reproducibility is
-guaranteed for a **pinned Z3 build** (`z3 = 0.12.1`); bit-identical resource
+guaranteed for a **pinned Z3 build** (the `z3` 0.21.1 crate over the CI-pinned
+native Z3 4.16.0); bit-identical resource
 accounting across *different* Z3 builds is not attempted.
 
 ## Out of scope (Explicit Anti-Goals)

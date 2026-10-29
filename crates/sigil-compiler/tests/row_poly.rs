@@ -494,8 +494,7 @@ fn cert_effects_required_excludes_the_variable_name() {
          effect Log;\n\
          fn logs() -> i64 ! { Log } { return 0; }\n\
          fn h<e>(f: Fn(i64) -> i64 ! { e }) -> i64 ! { e } { return f(1); }\n\
-         fn caller() -> i64 ! { Log } { return h(fn(x: i64) -> i64 { return logs(); }); }\n\
-         entry actor Main { on Tick() -> i64 { return 0; } }\n";
+         fn caller() -> i64 ! { Log } { return h(fn(x: i64) -> i64 { return logs(); }); }\n";
     let compilation = sigil_compiler::compile_named_module("row_poly_cert.sigil", src)
         .expect("a row-polymorphic program must compile");
     assert!(

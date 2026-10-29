@@ -1,0 +1,55 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [],
+    "taint_contracts": [
+      "tool::tool_main(input_ptr:Public,input_len:Public)->Public"
+    ],
+    "trap_conditions": [],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:1a0e00b9d448af0126d126d9503dcef7b4a16835a8fc47c841de30e076a3436b",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/fmt",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source split-count tool using fmt; not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:cf9d129ac7b97792d7dacc0fa95e654d8ea9712e1f397d2533b86c4bda87c77a",
+    "api_contract_hash": "sha256:294c7b015a56cd1fe628965d6fa5501437834ace20929cc988df4149ac4014ed",
+    "charter_hash": "sha256:b74526b4b65d684ab57060095df4d39297ef5a49b7a1c8f33e119a4d3cd115d1",
+    "evidence_manifest_hash": "sha256:becf2b4c5459b8b98d3cdd3fd4becb7c041d39e1911d764ad9fc66e2f934afdc"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "tool"
+  ],
+  "name": "tool",
+  "namespace": "split-count",
+  "version": "0.1.0-public.1"
+}

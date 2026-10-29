@@ -1,0 +1,18 @@
+{
+  "algorithm": "pcg-xsh-rr-64-32-v1",
+  "contract_hash": "sha256:5f95ca177d4f3fae7ce56fefbc96252cbfe51b9e989995156afff98839d5a776",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "limits": {
+    "instructions": 12,
+    "request_bytes": 144,
+    "response_bytes": 304,
+    "weights": 8
+  },
+  "mutation_policy": "sigil-autoresearch-proposal-v1",
+  "package": "autoresearch-propose/tool",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "version": "0.1.0-public.1"
+}

@@ -35,8 +35,21 @@ Status meanings:
   Host shims write guest memory only into fresh bump-pointer cells (SR-024: censused, with an
   anti-stub, rather than assumed).
 - **Independent oracle/model:** The Lean taint calculus proves its own trace property;
-  `selfhost/taint_check.sigil` differentially covers a curated scalar/record/closure subset. The
-  Lean gate has no memory cell, so the heap floors are Rust-only (SR-022).
+  `selfhost/taint_check.sigil` differentially covers the scalar/record surface under production's
+  control-flow join model and M6 region model (SHP-5a), its intraprocedural heap floors
+  (SHP-5c-1), its call-site summaries (SHP-5c-2) and its slot and region rules (SHP-5c-3, a
+  region body by the scalar-only rule), with closures curated. The Lean gate
+  has no memory cell, so the heap floors are Rust-only (SR-022): the shadow is a second
+  executable implementation of them, not a mechanisation. One known shadow
+  divergence outside the subset: the shadow treats a call as an extern call when its bare name
+  matches an extern declared anywhere in the program (`tt_collect_externs`), while the compiler
+  does so only when the call resolves to an extern declaration. On a call to a local function
+  that shares an extern's name, the shadow therefore applies the FFI boundary (arguments at most
+  `@Internal`, result `@Internal`) where the compiler applies the function's declared labels, and
+  the two can diverge in either direction. A module-qualified call to the module's own extern
+  (`m::f(...)`) is a method node to the shadow, which applies no FFI boundary to it where the
+  compiler does, so the shadow is the weaker side there. No differential corpus holds either
+  shape.
 - **Negative canary:** @test:implicit_flow_secret_guarded_break_leak,
   @test:direct_call_rejects_secret_into_public_parameter,
   @test:abortive_effect_clause_preserves_secret_parameter_taint,
@@ -91,7 +104,10 @@ Status meanings:
   violation inside an assignment place's index reports I013 rather than T001 (SR-023).
 - **Self-host status:** Curated parity only. Control joins, early-exit continuation taint, match
   guards, actor/spawn boundaries, and closure-value taint emit an explicit unsupported verdict,
-  which the composed self-host pipeline rejects. The heap floors have no self-host shadow.
+  which the composed self-host pipeline rejects. The intraprocedural heap floors (SHP-5c-1),
+  the call-site summaries (SHP-5c-2) and the slot and region rules (SHP-5c-3) are shadowed; a
+  call the shadow cannot name or decide, and a region body outside the scalar-only rule,
+  refuse.
 - **Status:** `bounded`
 - **Residual risk:** SR-017 for stronger source-to-runtime correspondence; SR-022 (heap floors are
   Rust-only), SR-023, SR-024; SR-025, SR-026, SR-027 for the three open heap channels (#764).
@@ -227,8 +243,13 @@ Status meanings:
   intrinsic performing the registered `Alloc` effect, exempt there and E001 in the outer ring
   (@test:inner_ring_alloc_is_exempt_outer_fires_e001) — so inner-ring allocation is simply never
   charged to a declared row. The host-boundary assumption rests on two fences: R003 (inner-ring
-  `extern` call, @test:inner_ring_extern_call_is_fenced_by_r003) and R004 (direct inner→outer call;
-  only `grant` crosses, @test:inner_to_outer_cross_ring_call_is_fenced_by_r004). E003
+  `extern` call, @test:inner_ring_extern_call_is_fenced_by_r003, also inside a `grant` body,
+  @test:inner_ring_grant_body_calling_an_extern_is_fenced_by_r003) and R004 (every call across the
+  ring boundary, in both directions, @test:inner_to_outer_cross_ring_call_is_fenced_by_r004,
+  @test:outer_to_inner_cross_ring_call_is_fenced_by_r004). `grant` is not a crossing: its closure
+  runs in the caller's ring, so a cross-ring call inside a `grant` body is R004 too
+  (@test:inner_ring_grant_body_calling_the_outer_ring_is_fenced_by_r004; control
+  @test:inner_ring_grant_without_a_cross_ring_call_compiles). E003
   (@test:inner_ring_privilege_row_is_fenced_by_e003) is row hygiene, not a host-boundary fence: it
   rejects `FFI`/`Unsafe` NAMED in a declared row, so it does not reach a row-less inner-ring `handle
   Unsafe` block, and its validator walks free `FnDef` items only, leaving inner-ring impl methods
@@ -236,7 +257,12 @@ Status meanings:
 - **Independent oracle/model:** `selfhost/effect_check.sigil` parity for E001/E002 and Lean
   `effect_safety` (synthesized rows) plus the `Chk` checking judgment
   (`Chk.effect_safety_declared`, `Chk.app_latent_bounded` in `EffectRows.lean`) for declared-row
-  and latent-row containment.
+  and latent-row containment. One known divergence: the shadow treats a call as an extern call
+  when its bare name matches an extern declared anywhere in the program, while the compiler does
+  so only when the call resolves to an extern declaration. On a call to a local function that
+  shares an extern's name, the shadow therefore applies the extern exemption (ET-EFF-1: an extern
+  call is not charged to the caller's row) where the compiler charges the function's effects, so
+  the shadow is the weaker side.
 - **Negative canary:** @test:sh_effect_reject_matches_oracle and effect-handler E004 residue tests;
   instance routing: @test:inner_first_outer_generic_fn_is_effect_checked,
   @test:inner_first_outer_generic_impl_method_is_effect_checked and
@@ -314,11 +340,15 @@ Status meanings:
   their governing ring (issue #768; landed this way by the
   author's decision of 2026-10-01). `effect_ring_routing.rs` pins each such meet-accepted layout
   at two layers: the checker layer (before AIR) accepts it, the pipeline is exactly {R007}.
-  Consequently a trusted generic that
+  Consequently a trusted generic free fn that
   uses `handle Unsafe`, bare or in a closure, is rejected when instantiated from an untrusted
-  module, in every module order, although its non-generic twin is accepted; that over-rejection is
-  the price of the fail-closed rule and is SR-019's follow-up. The meet is consulted by
-  `check_effects` and `check_rings` only. The type-check pass's generic call-site row check
+  module, in every module order, although its non-generic twin is accepted. A trusted generic
+  METHOD's instance is checked once, under the module whose call creates it, so it is rejected
+  only when that module is untrusted
+  (@test:trusted_generic_method_handle_unsafe_follows_its_first_instantiator). That
+  over-rejection is the price of the fail-closed rule and is SR-019's follow-up. The meet is
+  consulted by `check_effects` and `check_rings` only. The type-check pass's generic call-site
+  row check
   (`bind_and_check_effect_rows`, the second E001 emitter) reads no module, no ring and no trust, so
   the meet neither enables nor suppresses it: an effectful closure passed to a generic callee's
   concrete row inside an all-inner generic stays exactly E001, as in its non-generic twin, with a
@@ -358,10 +388,25 @@ SCOPE OF THE EXEMPTION, STATED
 
 ### SND-RING-001 [P1]
 
-- **Claim:** Outer-ring code cannot own capabilities and inner-ring code cannot directly exercise
-  foreign authority outside the declared crossing rules.
+- **Claim:** Outer-ring code cannot own capabilities, inner-ring code cannot directly exercise
+  foreign authority outside the declared crossing rules, and only a `#[trusted]` outer-ring module
+  can bind a host function by declaring an `extern` (R008,
+  @test:outer_ring_extern_without_trusted_is_fenced_by_r008). An `extern` call in generic code
+  needs every module governing the instance to be trusted
+  (@test:generic_extern_call_needs_every_governing_module_trusted), and a call is an extern call
+  only when it resolves to an extern declaration
+  (@test:a_local_function_named_like_an_extern_elsewhere_stays_a_local_call). Outer-ring code
+  cannot message, spawn, or restrict, split, draw or mint a capability, because the outer module
+  has no host import for them. None of these reaches emission: R009 refuses, before emission, each
+  one the earlier checks (R001, R014) do not
+  (@test:outer_ring_capability_operations_are_refused,
+  @test:gate_refuses_exactly_the_air_the_emitter_cannot_encode; SR-033). An actor cannot be
+  declared in an outer-ring module, which the actor runtime never hosts (R014,
+  @test:outer_ring_actor_is_refused_at_its_declaration, @test:outer_ring_actor_send_is_refused;
+  SR-036).
 - **Enforcement:** `crates/sigil-compiler/src/ring_check.rs`, type-check crossing rules, and
-  ring-specific Wasm memories/import sets.
+  ring-specific Wasm memories/import sets; the AIR-level R009 gate
+  `ring_check::check_air_outer_ring_imports` reads the emitter's own import table.
 - **Trusted assumptions:** Every module/function has the correct ring and the emitted import/memory
   partition matches the checked program. For the R001-R003 walk, a monomorphized instance (and a
   closure lifted while one is re-checked) is governed by the MEET of its defining module and every
@@ -379,8 +424,16 @@ SCOPE OF THE EXEMPTION, STATED
   defect is closed as SR-018 (per-ring `FuncId -> index` maps, a program-spanning table, and the
   AIR-level R007 gate `ring_check::check_air_ring_placement` for a monomorph-induced cross-ring
   call), so this row no longer carries a branch reference for it.
-- **Independent oracle/model:** `selfhost/ring_check.sigil` differential parity on R001/R003 and
-  runtime host/import tests.
+- **Independent oracle/model:** `selfhost/ring_check.sigil` differential parity on R001/R003 over
+  its curated corpus, and runtime host/import tests. One known divergence outside that corpus: the
+  shadow treats a call as an extern call when its bare name matches an extern declared anywhere in
+  the program (`rc_collect_externs`), while the compiler does so only when the call resolves to an
+  extern declaration. On an inner-ring call to a local function that shares an extern's name, the
+  shadow therefore reports R003 and the compiler does not, so the shadow is the stronger side.
+  A module-qualified call to the module's own extern (`m::f(...)`, which compiles since the
+  extern call took the extern's declared name) is a method node to the shadow, never an extern
+  call: an inner-ring `m::f(...)` is R003 in the compiler and silent in the shadow, so there the
+  shadow is the weaker side. No differential corpus holds either shape.
 - **Negative canary:** @test:sh_ring_reject_matches_oracle; instance routing:
   @test:outer_first_inner_generic_extern_call_is_r003 pins that an inner-ring generic's instance
   calling an extern is R003 with an outer-ring module sorting first (before the routing fix the
@@ -433,50 +486,105 @@ SCOPE OF THE EXEMPTION, STATED
   (@test:ring_routing_mirror_direction_rejects_legal_generics; twins clean): still fail-closed on
   legal code, now by the stated R007 bound rather than a misapplied ring code, until #768 emits
   instances into their governing ring. NOT AFFECTED,
-  measured the same way: R004 (raised by the type checker against the DEFINING module's ring, both
-  call directions) and R006 (a module attribute) give identical sets for a generic and its twin in
-  both orders (@test:ring_routing_r004_and_r006_do_not_escape_for_generics). R005 is registered but
+  measured the same way: R004 (raised by the type checker, both call directions) and R006 (a module
+  attribute) give identical sets for a generic and its twin in both orders
+  (@test:ring_routing_r004_and_r006_do_not_escape_for_generics). That test defines and calls each
+  generic in one module. R004 is judged against the ring of the module being checked, and a
+  generic FREE fn's body is re-checked while the module being checked builds its instance: the
+  module whose own code reaches the instantiation, directly or through other generic bodies. So
+  when the definer and that module sit in different rings, R004 follows the instantiating module:
+  an inner-ring generic's call into an inner-ring module is R004 when an outer-ring module
+  instantiates it, also through another generic, and an outer-ring generic's call into an
+  inner-ring module is not R004 when an inner-ring module instantiates it, though it is when an
+  outer-ring one does (@test:r004_in_a_generic_body_is_judged_against_the_instantiating_module).
+  By the generic-against-twin measure used above, that last layout is an R004 ESCAPE: the generic
+  compiles clean where its non-generic twin is exactly {R004}. Nothing crosses at run time: the
+  instance is checked under both rings' rules (the meet) and, when it compiles, is emitted in the
+  inner ring. The split is reachable only through the bare-name generic call gap below, so these
+  pins change when that gap closes, and SR-019's follow-up (re-checking a free-fn instance in its
+  definer's scope) would make R004 follow the definer again. A generic METHOD is never split: a
+  method call resolves only among modules in the caller's ring, and another ring's generic method
+  is exactly T132 from either side (same test). R005 is registered but
   never emitted; R010-R013 are AIR-level invariants with no ring key. An UNINSTANTIATED generic
   yields no typed function at all (the type checker builds functions for templates only through
   their instances), so it has nothing to check or emit and is not an escape. R004 does not reach
   GENERIC free-fn calls at all: a generic free fn resolves program-wide by bare name, so inner-ring
-  code can call an outer-ring generic with no `use` and no `grant` (pinned as it stands by
+  code can call an outer-ring generic with no `use` (pinned as it stands by
   @test:known_gap_generic_free_fn_call_bypasses_use_and_r004; recorded in
   `../tests/attack/KNOWN_GAPS.md`). The meet above bounds what such an instance may do; it does not
   make the call itself a checked crossing. End to end, the emission gate refuses that call with
   R007 when the instance happens to be filed in the outer ring (the outer definer sorting first);
   with the inner caller first the instance is filed in the caller's ring and the call compiles,
-  so R007 is a by-product of filing there, not a fence for the gap.
+  so R007 is a by-product of filing there, not a fence for the gap. The same resolution leaks the
+  other way: a generic free fn's body, re-checked in the instantiating module's scope, can call
+  that module's PRIVATE functions by bare name, where its non-generic twin is T062 or T155
+  (@test:known_gap_generic_body_reaches_the_instantiating_modules_private_fns, pinned as it
+  stands; the second vector of the same `KNOWN_GAPS.md` entry); the meet bounds the instance's
+  effects and ring rules, not its visibility.
 - **Self-host status:** Curated R001/R003 parity only.
 - **Status:** `bounded`: the R001, R002 and R003 clauses hold for non-generic code and, for generic
   code, under the governing meet (SR-019), with an instance filed in another ring than its caller
   refused at emission (R007, SR-018, #768); R004 and R006 are unaffected by the generic routing,
   and R004 does not reach generic free-fn calls (Known exclusions).
-- **Residual risk:** None within the declared ring subset beyond the generic-call R004 gap above;
+- **Residual risk:** None within the declared ring subset beyond the generic-call R004 gap and the
+  generic-body visibility gap above;
   the re-check-context asymmetry that makes the governing meet necessary is recorded as SR-019, and
   the two-ring emission index defect is closed as SR-018 (R007).
 
 ### SND-REFINE-001 [P0]
 
-- **Claim:** Accepted refinements in the declared integer/bitvector fragment hold at checked
-  construction, assignment, parameter, return, and capability-guard sinks.
+- **Claim:** In a build with the `solver` feature, accepted refinements in the declared
+  integer/bitvector fragment hold at checked construction, whole-record assignment, field store,
+  parameter, return, and capability-guard sinks, for a value whose fact describes it. A fact ends
+  with the binding it was recorded for: a `mut` binding carries none, nor does a binding whose
+  name the scope may still assign or an actor state field the body may write, and a binding that
+  shadows a name starts with none (DBC-0a). A store into a refined record's field is a checked
+  sink keyed on the place's record type, so a read of the field may take the record's clause as
+  its fact (DBC-0b); a store into a field that a cross-field or `length()` clause joins to a
+  sibling is refused rather than checked. A build without the solver treats every obligation it
+  collects as holding: SR-038.
 - **Enforcement:** Production type-check refinement dispatchers, `z3_capability.rs`, fragment guard,
   deterministic rlimits, and fail-closed timeout/Unknown verdicts.
 - **Trusted assumptions:** Z3 is correct; query encoding matches source semantics; refinements are
-  preserved by every supported lowering and mutation path.
+  preserved by every supported lowering path; every store site in the typed AST is one the
+  collector's walker reaches (the walker is total over `TypedStmt` and `TypedExprKind`, with no
+  catch-all arm).
 - **Independent oracle/model:** Known-answer wide-integer tests, order-independent corpus runs, and
   structural fragment-inventory tests; there is no independent formal refinement model.
 - **Negative canary:** @test:u256_refinement_violating_rejected_t210 and the solver corpus fixture
-  `100_refinement_guards_cap_sink.sigil`.
+  `100_refinement_guards_cap_sink.sigil`; for the binding rule, the spec's probes P4, P8, P10, P12
+  and P13 refused in both builds (@test:refinement_fact_dies_with_its_mutable_binding,
+  @test:refined_parameter_fact_stops_at_a_binding_that_shadows_it,
+  @test:narrowing_fact_stops_at_a_binding_that_shadows_its_name,
+  @test:narrowing_stops_at_a_binding_that_shadows_its_name and the solver corpus fixtures
+  `101_dbc0_narrowed_then_assigned.sigil` to `105_dbc0_let_shadows_refined_parameter.sigil`; the
+  second review's sites, a binding reusing an assignable name and an assignable state field,
+  @test:a_binding_that_reuses_an_assignable_name_carries_no_fact and
+  @test:an_assignable_state_field_carries_no_fact), beside
+  @test:an_immutable_binding_keeps_its_fact; for the field store, probe P11 and its siblings
+  refused at the store (@test:a_field_store_is_a_refinement_sink,
+  @test:a_store_into_a_state_fields_record_is_a_refinement_sink,
+  @test:a_field_store_without_a_fact_for_the_clause_is_refused,
+  @test:a_store_into_a_cross_field_clauses_field_is_refused and the solver corpus fixtures
+  `106_dbc0_field_store_literal_fail.sigil` to `109_dbc0_field_store_through_mut_param_fail.sigil`),
+  beside the stores that keep the invariant in the same tests and in
+  `110_dbc0_field_store_pass.sigil`.
 - **Composition coverage:** @test:wide_value_truncation_witness_t210,
   `refinement_cross_module_parity.rs`, and capability/refinement solver fixtures.
 - **Known exclusions:** The grammar deliberately rejects unsupported compound, generic-function, and
   symbolic forms. The v2 pipeline is the sole production discharge path, but it is not an
-  independent oracle.
+  independent oracle. A store into a field that a cross-field or `length()` clause joins to a
+  sibling is refused (T216), not checked, and a compound store is refused (T211), not checked:
+  the user reconstructs the record, where the clause is checked. The stock solver-off build
+  treats every obligation it collects as holding (SR-038,
+  @test:known_gap_solver_off_build_does_not_decide_refinement_contracts); its certificate is not
+  solver-verified, so `run` and `forge` refuse the artifact unless unverified certificates are
+  explicitly allowed.
 - **Self-host status:** Refinements are absent from the self-hosted checker, as declared in
   `CLAIMS.md` HB-3.
 - **Status:** `bounded`
-- **Residual risk:** SR-017 for stronger source-to-runtime correspondence.
+- **Residual risk:** SR-017 for stronger source-to-runtime correspondence; SR-038 for the
+  solver-off configuration (SR-037, the fact that outlived its value, is Closed).
 
 ### SND-MEM-001 [P0]
 
@@ -490,7 +598,11 @@ SCOPE OF THE EXEMPTION, STATED
   implementations; no formal memory model is connected to codegen.
 - **Negative canary:** @test:out_of_bounds_write_traps,
   @test:get_out_of_bounds_traps_with_in_bounds_control,
-  @test:rejects_alloc_i32_max_before_growing_guest_memory.
+  @test:rejects_alloc_i32_max_before_growing_guest_memory,
+  @test:array_write_traps_out_of_bounds_at_every_index_width,
+  @test:slice_range_traps_out_of_bounds_at_every_index_width,
+  @test:byte_at_traps_out_of_bounds_at_every_index_width. The last three run every index width
+  the type checker admits; SR-030 records the 4-byte signed index these checks once let through.
 - **Composition coverage:** Collection, range-loop, arena, actor-state, and hostile-host-argument
   suites.
 - **Known exclusions:** Unsafe host/native code and arbitrary Wasm outside SIGIL's verified path.
@@ -508,7 +620,9 @@ SCOPE OF THE EXEMPTION, STATED
   inserted checks.
 - **Independent oracle/model:** Runtime state-machine properties and static worst-case-cost tests.
 - **Negative canary:** @test:declared_fuel_budget_stops_an_overrunning_tool and
-  @test:hostile_wasm_infinite_loop_is_bounded_by_fuel_backstop.
+  @test:hostile_wasm_infinite_loop_is_bounded_by_fuel_backstop; a raised per-call wasm
+  budget (SELF-4's fuel side) is still a bound, @test:wasm_fuel_budget_ceiling_and_plumbing
+  (refused above its ceiling, a trap below the need).
 - **Composition coverage:** @test:nested_bounded_loops_multiply and
   @test:call_in_bounded_loop_multiplies_callee_cost.
 - **Known exclusions:** Fuel is a bound/failure mechanism, not a guarantee that every accepted
@@ -596,7 +710,20 @@ SCOPE OF THE EXEMPTION, STATED
 - **Claim:** Self-hosted components agree with the Rust oracle only on each differential suite's
   declared corpus and projection.
 - **Enforcement:** Differential suites for lexer, parser, name resolution, type checking, ring,
-  effect, taint, ownership, capability workloads/verdicts, AIR, monomorphization, and emit bytes.
+  effect, taint, ownership, capability workloads/verdicts, AIR, monomorphization, and emit bytes;
+  beyond the curated corpora, the SHP-0 gate runs the committed seed against production over the
+  parity-manifest roots, the Z3 corpus, `tools/` and the programs embedded in test sources, hands
+  the seed the program production compiled (its source and every ambient stdlib module production
+  added, in production's order, with production's stages, the effect desugar included, shown
+  compiling that text to production's modules), and requires the same module or a refusal on each,
+  with the divergence set pinned empty (@test:shp_divergence_is_exactly_the_pinned_set,
+  @test:shp3_the_seed_is_handed_the_program_production_compiled,
+  @test:shp3_production_stages_include_the_effect_desugar); programs of every construct class
+  SHP-0b fixed or fenced are pinned by name (@test:shp0b_fences_hold_on_the_committed_seed), and
+  likewise for SHP-1 (@test:shp1_fences_hold_on_the_committed_seed) and SHP-2b's two-ring emission
+  (@test:shp2_fences_hold_on_the_committed_seed). A two-ring program's answer carries both modules,
+  each compared to production's, and the classifier is shown rejecting an outer module whose call
+  uses the global function index (@test:shp2_classifier_reads_the_two_ring_form).
 - **Trusted assumptions:** Corpus generation is non-vacuous, projections preserve distinguishing
   information, and both sides do not share the same bug or parser loss.
 - **Independent oracle/model:** Rust and SIGIL implementations are structurally diverse but share
@@ -609,11 +736,13 @@ SCOPE OF THE EXEMPTION, STATED
   across annotations, returns, calls, and multiple type parameters;
   @test:hb2_checked_byte_capstone runs the seven-gate chain over the certified artifact itself.
 - **Known exclusions:** These are curated relations, not full-language equivalence; the executed gate
-  chain enforces only each gate's parity-covered code subset, and the with-driver artifact's own
-  driver still runs the emit lane rather than the gates.
+  chain enforces only each gate's parity-covered code subset. On the SHP-0 corpora the seed emits
+  production's module or refuses (SR-029, closed); a program production compiles with injected
+  ambient stdlib modules is answered for a different input (pinned apart until SHP-3); programs
+  outside those corpora are unmeasured.
 - **Self-host status:** This row describes the bounded status itself.
 - **Status:** `bounded`
-- **Residual risk:** SR-009.
+- **Residual risk:** SR-009, SR-029.
 
 ### SND-FORMAL-001 [P1]
 

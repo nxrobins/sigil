@@ -13,7 +13,7 @@ ever needs whole-program reasoning).
 
 ```sigil
 for v in a..b {      // exclusive end; a, b : i64, each evaluated exactly ONCE
-    …                // v : i64, IMMUTABLE (assignment to v is T042)
+    …                // v : i64, IMMUTABLE (assignment to v is T042, under an enclosing `let mut v` too)
 }
 ```
 
@@ -43,23 +43,39 @@ The type-checker records `v ∈ [0, K)` on a dedicated channel
 2. the end resolves Z3-free to a compile-time `K`: an integer literal, or
    `arr.len()` on a **bare local** of type `[T; N]` (§3);
 3. `K >= 1` (an empty loop makes no claims);
-4. the body **pre-scan** finds no rebinding of `v` through ANY binder form —
-   `let`, `let (…)` tuples, match-arm bindings (enum + array patterns),
-   nested loop variables. Any rebinding anywhere refuses the WHOLE loop's
-   fact (no partial windows).
+4. the body **pre-scan** finds no rebinding of `v` through ANY binder form
+   anywhere in the body's subtree — `let`, `let (…)` tuples, match-arm
+   bindings (enum + array patterns), nested loop variables, closure
+   parameters, handle-clause binders and `region` names, including those in
+   the blocks an expression holds (`region` and `handle` bodies, closure and
+   clause bodies). Any rebinding anywhere refuses the WHOLE loop's fact and
+   its refinement frame (no partial windows).
 
 Why this needs no flow analysis:
 
 - **Mutation-proof**: the loop variable is bound immutably — `v = …` is a hard
   T042, and errors abort before AIR, so no unsound stamp can ever reach
-  codegen.
-- **Shadow-proof**: the pre-scan is a TOTAL match over `Stmt` and `Pattern`
-  (a future binder variant fails to compile there and must be classified —
-  the walker-totality defense).
+  codegen. The body's mutable set is pruned of `v`, because that set is
+  inherited by name: an enclosing `let mut v` had left `v` assignable inside
+  the body, so `v = 6` passed and `arr[v]` kept its elided check (SR-035's
+  third review).
+- **Shadow-proof**: the pre-scan is a TOTAL match over `Stmt`, `Expr` and
+  `Pattern` (a future binder variant fails to compile there and must be
+  classified — the walker-totality defense). Before SR-035 it looked into no
+  expression, on the premise that the only binders there were closure and
+  clause binders, whose bodies are barriered; but a `region` or bare `handle`
+  body is inline in the same function, so a `let v` there kept the fact and
+  `a[v]` on it read and wrote out of bounds, and the barrier empties only the
+  fact channel, so a closure parameter `v` kept the loop's refinement frame.
 - **Context-proof**: closure bodies and effect-handler clause bodies are
   **barriered** — the channel is emptied (`mem::take`) around their checks.
   Both lambda-lift into *different functions* whose binders may shadow the
-  name; no enclosing-loop fact is ever visible inside them, fail-closed.
+  name; no enclosing-loop fact is ever visible inside them, fail-closed. So
+  is every function body (`check_function_block`), which matters for an
+  instance body: it is checked at the call that first creates it, inside the
+  caller's body. Before SR-035 that body saw the caller's facts, so a generic
+  body first created inside `for i in 0..4` had `a[i]` on its own parameter
+  `i` elided for every later call, out-of-bounds indices included.
 
 The consumer (`infer_index_expr`) stamps `bounds_proven` on `arr[v]` when the
 index is a **bare local** with a channel hit and the interval fits `[0, N)` —
@@ -106,7 +122,11 @@ runtime check); `if i >= 5 { a5[i] }` is a **compile error**; bare `a5[i]` in
 No general Range values; no `..=`; no step/downward ranges; no iterator
 integration; **no Z3 anywhere in this feature**; no facts from `break` (break
 only shortens execution — per-iteration facts are unaffected); no elision
-through closures or handler clauses (the barrier); no elision for compound
+through closures, handler clauses or the body of a function called in the
+loop (the barrier); no elision for the loop variable itself when any binder in
+the loop body's subtree rebinds its name, a closure parameter or a `let` in a
+closure body included (the pre-scan refuses the whole fact, fail-closed); no
+elision for compound
 indices (`arr[i+1]` — no arithmetic reasoning, ever); non-zero literal starts
 deferred (a one-line widening); narrow-int bounds reject T280; no
 invalidation-based (flow-tracked) shadow handling. The pre-existing
@@ -121,7 +141,12 @@ syntactic): the shadow re-derives K (literal / len-of-array-bind), N (the
 indexed bind's type), and the pre-scan, then compares `K <= N` itself —
 `selfhost/air.sigil`'s `ai_index_elided` range rule, differential-pinned by
 the `BODY_FORRANGE` lane (`P_K_FOR_RANGE` / `K_FOR_RANGE` = 88 on both sides).
-The M3 guard-tightened elisions are UNCOVERED-not-broken in the shadow lane
+The shadow's pre-scan (`rf_body_refuses`) refuses on every binder node in the
+loop body's span and on any closure, but it counts neither a `region`'s name nor
+anything inside a clause-form `handle` (a leaf in its tree: the clause binder and
+every binder in the clause body), which the
+checker's pre-scan counts since SR-035: a loop body with either is outside the
+covered subset, and no fixture has one. The M3 guard-tightened elisions are UNCOVERED-not-broken in the shadow lane
 (a follow-on rung needs the narrowing-walk re-derivation); covered fixtures
 stay within the channel-only subset. Note the literal rule's "no N needed"
 trick (type-cleanliness alone guarantees a literal index in-bounds) does NOT

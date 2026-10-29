@@ -4261,7 +4261,9 @@ fn compute_expr_taint_unfloored(
         }
 
         TypedExprKind::Grant(g) => {
-            // M4: Grant return crosses ring boundary — must be @Public
+            // M4: a grant does not cross the ring boundary (its closure runs
+            // in the caller's ring); its result carries the body's and the
+            // borrowed capability's taint.
             let body_taint = compute_expr_taint(&g.body, env, current_fn, program, diagnostics);
             // Note: actual sink check is done at the return-statement level
             // inside the closure body, not here. Here we just propagate.

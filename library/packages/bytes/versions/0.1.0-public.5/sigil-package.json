@@ -1,0 +1,63 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-413",
+      "-422"
+    ],
+    "taint_contracts": [
+      "bytes::copy_into(dst_ptr:Public,dst_len:Public,dst_offset:Public,src_ptr:Public,src_len:Public,src_offset:Public,count:Public)->Public",
+      "bytes::read_u32_be(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::read_u32_le(ptr:Public,len:Public,offset:Public)->Public",
+      "bytes::write_u32_le(ptr:Public,len:Public,offset:Public,value:Public)->Public",
+      "bytes_out::append(out:Public,src_ptr:Public,src_len:Public,src_offset:Public,count:Public)->Public",
+      "bytes_out::append_output(out:Public,packed:Public)->Public",
+      "bytes_out::finish(out:Public)->Public",
+      "bytes_out::new(capacity:Public)->Public",
+      "bytes_out::push_byte(out:Public,value:Public)->Public",
+      "bytes_scan::equal(a_ptr:Public,a_len:Public,b_ptr:Public,b_len:Public)->Public",
+      "bytes_scan::find_byte(ptr:Public,len:Public,offset:Public,value:Public)->Public"
+    ],
+    "trap_conditions": [
+      "invalid borrowed linear-memory region"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [],
+  "description": "Experimental public source Public bytes, bounded output and reference-backed raw-byte readers; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:d4ac967fd2cfa63314d32fb092ef859ce5308246711492a9c09b240bcf944296",
+    "api_contract_hash": "sha256:c82b5750f31b5f332ff54ad02ddfdcc1f06ef5bfe5af4b5071a94e31f3a3cdbf",
+    "charter_hash": "sha256:3681d3227cc4b7410a108ba66d2a7fdc1d3e0b44ab7f17c5874b69633144f8d3",
+    "evidence_manifest_hash": "sha256:ca50ea10ab44facab652dd7488bf833af9d1aa187b42dfd1bf93d69fcc4ea8e9"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "bytes",
+    "bytes_out",
+    "bytes_scan"
+  ],
+  "name": "bytes",
+  "namespace": "sigil",
+  "version": "0.1.0-public.5"
+}

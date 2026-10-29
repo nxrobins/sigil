@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tools-corpus indexer (scratch script for the tools-corpus-improvement loop).
 
-Walks tools/*.sigil sorted alphabetically. Takes (start_index, count) on the
+Walks the approved standalone references tools/*.sigil sorted alphabetically.
+Package sources and managed dependency caches are not reference inputs and are
+never indexed. Takes (start_index, count) on the
 CLI; processes that batch; appends one JSON line per tool to
 bench/tools-index-cursor.json. After updating the cursor, regenerates
 tools/INDEX.md by grouping all cursor entries by category and sorting
@@ -200,7 +202,7 @@ def regenerate_index(rows: dict[str, dict]) -> None:
     lines.append("")
     lines.append(
         f"**Last updated:** {date.today().isoformat()} · "
-        f"**{len(rows)} of 212 tools indexed.**"
+        f"**{len(rows)} of {len(tool_sources())} tools indexed.**"
     )
     lines.append("")
     lines.append(
@@ -228,16 +230,22 @@ def regenerate_index(rows: dict[str, dict]) -> None:
     INDEX_MD.write_text("\n".join(lines), encoding="utf-8")
 
 
+def tool_sources() -> list[Path]:
+    return sorted(TOOLS_DIR.glob('*.sigil'))
+
+
 def process_batch(start: int, count: int) -> tuple[int, int]:
-    files = sorted(p for p in TOOLS_DIR.iterdir() if p.suffix == ".sigil")
+    files = tool_sources()
     total = len(files)
     end = min(start + count, total)
     batch = files[start:end]
 
     rows = load_cursor()
+    names = {path.relative_to(TOOLS_DIR).as_posix() for path in files}
+    rows = {name: row for name, row in rows.items() if name in names}
     for path in batch:
         src = path.read_text(encoding="utf-8", errors="replace")
-        name = path.name
+        name = path.relative_to(TOOLS_DIR).as_posix()
         entry = {
             "name": name,
             "categories": categorize(name, src),

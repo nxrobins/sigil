@@ -18,19 +18,23 @@
 # and the dependency update must amend the entries below.
 
 disallowed-methods = [
-    # Z3 quantifier-introducing APIs in z3 v0.12. Calling any of
+    # Z3 quantifier- and binder-introducing APIs. Calling any of
     # these would break the QF (quantifier-free) fragment claim
     # documented in docs/z3-theory-inventory.md §4. If a future
     # change genuinely needs quantifiers, both this list and the
     # decidability proof must be re-done.
     #
-    # In z3 v0.12, the quantifier constructors live as free functions
-    # at z3::ast — there are no Bool::forall_const, BV::forall_const,
-    # etc. method forms. If the crate adds those (or any new
-    # quantifier-introducing API) in a future version, the bumper
-    # must extend this list.
-    { path = "z3::ast::forall_const", reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
-    { path = "z3::ast::exists_const", reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+    # The binder constructors live as free functions at z3::ast —
+    # there are no Bool::forall_const, BV::forall_const, etc. method
+    # forms (re-audited against the z3 0.21.1 source). z3 0.12.1 had
+    # forall_const and exists_const; 0.21.1 adds quantifier_const and
+    # lambda_const, listed below. If the crate adds any further
+    # quantifier- or binder-introducing API, the bumper must extend
+    # this list.
+    { path = "z3::ast::forall_const",     reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+    { path = "z3::ast::exists_const",     reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+    { path = "z3::ast::quantifier_const", reason = "Quantifier instantiation breaks the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
+    { path = "z3::ast::lambda_const",     reason = "A lambda binds variables and yields an array term, both outside the decidable QF fragment; see docs/z3-theory-inventory.md §4-§6" },
 
     # Z3 cache invariant: cached values contain a Verdict and optional
     # integer counterexample, not a live solver model, core, or proof.
@@ -65,11 +69,44 @@ disallowed-methods = [
     # Module-/file-scoped `#![allow(clippy::disallowed_methods)]` is
     # FORBIDDEN workspace-wide (same fence test).
     #
-    # NOTE: z3 0.12.1 has no `z3::ast::lambda_const` (verified against the
-    # vendored crate); re-audit quantifier/lambda constructors on any z3
+    # Re-audited against the z3 0.21.1 source on the bump from 0.12.1.
+    # Every public method that runs a solve, reads a verdict or hands
+    # back a model is listed. New since 0.12.1: Solver::solutions / into_solutions /
+    # check_and_get_model / get_consequences, the same solve-and-model
+    # trio plus get_unsat_core on Optimize, and the Fixedpoint engine's
+    # query / query_relations. None has a production caller; each would
+    # reach a verdict without the fragment walk. Re-audit on any z3
     # version bump per the protocol above.
-    { path = "z3::Solver::check",             reason = "Direct check() bypasses the runtime fragment guard; use z3_cache::check_cached*/fresh_check or air_capability_v2::check_direct. See docs/specs/z3-fragment-guard.md." },
-    { path = "z3::Solver::check_assumptions", reason = "Assumption-checking bypasses the fragment guard + verdict cache; no production query uses assumptions." },
-    { path = "z3::Optimize::check",           reason = "Optimize is a second solver entry point with no fragment-guard/cache integration; the verifier has no optimization queries." },
-    { path = "z3::Optimize::get_model",       reason = "Same staleness hazard as z3::Solver::get_model, on the unused Optimize entry point." },
+    { path = "z3::Solver::check",               reason = "Direct check() bypasses the runtime fragment guard; use z3_cache::check_cached*/fresh_check or air_capability_v2::check_direct. See docs/specs/z3-fragment-guard.md." },
+    { path = "z3::Solver::check_assumptions",   reason = "Assumption-checking bypasses the fragment guard + verdict cache; no production query uses assumptions." },
+    { path = "z3::Solver::check_and_get_model", reason = "Runs check() and returns a model, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Solver::solutions",           reason = "Enumerates models by repeated check() calls, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Solver::into_solutions",      reason = "Enumerates models by repeated check() calls, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Solver::get_consequences",    reason = "Runs a solve internally, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Optimize::check",             reason = "Optimize is a second solver entry point with no fragment-guard/cache integration; the verifier has no optimization queries." },
+    { path = "z3::Optimize::get_model",         reason = "Same staleness hazard as z3::Solver::get_model, on the unused Optimize entry point." },
+    { path = "z3::Optimize::get_unsat_core",    reason = "Same staleness hazard as z3::Solver::get_unsat_core, on the unused Optimize entry point." },
+    { path = "z3::Optimize::check_and_get_model", reason = "Optimize check + model, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Optimize::solutions",         reason = "Optimize model enumeration, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Optimize::into_solutions",    reason = "Optimize model enumeration, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Fixedpoint::query",           reason = "The Fixedpoint (Horn/Datalog) engine is a third solver entry point with no fragment-guard/cache integration." },
+    { path = "z3::Fixedpoint::query_relations", reason = "The Fixedpoint (Horn/Datalog) engine is a third solver entry point with no fragment-guard/cache integration." },
+
+    # The review of the 0.21.1 bump (2026-10-06) found the routes that
+    # reach a verdict or a model with no Solver call at all. A tactic
+    # application (`Tactic::apply`; the `smt` tactic is a full solve)
+    # hands back subgoals, and `Goal::is_decided_sat`, `is_decided_unsat`
+    # and `is_inconsistent` (a goal reduced to `false`) read the outcome;
+    # `Model::of_solver` and `of_optimize` are `get_model` by another
+    # name; `Fixedpoint::get_answer` reads a query's answer. None has a
+    # caller. Until that bump a `disallowed-types` entry for `z3::Tactic`,
+    # the fence of RUSTSEC-2026-0295's audit ignore, closed the tactic
+    # route as a by-product; this is the deliberate fence.
+    { path = "z3::Tactic::apply",               reason = "A tactic application (the `smt` tactic is a full solve) reaches subgoals, and so a verdict, without the fragment guard or the verdict cache." },
+    { path = "z3::Goal::is_decided_sat",        reason = "Reads a tactic's verdict from a goal, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Goal::is_decided_unsat",      reason = "Reads a tactic's verdict from a goal, bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Goal::is_inconsistent",       reason = "Reads a tactic's verdict (a goal reduced to `false`), bypassing the fragment guard and the verdict cache." },
+    { path = "z3::Model::of_solver",            reason = "z3::Solver::get_model by another name: the same staleness hazard, and a model is never cached." },
+    { path = "z3::Model::of_optimize",          reason = "z3::Optimize::get_model by another name, on the unused Optimize entry point." },
+    { path = "z3::Fixedpoint::get_answer",      reason = "Reads the Fixedpoint engine's answer; the engine has no fragment-guard/cache integration." },
 ]

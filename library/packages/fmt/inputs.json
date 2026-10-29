@@ -1,0 +1,12 @@
+{
+  "files": {
+    "API.md": "sha256:a6abbea753c312503e326c29eddb813d5f4cec8a37c64aea6b210dbb9caa7077",
+    "README.md": "sha256:a666f766bfbeedd483da3034aac667808da7af8181eec52230c744eb4c8c24e5",
+    "api-card.json": "sha256:a3cd452a451b17145a82abc156497ff407f44262e96feb86e811871b1f38bb91",
+    "source-provenance.json": "sha256:0319785918bbf80c481106199b782a373d9b9a2a8df88f22284524f0aaaccb74",
+    "src/fmt.sigil": "sha256:14ccd6674756c6ed89986af55bac3d749f2c2260e58440a05c8af3557933668f",
+    "src/fmt_internal.sigil": "sha256:74d0dcc4bfd9d8fe4c64cdfcc3a19ec51c0af5d4e76e95417a41e6bc055782a0",
+    "src/fmt_secret.sigil": "sha256:f0ebe2be9ef62dad321f3490e216cd6760d919888e078b364f5b7ac6675a8749"
+  },
+  "scope": "public source revision inputs; not an admission evidence manifest"
+}

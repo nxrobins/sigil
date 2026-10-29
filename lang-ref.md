@@ -148,8 +148,9 @@ pub fn tool_main(...) -> i64 ! { FsIO, Alloc, FFI, Unsafe } {
 }
 ```
 
-If `tool_main`'s effect row omits any effect that `fs::read` requires,
-the compiler emits T070 (effect-row mismatch).
+If `tool_main`'s effect row omits `FsIO`, `FFI` or `Unsafe`, all of which
+`fs::read` requires, the compiler emits E001 (undeclared effect required
+by callee).
 
 **Inner-ring exemption.** Inner-ring functions today do NOT have their
 effect rows enforced against callees. This is a known semantic — a
@@ -164,10 +165,12 @@ documenting should still annotate the row explicitly.
 
 Outer-ring stdlib modules (any module declared `#[ring(outer)] #[trusted]`,
 which includes `fs`, `crypto`, `time`, `random`, `http`, `kv`) can only be
-called from a tool whose own module is also `#[ring(outer)] #[trusted]`.
+called from a tool whose own module is also in the outer ring. The usual
+header adds `#[trusted]`, which a module needs to declare its own `extern`
+functions (R008) or to handle `Unsafe`.
 
 ```sigil
-#[ring(outer)] #[trusted] module tool;   // ← required to call fs, http, etc.
+#[ring(outer)] #[trusted] module tool;   // ← the outer ring is required to call fs, http, etc.
 use sigil::fs;
 ```
 
@@ -175,8 +178,14 @@ Without the ring annotation, cross-ring dispatch into an outer-ring fn
 emits R004. The hint always includes the literal `#[ring(outer)] #[trusted]`
 text so the fix is unambiguous.
 
-Inner-ring modules (`json`, `hex_*`, anything with no `#[ring(outer)]`)
-can be called from either ring without escalation.
+The rule holds in both directions. Inner-ring modules (`json`, `abi`, and
+anything else with no `#[ring(outer)]`) can be called only from inner-ring
+code, so an outer-ring tool that calls `json` also gets R004. A `grant` does
+not change this: its closure runs in the caller's ring. For this direction the
+R004 message does not suggest the escalation attributes, since the caller is
+already in the outer ring. It says to remove `#[ring(outer)]`, and `#[trusted]`
+if present, when the module does not need FFI, or else to call only outer-ring
+modules.
 
 ### Catalog of stdlib modules
 
@@ -187,7 +196,7 @@ short version:
 | Module | Ring | Determinism | Notes |
 |---|---|---|---|
 | `fs` | outer | per-FS state | `read`, `write` |
-| `crypto` | outer (sha) / inner (hex) | yes (I3) | `sha256`, `sha512`, `hex_encode`, `hex_decode` |
+| `crypto` | outer | yes (I3) | `sha256`, `sha512`, `hex_encode`, `hex_decode` |
 | `time` | outer | **no** | wall-clock `now_ms` only; may decrease |
 | `random` | outer | **no** | secure entropy via `getrandom` |
 | `http` | outer | per-server | `get`, `post` |
@@ -268,11 +277,14 @@ identical in calling syntax to `alloc`/`load8`/`store8`:
 ```sigil
 ct_eq(a: i64, b: i64) -> bool         // (a ^ b) == 0
 ct_select(c: bool, t: i64, f: i64) -> i64  // f ^ ((t ^ f) & -c)
-ct_lt(a: i64, b: i64) -> bool         // ((a - b) >> 63) & 1
+ct_lt(a: i64, b: i64) -> bool         // signed: sign bit of (a - b) ^ ((a ^ b) & ((a - b) ^ a))
+ct_lt(a: u64, b: u64) -> bool         // unsigned: sign bit of (!a & b) | ((!a | b) & (a - b))
 ```
 
-Each lowers to a fixed sequence of bitwise Wasm instructions (`I64Xor`,
-`I64Sub`, `I64And`, `I64Or`, `I64Eqz`, `I64ShrS` by constant 63). The
+`ct_lt` is exact on every pair; its two operands must share a signedness (one
+`i64` and one `u64` is `T075`). Each lowers to a fixed sequence of bitwise Wasm
+instructions (`I64Xor`, `I64Sub`, `I64And`, `I64Or`, `I64Eqz`, `I64ShrU` by
+constant 63). The
 compiler never emits Wasm `select`, `br_if`, `if`, or `div` opcodes
 inside CT-discipline scope; a regression-guard test
 ([`crates/sigil-compiler/tests/taint_ct_audit.rs`](crates/sigil-compiler/tests/taint_ct_audit.rs))

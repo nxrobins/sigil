@@ -319,8 +319,10 @@ fn v9_declaration_initialization_is_repeatable_and_truncations_fail_closed() {
         );
     }
     assert_eq!(validate_v9_declarations(b"not-csir"), Ok(1));
-    let excessive_count = b"CSIR\x09\x00\x00\x00\x41\x42\x0f\x00";
-    assert_eq!(word(excessive_count, 8), 1_000_001);
+    // One past `formal_v9::MAX_RECORDS` (2,000,000): the count bound, not the framing, is what
+    // rejects this header.
+    let excessive_count = b"CSIR\x09\x00\x00\x00\x81\x84\x1e\x00";
+    assert_eq!(word(excessive_count, 8), 2_000_001);
     assert_eq!(validate_v9_declarations(excessive_count), Ok(1));
 }
 

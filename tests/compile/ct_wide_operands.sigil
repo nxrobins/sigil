@@ -1,0 +1,23 @@
+// `ct_eq`, `ct_lt` and `ct_select` over 8-byte operands, `i64` and `u64` and an integer literal, the widths their fixed i64 instruction sequences take.
+module tool;
+
+// `ct_lt` on two `i64` is the signed order.
+fn ct_min_unless_equal(a: i64, b: i64) -> i64 {
+    let same: bool = ct_eq(a, b);
+    let lt: bool = ct_lt(a, b);
+    let m: i64 = ct_select(lt, a, b);
+    return ct_select(same, 0, m);
+}
+
+// `ct_lt` on two `u64` is the unsigned order, so this picks the larger as a `u64`.
+fn ct_max_unless_equal(a: u64, b: u64) -> i64 {
+    let same: bool = ct_eq(a, b);
+    let lt: bool = ct_lt(a, b);
+    let m: i64 = ct_select(lt, b, a);
+    return ct_select(same, 0, m);
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let w: u64 = 9;
+    return ct_min_unless_equal(input_ptr, input_len) + ct_max_unless_equal(w, 3);
+}

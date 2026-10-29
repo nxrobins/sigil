@@ -1,0 +1,142 @@
+// Immutable versioned checkpoints; compatibility and canonical framing fail closed.
+module checkpoint;
+use sigil::records;
+use sigil::json;
+
+record Checkpoint { revision: u64, current: i64, current_len: i64, previous: i64, previous_len: i64, error: i64 }
+
+fn failed(code: i64 @Flow) -> Checkpoint @Flow ! { Alloc } {
+    return Checkpoint { revision: 0, current: 0, current_len: 0, previous: 0, previous_len: 0, error: code };
+}
+fn span(ptr: i64 @Flow, len: i64 @Flow, maximum: i64 @Flow) -> i64 @Flow {
+    if ptr < 0 || len < 0 { return -400; } else {}
+    if ptr > 2147483647 || len > maximum || len > 2147483647 - ptr { return -413; } else {}
+    return 0;
+}
+fn identifier(ptr: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let valid = span(ptr, len, 64); if valid < 0 { return valid; } else {}
+    if len == 0 { return -422; } else {}
+    let mut i = 0;
+    while i < len {
+        let byte = load8(ptr + i);
+        if !(byte >= 97 && byte <= 122) && !(byte >= 48 && byte <= 57) && byte != 45 && byte != 46 && byte != 58 && byte != 95 { return -422; } else {}
+        i = i + 1;
+    }
+    return 0;
+}
+fn equal(a: i64 @Flow, alen: i64 @Flow, b: i64 @Flow, blen: i64 @Flow) -> bool @Flow {
+    if alen != blen { return false; } else {}
+    let mut i = 0;
+    while i < alen { if load8(a + i) != load8(b + i) { return false; } else {} i = i + 1; }
+    return true;
+}
+fn field(ptr: i64 @Flow, len: i64 @Flow, key: str @Flow) -> i64 @Flow ! { Alloc } {
+    let name = key.as_output();
+    // open validates the complete document once before extracting any field.
+    return json::parse_field(ptr, len, name / 4294967296, key.len());
+}
+fn text(doc: JsonRecord @Flow @ReadOnly, key: str @Flow, ptr: i64 @Flow, len: i64 @Flow) -> JsonRecord @Flow ! { Alloc } {
+    let name = key.as_output();
+    return records::put_string(doc, name / 4294967296, key.len(), ptr, len);
+}
+fn header(domain: i64 @Flow, domain_len: i64 @Flow, compatibility: i64 @Flow, compatibility_len: i64 @Flow, revision: u64 @Flow) -> i64 @Flow ! { Alloc } {
+    if revision > 4294967295 { return -413; } else {}
+    let format = "sigil-checkpoint-v1";
+    let packed = format.as_output();
+    let empty = records::new(512);
+    let r1 = text(empty, "format", packed / 4294967296, format.len());
+    let r2 = text(r1, "domain", domain, domain_len);
+    let r3 = text(r2, "compatibility", compatibility, compatibility_len);
+    let key = "revision"; let name = key.as_output();
+    let r4 = records::put_u64(r3, name / 4294967296, key.len(), revision);
+    return records::finish(r4);
+}
+fn copy_fresh(dst: i64 @Flow, src: i64 @Flow, len: i64 @Flow) -> i64 @Flow {
+    let mut i = 0; while i < len { store8(dst + i, load8(src + i)); i = i + 1; }
+    return len;
+}
+// The small header uses the general records builder. Payloads have already
+// passed the exact hex codec, so join them once instead of repeatedly scanning
+// ever-growing JSON prefixes. Copying only targets this fresh allocation.
+fn assemble(head: i64 @Flow, current: i64 @Flow, previous: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let first = ",\"current_hex\":\""; let second = "\",\"previous_hex\":\"";
+    let a = first.as_output(); let b = second.as_output();
+    let hlen = head % 4294967296 - 1; let clen = current % 4294967296; let plen = previous % 4294967296;
+    let total = hlen + first.len() + clen + second.len() + plen + 2;
+    let out = alloc(total);
+    let mut at = copy_fresh(out, head / 4294967296, hlen);
+    at = at + copy_fresh(out + at, a / 4294967296, first.len());
+    at = at + copy_fresh(out + at, current / 4294967296, clen);
+    at = at + copy_fresh(out + at, b / 4294967296, second.len());
+    at = at + copy_fresh(out + at, previous / 4294967296, plen);
+    store8(out + at, 34); store8(out + at + 1, 125);
+    return out * 4294967296 + total;
+}
+fn canonical(ptr: i64 @Flow, len: i64 @Flow, head: i64 @Flow, current: i64 @Flow, previous: i64 @Flow) -> bool @Flow {
+    let first = ",\"current_hex\":\""; let second = "\",\"previous_hex\":\"";
+    let a = first.as_output(); let b = second.as_output();
+    let hlen = head % 4294967296 - 1; let clen = current % 4294967296; let plen = previous % 4294967296;
+    if len != hlen + first.len() + clen + second.len() + plen + 2 { return false; } else {}
+    if !equal(ptr, hlen, head / 4294967296, hlen) { return false; } else {}
+    let mut at = hlen;
+    if !equal(ptr + at, first.len(), a / 4294967296, first.len()) { return false; } else {} at = at + first.len();
+    if !equal(ptr + at, clen, current / 4294967296, clen) { return false; } else {} at = at + clen;
+    if !equal(ptr + at, second.len(), b / 4294967296, second.len()) { return false; } else {} at = at + second.len();
+    if !equal(ptr + at, plen, previous / 4294967296, plen) { return false; } else {} at = at + plen;
+    return load8(ptr + at) == 34 && load8(ptr + at + 1) == 125;
+}
+fn build(domain: i64 @Flow, domain_len: i64 @Flow, compatibility: i64 @Flow, compatibility_len: i64 @Flow, revision: u64 @Flow, current: i64 @Flow, current_len: i64 @Flow, previous: i64 @Flow, previous_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let a = identifier(domain, domain_len); if a < 0 { return a; } else {}
+    let b = identifier(compatibility, compatibility_len); if b < 0 { return b; } else {}
+    let c = span(current, current_len, 4096); if c < 0 { return c; } else {}
+    let d = span(previous, previous_len, 4096); if d < 0 { return d; } else {}
+    if revision == 0 && previous_len != 0 { return -422; } else {}
+    let head = header(domain, domain_len, compatibility, compatibility_len, revision); if head < 0 { return head; } else {}
+    let chex = records::hex(current, current_len); if chex < 0 { return chex; } else {}
+    let phex = records::hex(previous, previous_len); if phex < 0 { return phex; } else {}
+    return assemble(head, (chex / 4294967296 + 1) * 4294967296 + chex % 4294967296 - 2,
+        (phex / 4294967296 + 1) * 4294967296 + phex % 4294967296 - 2);
+}
+
+pub fn initialize(domain: i64 @Flow, domain_len: i64 @Flow, compatibility: i64 @Flow, compatibility_len: i64 @Flow, current: i64 @Flow, current_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    return build(domain, domain_len, compatibility, compatibility_len, 0, current, current_len, 0, 0);
+}
+
+pub fn open(ptr: i64 @Flow, len: i64 @Flow, domain: i64 @Flow, domain_len: i64 @Flow, compatibility: i64 @Flow, compatibility_len: i64 @Flow) -> Checkpoint @Flow ! { Alloc } {
+    let valid = span(ptr, len, 32768); if valid < 0 { return failed(valid); } else {}
+    let grammar = json::validate(ptr, len); if grammar < 0 { return failed(grammar); } else {}
+    let a = identifier(domain, domain_len); if a < 0 { return failed(a); } else {}
+    let b = identifier(compatibility, compatibility_len); if b < 0 { return failed(b); } else {}
+    let version = field(ptr, len, "format"); if version < 0 { return failed(version); } else {}
+    let format = "sigil-checkpoint-v1"; let expected = format.as_output();
+    if !equal(version / 4294967296, version % 4294967296, expected / 4294967296, format.len()) { return failed(-422); } else {}
+    let scope = field(ptr, len, "domain"); if scope < 0 { return failed(scope); } else {}
+    let profile = field(ptr, len, "compatibility"); if profile < 0 { return failed(profile); } else {}
+    if !equal(scope / 4294967296, scope % 4294967296, domain, domain_len) || !equal(profile / 4294967296, profile % 4294967296, compatibility, compatibility_len) { return failed(-409); } else {}
+    let r = field(ptr, len, "revision"); if r < 0 { return failed(r); } else {}
+    let revision = records::read_u64(r / 4294967296, r % 4294967296);
+    if revision.error < 0 { return failed(revision.error); } else {}
+    let c = field(ptr, len, "current_hex"); if c < 0 { return failed(c); } else {}
+    let current = records::unhex(c / 4294967296, c % 4294967296, 4096);
+    if current < 0 { return failed(current); } else {}
+    let p = field(ptr, len, "previous_hex"); if p < 0 { return failed(p); } else {}
+    let previous = records::unhex(p / 4294967296, p % 4294967296, 4096);
+    if previous < 0 { return failed(previous); } else {}
+    if revision.value == 0 && previous % 4294967296 != 0 { return failed(-422); } else {}
+    let head = header(domain, domain_len, compatibility, compatibility_len, revision.value);
+    if head < 0 { return failed(head); } else {}
+    // Equality to the reconstructed wire rejects unknown/duplicate fields,
+    // whitespace and alternate spellings that extraction alone would accept.
+    if !canonical(ptr, len, head, c, p) { return failed(-422); } else {}
+    return Checkpoint { revision: revision.value, current: current / 4294967296, current_len: current % 4294967296,
+        previous: previous / 4294967296, previous_len: previous % 4294967296, error: 0 };
+}
+
+pub fn advance(ptr: i64 @Flow, len: i64 @Flow, domain: i64 @Flow, domain_len: i64 @Flow, compatibility: i64 @Flow, compatibility_len: i64 @Flow, expected_revision: u64 @Flow, next: i64 @Flow, next_len: i64 @Flow) -> i64 @Flow ! { Alloc } {
+    let old = open(ptr, len, domain, domain_len, compatibility, compatibility_len);
+    if old.error < 0 { return old.error; } else {}
+    if old.revision != expected_revision { return -409; } else {}
+    if old.revision == 4294967295 { return -413; } else {}
+    return build(domain, domain_len, compatibility, compatibility_len, old.revision + 1,
+        next, next_len, old.current, old.current_len);
+}

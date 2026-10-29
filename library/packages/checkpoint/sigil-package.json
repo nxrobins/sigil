@@ -1,0 +1,76 @@
+{
+  "compiler": {
+    "features": [],
+    "requires": "=0.1.0"
+  },
+  "declared": {
+    "determinism": "state_relative",
+    "effects": [
+      "Alloc"
+    ],
+    "grant_categories": [],
+    "host_imports": [],
+    "resource_contract_ref": "API.md",
+    "rings": [
+      "inner"
+    ],
+    "stable_errors": [
+      "-400",
+      "-403",
+      "-404",
+      "-409",
+      "-413",
+      "-422",
+      "-500"
+    ],
+    "taint_contracts": [
+      "checkpoint::advance(ptr:Flow,len:Flow,domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow,expected_revision:Flow,next:Flow,next_len:Flow)->Flow",
+      "checkpoint::initialize(domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow,current:Flow,current_len:Flow)->Flow",
+      "checkpoint::open(ptr:Flow,len:Flow,domain:Flow,domain_len:Flow,compatibility:Flow,compatibility_len:Flow)->Flow"
+    ],
+    "trap_conditions": [
+      "invalid or forged backing state; exhausted execution budget"
+    ],
+    "trusted_surface": []
+  },
+  "dependencies": [
+    {
+      "content_hash": "sha256:45b1dd08fe75e4ad93f1276786bd0d29700f5b66e8f14de2c1e4bd8e037a05df",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/json",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    },
+    {
+      "content_hash": "sha256:fb1499b9682383f51d7c63850aabb2f80d2e5f793d9326c228b701dea507a2cc",
+      "default_features": false,
+      "features": [],
+      "optional": false,
+      "package": "sigil/records",
+      "requirement": "=0.1.0-public.1",
+      "source": "workspace"
+    }
+  ],
+  "description": "Experimental public source checkpoint package; unreviewed and not admitted.",
+  "evidence": {
+    "api_card_hash": "sha256:3aebf514f3a9c0634c9fe6470a130dec63edc21b2c909bc55c6c95a32979a74a",
+    "api_contract_hash": "sha256:ba60753b64bef3354d9201010affb3c2f0167145cec76cfeb08aa13d48a6cf46",
+    "charter_hash": "sha256:1b1429f16c8be689c909d824df0cd71bd722758860d3e6f953105c89cc8dd738",
+    "evidence_manifest_hash": "sha256:0a0377ecfe9ca9a73a312b402fee157ff39f1b8497f32fd4947fd8dfcefc0add"
+  },
+  "features": {
+    "available": {},
+    "default": []
+  },
+  "format_version": "1",
+  "license": "MIT OR Apache-2.0",
+  "maturity": "contracted",
+  "modules": [
+    "checkpoint"
+  ],
+  "name": "checkpoint",
+  "namespace": "sigil",
+  "version": "0.1.0-public.1"
+}

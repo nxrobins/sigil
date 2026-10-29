@@ -99,9 +99,12 @@ fn mn_join_mangles(base: str, mangles: Vec<str>) -> str ! { Alloc } {
 // body, tc_emit_expr then types the bare-T params concretely and the MONO-1 machinery works
 // unchanged). `selfpatch >= 0` additionally patches param 0 (`self`, house style) to the
 // receiver's tag + targs so `self.field` resolves through tc's fparmtp substitution.
-fn mn_seed_subst(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, parmtp: Vec<i64>, bindings: Vec<i64>, selfpatch: i64, selftargs: str, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
+fn mn_seed_subst(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, parmtp: Vec<i64>, bindings: Vec<i64>, selfpatch: i64, selftargs: str, binds: Vec<TcBind> @Mut, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>) -> i64 ! { Alloc } {
     let base: i64 = binds.len();
-    let sp: i64 = tc_seed_params(nodes, kids, fnid, binds, rdefs, cdefs);
+    // Throwaway diag channel: mn wants the binds only; P024 on a param is reported by
+    // sh_compile's tc pass over the concrete clone (tc_emit_one_fn -> tc_seed_params).
+    let mut subst_diags: Vec<str> = Vec::new();
+    let sp: i64 = tc_seed_params(nodes, kids, fnid, binds, rdefs, capnames, cdefs, subst_diags);
     let plen: i64 = parmtp.len();
     let bc: i64 = bindings.len();
     let mut pj: i64 = 0;
@@ -135,7 +138,7 @@ fn mn_seed_subst(nodes: Arena<PNode>, kids: Vec<i64>, fnid: i64, parmtp: Vec<i64
 
 // Resolve + register a FREE generic call's instance: bindings via first-binding-wins, mangle,
 // pre-order seen-guard, transitive body walk (subst env), post-order emission.
-fn mn_register(nodes: Arena<PNode>, kids: Vec<i64>, name: str, sg: TcSig, argtypes: Vec<i64>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_register(nodes: Arena<PNode>, kids: Vec<i64>, name: str, sg: TcSig, argtypes: Vec<i64>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let tpc: i64 = sg.tpbounds.len();
     let plen: i64 = sg.parmtp.len();
     let argc: i64 = argtypes.len();
@@ -185,8 +188,8 @@ fn mn_register(nodes: Arena<PNode>, kids: Vec<i64>, name: str, sg: TcSig, argtyp
                     let bid: i64 = tc_fn_body(nodes, kids, fnid);
                     if bid >= 0 {
                         let mut binds2: Vec<TcBind> = Vec::new();
-                        let ss: i64 = mn_seed_subst(nodes, kids, fnid, sg.parmtp, bindings, 0 - 1, "", binds2, rdefs, cdefs);
-                        let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
+                        let ss: i64 = mn_seed_subst(nodes, kids, fnid, sg.parmtp, bindings, 0 - 1, "", binds2, rdefs, capnames, cdefs);
+                        let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
                     } else {
                     }
                 } else {
@@ -205,7 +208,7 @@ fn mn_register(nodes: Arena<PNode>, kids: Vec<i64>, name: str, sg: TcSig, argtyp
 // `BoxG__get__i64` — the pinned {Type}__{method}__{targs} chained mangle). `targcodes` are the
 // receiver's concrete type-arg codes (from the bind's targs). Same pre-order-guard +
 // transitive-body + post-order shape as mn_register.
-fn mn_register_method(nodes: Arena<PNode>, kids: Vec<i64>, recname: str, method: str, targcodes: Vec<i64>, rtag: i64, rtargs: str, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_register_method(nodes: Arena<PNode>, kids: Vec<i64>, recname: str, method: str, targcodes: Vec<i64>, rtag: i64, rtargs: str, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let mut mangles: Vec<str> = Vec::new();
     let mut ok: bool = true;
     let tn: i64 = targcodes.len();
@@ -239,8 +242,8 @@ fn mn_register_method(nodes: Arena<PNode>, kids: Vec<i64>, recname: str, method:
                         let bid: i64 = tc_fn_body(nodes, kids, fnid);
                         if bid >= 0 {
                             let mut binds2: Vec<TcBind> = Vec::new();
-                            let ss: i64 = mn_seed_subst(nodes, kids, fnid, sgm.parmtp, targcodes, rtag, rtargs, binds2, rdefs, cdefs);
-                            let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
+                            let ss: i64 = mn_seed_subst(nodes, kids, fnid, sgm.parmtp, targcodes, rtag, rtargs, binds2, rdefs, capnames, cdefs);
+                            let wb: i64 = mn_walk_block(nodes, kids, bid, binds2, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth + 1);
                         } else {
                         }
                     } else {
@@ -262,14 +265,14 @@ fn mn_register_method(nodes: Arena<PNode>, kids: Vec<i64>, recname: str, method:
 // enum) feeds the LAYOUT lane instead (payload-driven concrete keys). Every other node kind
 // recurses generically — registration happens ONLY at generic sites, so blind traversal cannot
 // false-register.
-fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let n: PNode = nodes.get(eid);
     if n.kind == P_K_CALL {
         // args first (nested instances register before the outer call's).
         let mut ai: i64 = 0;
         while ai < n.child_count {
             let aid: i64 = kids.get(n.child_start + ai);
-            let r1: i64 = mn_walk_expr(nodes, kids, aid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            let r1: i64 = mn_walk_expr(nodes, kids, aid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             ai = ai + 1;
         }
         // a dotted callee is an enum-variant construction / out of core — bare names only.
@@ -290,11 +293,11 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
                 let mut ti: i64 = 0;
                 while ti < n.child_count {
                     let tid: i64 = kids.get(n.child_start + ti);
-                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs, tdiags);
+                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, trecs, tdiags);
                     let qa: i64 = argtypes.push(at);
                     ti = ti + 1;
                 }
-                let rr: i64 = mn_register(nodes, kids, n.text, sg, argtypes, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, cdefs, seen, out, ekeys, depth);
+                let rr: i64 = mn_register(nodes, kids, n.text, sg, argtypes, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, capnames, cdefs, seen, out, ekeys, depth);
             } else {
             }
         } else {
@@ -307,7 +310,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
         let mut mi: i64 = 0;
         while mi < n.child_count {
             let mid: i64 = kids.get(n.child_start + mi);
-            let r2: i64 = mn_walk_expr(nodes, kids, mid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+            let r2: i64 = mn_walk_expr(nodes, kids, mid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             mi = mi + 1;
         }
         if n.child_count > 0 {
@@ -333,7 +336,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
                                             let pid: i64 = kids.get(n.child_start + 1);
                                             let mut precs: Vec<str> = Vec::new();
                                             let mut pdiags: Vec<str> = Vec::new();
-                                            let ptag: i64 = tc_emit_expr(nodes, kids, pid, TC_NO_EXPECT, binds, sigs, traits, rdefs, precs, pdiags);
+                                            let ptag: i64 = tc_emit_expr(nodes, kids, pid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, precs, pdiags);
                                             let pm: str = mn_mangle_tag(ptag, rdefs);
                                             if pm.len() > 0 {
                                                 let kpre: str = erec.name.concat("__");
@@ -364,7 +367,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
                 if rcc < 0 {
                     let mut rrecs: Vec<str> = Vec::new();
                     let mut rdiags: Vec<str> = Vec::new();
-                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, rrecs, rdiags);
+                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, rrecs, rdiags);
                     if rtag >= TC_REC_BASE {
                         let rec: TcRec = rdefs.get(rtag - TC_REC_BASE);
                         if rec.tpnames.len() > 0 {
@@ -380,7 +383,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
                                     tk = tk + 1;
                                 }
                                 let mname: str = tc_seg_at(n.text, 0);
-                                let rm: i64 = mn_register_method(nodes, kids, rec.name, mname, targcodes, rtag, targs, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, cdefs, seen, out, ekeys, depth);
+                                let rm: i64 = mn_register_method(nodes, kids, rec.name, mname, targcodes, rtag, targs, gfn_names, gfn_ids, gm_keys, gm_ids, sigs, traits, rdefs, capnames, cdefs, seen, out, ekeys, depth);
                             } else {
                             }
                         } else {
@@ -400,7 +403,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
     let mut i: i64 = 0;
     while i < n.child_count {
         let cid: i64 = kids.get(n.child_start + i);
-        let r3: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+        let r3: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
         i = i + 1;
     }
     return 0;
@@ -410,7 +413,7 @@ fn mn_walk_expr(nodes: Arena<PNode>, kids: Vec<i64>, eid: i64, binds: Vec<TcBind
 // shadowing). LET recurses its value FIRST (encounter order), then binds name -> tag; a
 // GENERIC-RECORD annotation (`let b: BoxG<i64> = …`) binds the record code WITH its concrete
 // targs (the tc PR-G2a mirror — the method-receiver branch reads them back).
-fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, seen: Vec<str> @Mut, out: Vec<str> @Mut, ekeys: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let bn: PNode = nodes.get(blockid);
     let mut i: i64 = 0;
     while i < bn.child_count {
@@ -429,7 +432,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
                 }
             }
             if lvid >= 0 {
-                let rv: i64 = mn_walk_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let rv: i64 = mn_walk_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
                 // the bind tag: the annotation when concrete, else the typed value; a
                 // generic-record annotation carries its targs onto the bind.
                 let mut tag: i64 = TC_UNHANDLED;
@@ -459,7 +462,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
                 } else {
                     let mut trecs2: Vec<str> = Vec::new();
                     let mut tdiags2: Vec<str> = Vec::new();
-                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs2, tdiags2);
+                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, trecs2, tdiags2);
                 }
                 let qb: i64 = binds.push(TcBind { name: sn.text, tag: tag, detail: "", targs: ltargs });
             } else {
@@ -470,7 +473,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
             let mut ci: i64 = 0;
             while ci < sn.child_count {
                 let cid: i64 = kids.get(sn.child_start + ci);
-                let ra: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let ra: i64 = mn_walk_expr(nodes, kids, cid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
                 ci = ci + 1;
             }
         } else {
@@ -478,7 +481,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
         if sn.kind == P_K_EXPR_STMT {
             if sn.child_count > 0 {
                 let eid: i64 = kids.get(sn.child_start);
-                let re: i64 = mn_walk_expr(nodes, kids, eid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let re: i64 = mn_walk_expr(nodes, kids, eid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             } else {
             }
         } else {
@@ -486,7 +489,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
         if sn.kind == P_K_RETURN {
             if sn.child_count > 0 {
                 let rid: i64 = kids.get(sn.child_start);
-                let rr: i64 = mn_walk_expr(nodes, kids, rid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let rr: i64 = mn_walk_expr(nodes, kids, rid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             } else {
             }
         } else {
@@ -494,7 +497,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
         if sn.kind == P_K_IF {
             if sn.child_count > 0 {
                 let condid: i64 = kids.get(sn.child_start);
-                let rc: i64 = mn_walk_expr(nodes, kids, condid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let rc: i64 = mn_walk_expr(nodes, kids, condid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             } else {
             }
             let mut bi: i64 = 1;
@@ -502,7 +505,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
                 let brid: i64 = kids.get(sn.child_start + bi);
                 let brn: PNode = nodes.get(brid);
                 if brn.kind == P_K_BLOCK {
-                    let rb: i64 = mn_walk_block(nodes, kids, brid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                    let rb: i64 = mn_walk_block(nodes, kids, brid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
                 } else {
                 }
                 bi = bi + 1;
@@ -512,7 +515,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
         if sn.kind == P_K_WHILE {
             if sn.child_count > 0 {
                 let wcid: i64 = kids.get(sn.child_start);
-                let rw: i64 = mn_walk_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                let rw: i64 = mn_walk_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
             } else {
             }
             let mut wi: i64 = 1;
@@ -520,7 +523,7 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
                 let wbid: i64 = kids.get(sn.child_start + wi);
                 let wbn: PNode = nodes.get(wbid);
                 if wbn.kind == P_K_BLOCK {
-                    let rwb: i64 = mn_walk_block(nodes, kids, wbid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
+                    let rwb: i64 = mn_walk_block(nodes, kids, wbid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, out, ekeys, depth);
                 } else {
                 }
                 wi = wi + 1;
@@ -537,11 +540,12 @@ fn mn_walk_block(nodes: Arena<PNode>, kids: Vec<i64>, blockid: i64, binds: Vec<T
 // tc_emit mirror), filling monos / insts / ekeys.
 fn mn_run(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, monos: Vec<str> @Mut, insts: Vec<str> @Mut, ekeys: Vec<str> @Mut) -> i64 ! { Alloc } {
     let mut rdefs: Vec<TcRec> = Vec::new();
+    let capnames: Vec<str> = tc_cap_names(nodes);
     let br: i64 = tc_build_recs(nodes, kids, root, rdefs);
     let mut cdefs: Vec<TcCap> = Vec::new();
     let bc: i64 = tc_build_caps(nodes, kids, root, cdefs);
     let mut sigs: Vec<TcSig> = Vec::new();
-    let bs: i64 = tc_build_sigs(nodes, kids, root, sigs, rdefs, cdefs);
+    let bs: i64 = tc_build_sigs(nodes, kids, root, sigs, rdefs, capnames, cdefs);
     let mut traits: Vec<TcTrait> = Vec::new();
     let btt: i64 = tc_build_traits(nodes, kids, root, traits, rdefs);
 
@@ -605,8 +609,9 @@ fn mn_run(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, monos: Vec<str> @Mut, 
                 let bid: i64 = tc_fn_body(nodes, kids, cid);
                 if bid >= 0 {
                     let mut binds: Vec<TcBind> = Vec::new();
-                    let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, cdefs);
-                    let wb: i64 = mn_walk_block(nodes, kids, bid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
+                    let mut walk_diags: Vec<str> = Vec::new();
+                    let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, capnames, cdefs, walk_diags);
+                    let wb: i64 = mn_walk_block(nodes, kids, bid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
                 } else {
                 }
             }
@@ -634,8 +639,9 @@ fn mn_run(nodes: Arena<PNode>, kids: Vec<i64>, root: i64, monos: Vec<str> @Mut, 
                             let mbid: i64 = tc_fn_body(nodes, kids, mcid);
                             if mbid >= 0 {
                                 let mut mbinds: Vec<TcBind> = Vec::new();
-                                let msp: i64 = tc_seed_params(nodes, kids, mcid, mbinds, rdefs, cdefs);
-                                let mwb: i64 = mn_walk_block(nodes, kids, mbid, mbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
+                                let mut mwalk_diags: Vec<str> = Vec::new();
+                                let msp: i64 = tc_seed_params(nodes, kids, mcid, mbinds, rdefs, capnames, cdefs, mwalk_diags);
+                                let mwb: i64 = mn_walk_block(nodes, kids, mbid, mbinds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, seen, insts, ekeys, 0);
                             } else {
                             }
                         }
@@ -923,7 +929,7 @@ fn mn_apply_patches(nodes: Arena<PNode> @Mut, patch_ids: Vec<i64>, patch_names: 
 // instance (post-order append). depth mirrors the census's MN_DEPTH_MAX cap: past it the clone
 // is skipped fail-LOUD (the already-recorded call patch names a missing fn -> W-lane poison),
 // matching X-E7 (the oracle rejects deeper programs anyway).
-fn mn_expand_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, gfnid: i64, inst: str, bindtags: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_expand_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, gfnid: i64, inst: str, bindtags: Vec<i64>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
     if depth >= MN_DEPTH_MAX {
         return 0;
     } else {
@@ -943,10 +949,11 @@ fn mn_expand_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, gfnid: i64,
     let bid: i64 = tc_fn_body(nodes, kids, newfn);
     if bid >= 0 {
         let mut cbinds: Vec<TcBind> = Vec::new();
-        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, cdefs);
+        let mut inst_diags: Vec<str> = Vec::new();
+        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, capnames, cdefs, inst_diags);
         let mut cpatch_ids: Vec<i64> = Vec::new();
         let mut cpatch_names: Vec<str> = Vec::new();
-        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
+        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
         let ap: i64 = mn_apply_patches(nodes, cpatch_ids, cpatch_names);
     } else {
     }
@@ -1083,7 +1090,7 @@ fn mn_field_targs(nodes: Arena<PNode>, kids: Vec<i64>, binds: Vec<TcBind>, rdefs
 // own-tp guard, the deferred call-site patch (the c_nested_call lesson), and the clone via
 // mn_expand_method_instance (post-order — inner instances first). No 2^21 flag: the patched
 // text is a plain top-level fn name, emitted by the ordinary free-fn call path.
-fn mn_assoc_resolve(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, callid: i64, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_assoc_resolve(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, callid: i64, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     // `Type::assoc(args)` parses as P_K_METHOD { text: meth, child0: P_K_PATH(Type), args... }
     // (the parser's leading-segments-receiver quirk). Any other shape -> not assoc, no-op.
     let cn: PNode = nodes.get(callid);
@@ -1134,7 +1141,7 @@ fn mn_assoc_resolve(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, callid: i64, 
             // incoming pair is unused, so empties suffice here.
             let cu1: Vec<str> = Vec::new();
             let cu2: Vec<str> = Vec::new();
-            let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, cu1, cu2, seen, inst_names, inst_fnids, depth);
+            let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, cu1, cu2, seen, inst_names, inst_fnids, depth);
         }
     } else {
     }
@@ -1145,7 +1152,7 @@ fn mn_assoc_resolve(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, callid: i64, 
 // instance analogue). Caller has seen-marked; clone the method fn with the ENCLOSING IMPL's
 // tp-names substituted (`impl Box<U>` -> subst U), walk the CLONE's body transitively, then push
 // post-order. `tpmangles` = the receiver's concrete targ mangles.
-fn mn_expand_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfnid: i64, implid: i64, inst: str, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_expand_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfnid: i64, implid: i64, inst: str, tpmangles: Vec<str>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, depth: i64) -> i64 ! { Alloc } {
     if depth >= MN_DEPTH_MAX {
         return 0;
     } else {
@@ -1156,10 +1163,11 @@ fn mn_expand_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfni
     let bid: i64 = tc_fn_body(nodes, kids, newfn);
     if bid >= 0 {
         let mut cbinds: Vec<TcBind> = Vec::new();
-        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, cdefs);
+        let mut minst_diags: Vec<str> = Vec::new();
+        let sp: i64 = tc_seed_params(nodes, kids, newfn, cbinds, rdefs, capnames, cdefs, minst_diags);
         let mut cpatch_ids: Vec<i64> = Vec::new();
         let mut cpatch_names: Vec<str> = Vec::new();
-        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
+        let wb: i64 = mn_expand_block(nodes, kids, bid, cbinds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, tpnames, tpmangles, seen, inst_names, inst_fnids, cpatch_ids, cpatch_names, depth + 1);
         let ap: i64 = mn_apply_patches(nodes, cpatch_ids, cpatch_names);
     } else {
     }
@@ -1172,7 +1180,7 @@ fn mn_expand_method_instance(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, mfni
 // instance mangle; an UNSEEN instance clones + expands recursively (MONO-5 — transitive,
 // post-order). Args first. MONO-7: a generic P_K_METHOD `b.get()` resolves the receiver record +
 // targs, clones the method instance, sets the pre-resolved flag + defers the text patch.
-fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds: Vec<TcBind>, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let n: PNode = nodes.get(eid);
     if n.kind == P_K_CALL {
         let cc: i64 = n.child_count;
@@ -1180,7 +1188,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
         let mut ai: i64 = 0;
         while ai < cc {
             let aid: i64 = kids.get(cs + ai);
-            let r1: i64 = mn_expand_expr(nodes, kids, aid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            let r1: i64 = mn_expand_expr(nodes, kids, aid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             ai = ai + 1;
         }
         let dc: i64 = tc_last_colons(n.text);
@@ -1199,7 +1207,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
                 let mut ti: i64 = 0;
                 while ti < cc {
                     let tid: i64 = kids.get(cs + ti);
-                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs, tdiags);
+                    let at: i64 = tc_emit_expr(nodes, kids, tid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, trecs, tdiags);
                     let qa: i64 = argtypes.push(at);
                     ti = ti + 1;
                 }
@@ -1217,7 +1225,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
                         let qs: i64 = seen.push(inst);
                         let gfnid: i64 = mn_tbl_find(gfn_names, gfn_ids, n.text);
                         if gfnid >= 0 {
-                            let re: i64 = mn_expand_instance(nodes, kids, gfnid, inst, bindtags, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
+                            let re: i64 = mn_expand_instance(nodes, kids, gfnid, inst, bindtags, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
                         } else {
                         }
                     }
@@ -1235,7 +1243,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
         let mut mi: i64 = 0;
         while mi < n.child_count {
             let mid: i64 = kids.get(n.child_start + mi);
-            let rm: i64 = mn_expand_expr(nodes, kids, mid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            let rm: i64 = mn_expand_expr(nodes, kids, mid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             mi = mi + 1;
         }
         if n.child_count > 0 {
@@ -1251,7 +1259,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
                 if rcc > 0 - 2 {
                     let mut rrecs: Vec<str> = Vec::new();
                     let mut rdiags: Vec<str> = Vec::new();
-                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, rrecs, rdiags);
+                    let rtag: i64 = tc_emit_expr(nodes, kids, rid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, rrecs, rdiags);
                     if rtag >= TC_REC_BASE {
                         let rec: TcRec = rdefs.get(rtag - TC_REC_BASE);
                         if rec.tpnames.len() > 0 {
@@ -1306,7 +1314,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
                                     if mn_seen_has(seen, inst) {
                                     } else {
                                         let qs: i64 = seen.push(inst);
-                                        let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
+                                        let re: i64 = mn_expand_method_instance(nodes, kids, mfnid, implid, inst, tpmangles, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, depth);
                                     }
                                 } else {
                                 }
@@ -1352,7 +1360,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
             let fvid: i64 = kids.get(ccs + fi);
             // walk the field value FIRST (args resolve; the assoc shape itself falls through
             // the generic METHOD arm — no bind names a TYPE), then attempt the assoc resolve.
-            let rfv: i64 = mn_expand_expr(nodes, kids, fvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+            let rfv: i64 = mn_expand_expr(nodes, kids, fvid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             let fvn: PNode = nodes.get(fvid);
             if fvn.kind == P_K_METHOD {
                 // assoc shape: receiver child0 is a TYPE path (`Vec::new()` -> P_K_METHOD
@@ -1428,7 +1436,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
                                 }
                                 if fok {
                                     if fmangles.len() > 0 {
-                                        let rfa: i64 = mn_assoc_resolve(nodes, kids, fvid, fmangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                                        let rfa: i64 = mn_assoc_resolve(nodes, kids, fvid, fmangles, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                                     } else {
                                     }
                                 } else {
@@ -1453,7 +1461,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
     let cs2: i64 = n.child_start;
     while i < cc2 {
         let cid: i64 = kids.get(cs2 + i);
-        let r3: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+        let r3: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
         i = i + 1;
     }
     return 0;
@@ -1461,7 +1469,7 @@ fn mn_expand_expr(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, eid: i64, binds
 
 // Expand-walk a block: flat bind threading (v3 corpus avoids shadowing). LET recurses value
 // FIRST then binds; the other statement kinds recurse their expression children.
-fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
+fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, binds: Vec<TcBind> @Mut, sigs: Vec<TcSig>, traits: Vec<TcTrait>, rdefs: Vec<TcRec>, capnames: Vec<str>, cdefs: Vec<TcCap>, gfn_names: Vec<str>, gfn_ids: Vec<i64>, gm_keys: Vec<str>, gm_ids: Vec<i64>, gm_impl_ids: Vec<i64>, grec_names: Vec<str>, grec_ids: Vec<i64>, ctx_tpnames: Vec<str>, ctx_tpmangles: Vec<str>, seen: Vec<str> @Mut, inst_names: Vec<str> @Mut, inst_fnids: Vec<i64> @Mut, patch_ids: Vec<i64> @Mut, patch_names: Vec<str> @Mut, depth: i64) -> i64 ! { Alloc } {
     let bn: PNode = nodes.get(blockid);
     let cc: i64 = bn.child_count;
     let cs: i64 = bn.child_start;
@@ -1482,7 +1490,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
                 }
             }
             if lvid >= 0 {
-                let rv: i64 = mn_expand_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let rv: i64 = mn_expand_expr(nodes, kids, lvid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                 // the bind tag: the annotation when concrete, else the typed value; a
                 // generic-record annotation carries its targs onto the bind (MONO-7 — the
                 // receiver-targs a method call reads via tc_bind_targs; mirrors mn_walk_block).
@@ -1513,7 +1521,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
                 } else {
                     let mut trecs2: Vec<str> = Vec::new();
                     let mut tdiags2: Vec<str> = Vec::new();
-                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, trecs2, tdiags2);
+                    tag = tc_emit_expr(nodes, kids, lvid, TC_NO_EXPECT, binds, sigs, traits, rdefs, capnames, trecs2, tdiags2);
                 }
                 let qb: i64 = binds.push(TcBind { name: sn.text, tag: tag, detail: "", targs: ltargs });
                 // B-ASSOC: `let v: Vec<i64> = Vec::new();` — an ASSOCIATED call value whose
@@ -1545,7 +1553,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
                                     let qam: i64 = amangles.push(am);
                                     ak = ak + 1;
                                 }
-                                let ra2: i64 = mn_assoc_resolve(nodes, kids, lvid, amangles, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                                let ra2: i64 = mn_assoc_resolve(nodes, kids, lvid, amangles, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                             } else {
                             }
                         } else {
@@ -1562,7 +1570,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
             let mut ci: i64 = 0;
             while ci < sn.child_count {
                 let cid: i64 = kids.get(sn.child_start + ci);
-                let ra: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let ra: i64 = mn_expand_expr(nodes, kids, cid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                 ci = ci + 1;
             }
         } else {
@@ -1570,7 +1578,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
         if sn.kind == P_K_EXPR_STMT {
             if sn.child_count > 0 {
                 let eid: i64 = kids.get(sn.child_start);
-                let re: i64 = mn_expand_expr(nodes, kids, eid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let re: i64 = mn_expand_expr(nodes, kids, eid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             } else {
             }
         } else {
@@ -1578,7 +1586,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
         if sn.kind == P_K_RETURN {
             if sn.child_count > 0 {
                 let rid: i64 = kids.get(sn.child_start);
-                let rr: i64 = mn_expand_expr(nodes, kids, rid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let rr: i64 = mn_expand_expr(nodes, kids, rid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             } else {
             }
         } else {
@@ -1586,7 +1594,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
         if sn.kind == P_K_IF {
             if sn.child_count > 0 {
                 let condid: i64 = kids.get(sn.child_start);
-                let rc: i64 = mn_expand_expr(nodes, kids, condid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let rc: i64 = mn_expand_expr(nodes, kids, condid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             } else {
             }
             let mut bi: i64 = 1;
@@ -1594,7 +1602,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
                 let brid: i64 = kids.get(sn.child_start + bi);
                 let brn: PNode = nodes.get(brid);
                 if brn.kind == P_K_BLOCK {
-                    let rb: i64 = mn_expand_block(nodes, kids, brid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                    let rb: i64 = mn_expand_block(nodes, kids, brid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                 } else {
                 }
                 bi = bi + 1;
@@ -1604,7 +1612,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
         if sn.kind == P_K_WHILE {
             if sn.child_count > 0 {
                 let wcid: i64 = kids.get(sn.child_start);
-                let rw: i64 = mn_expand_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                let rw: i64 = mn_expand_expr(nodes, kids, wcid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
             } else {
             }
             let mut wi: i64 = 1;
@@ -1612,7 +1620,7 @@ fn mn_expand_block(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, blockid: i64, 
                 let wbid: i64 = kids.get(sn.child_start + wi);
                 let wbn: PNode = nodes.get(wbid);
                 if wbn.kind == P_K_BLOCK {
-                    let rwb: i64 = mn_expand_block(nodes, kids, wbid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
+                    let rwb: i64 = mn_expand_block(nodes, kids, wbid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, depth);
                 } else {
                 }
                 wi = wi + 1;
@@ -1900,6 +1908,7 @@ pub fn mn_expand(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, root: i64) -> i6
     let nmods: i64 = mods.len();
 
     let mut rdefs: Vec<TcRec> = Vec::new();
+    let capnames: Vec<str> = tc_cap_names(nodes);
     let mut bmi: i64 = 0;
     while bmi < nmods {
         let bmid: i64 = mods.get(bmi);
@@ -1917,7 +1926,7 @@ pub fn mn_expand(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, root: i64) -> i6
     let mut ssi: i64 = 0;
     while ssi < nmods {
         let ssid: i64 = mods.get(ssi);
-        let bs: i64 = tc_build_sigs(nodes, kids, ssid, sigs, rdefs, cdefs);
+        let bs: i64 = tc_build_sigs(nodes, kids, ssid, sigs, rdefs, capnames, cdefs);
         ssi = ssi + 1;
     }
     let mut traits: Vec<TcTrait> = Vec::new();
@@ -2046,8 +2055,9 @@ pub fn mn_expand(nodes: Arena<PNode> @Mut, kids: Vec<i64> @Mut, root: i64) -> i6
                     let bid: i64 = tc_fn_body(nodes, kids, cid);
                     if bid >= 0 {
                         let mut binds: Vec<TcBind> = Vec::new();
-                        let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, cdefs);
-                        let wb: i64 = mn_expand_block(nodes, kids, bid, binds, sigs, traits, rdefs, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, 0);
+                        let mut top_diags: Vec<str> = Vec::new();
+                        let sp: i64 = tc_seed_params(nodes, kids, cid, binds, rdefs, capnames, cdefs, top_diags);
+                        let wb: i64 = mn_expand_block(nodes, kids, bid, binds, sigs, traits, rdefs, capnames, cdefs, gfn_names, gfn_ids, gm_keys, gm_ids, gm_impl_ids, grec_names, grec_ids, ctx_tpnames, ctx_tpmangles, seen, inst_names, inst_fnids, patch_ids, patch_names, 0);
                     } else {
                     }
                 }

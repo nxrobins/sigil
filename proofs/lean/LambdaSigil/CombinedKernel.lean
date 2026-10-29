@@ -20,7 +20,12 @@ def wireVersion : UInt32 := 8
 def headerBytes : Nat := 12
 def nodeBytes : Nat := 32
 def maxWireBytes : Nat := 64 * 1024 * 1024
-def maxNodes : Nat := 1_000_000
+/-- The node ceiling bounds the checker's work on an untrusted input; it is not a property of
+any program, and every bound below derives from it. It was 1,000,000 until the self-hosted
+compiler's certified source reached 994,634 nodes (2026-10-06); `formal::MAX_NODES` and
+`formal_v9::MAX_RECORDS` on the Rust side carry the same value, and 2,000,000 nodes of
+`nodeBytes` still fit under `maxWireBytes`. -/
+def maxNodes : Nat := 2_000_000
 
 inductive Label where
   | pub | internal | secret | secretCT

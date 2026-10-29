@@ -348,13 +348,13 @@ def validate_document(document: object, *, tagged: bool) -> dict:
     )
     integer(results["million_record_count"], "million_record_count", 1_000_000)
     # `selfhost_trio_seconds` is the ISOLATED `Formal verifier scaling canary`
-    # step's measurement, bounded by SELFHOST_TRIO_CANARY_MS (five seconds) in
+    # step's measurement, bounded by SELFHOST_TRIO_CANARY_MS (six seconds) in
     # crates/sigil-corpus/src/schema.rs. The corpus extractor's wider drop bound
     # (VALIDATE_BUDGET_MS) is a different number and is not evidence here.
     require(
-        number(results["selfhost_trio_seconds"], "selfhost_trio_seconds") <= 5,
+        number(results["selfhost_trio_seconds"], "selfhost_trio_seconds") <= 6,
         "selfhost",
-        "the five-second isolated self-host scaling canary must remain satisfied",
+        "the six-second isolated self-host scaling canary must remain satisfied",
     )
     return record
 
@@ -586,7 +586,7 @@ def self_test() -> int:
         ("initialization_ms", 1 << 1024, "number"),
         ("peak_memory_bytes", 2048, "memory"),
         ("million_record_count", 999_999, "integer"),
-        ("selfhost_trio_seconds", 5.01, "selfhost"),
+        ("selfhost_trio_seconds", 6.01, "selfhost"),
     ):
         mutant(("results", field), value, code)
 

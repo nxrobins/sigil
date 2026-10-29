@@ -1,0 +1,17 @@
+{
+  "contract_hash": "sha256:a150fea231ccf87e634ceb27c4b0e76896ebd2d356e28a8e2b63ae1421fdaead",
+  "effects": [
+    "Alloc"
+  ],
+  "host_imports": [],
+  "package": "sigil/exchange",
+  "scope": "canonical bounded evaluation request matching; not authentication",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "taint_contracts": [
+    "exchange::open_request(ptr:Flow,len:Flow)->Flow",
+    "exchange::open_response(expected_ptr:Flow,expected_len:Flow,ptr:Flow,len:Flow)->Flow",
+    "exchange::request(profile:Flow,profile_len:Flow,context:Flow,context_len:Flow,sequence:Flow,payload:Flow,payload_len:Flow)->Flow",
+    "exchange::respond(request_ptr:Flow,request_len:Flow,status:Flow,payload:Flow,payload_len:Flow)->Flow"
+  ],
+  "version": "0.1.0-public.1"
+}

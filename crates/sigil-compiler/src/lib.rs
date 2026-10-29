@@ -28,6 +28,7 @@ pub mod ownership;
 #[cfg(feature = "json")]
 pub mod package;
 pub mod parser;
+pub mod refinement_decide;
 pub mod registries;
 pub mod ring_check;
 pub mod slot_escape;

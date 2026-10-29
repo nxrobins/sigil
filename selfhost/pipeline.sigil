@@ -11,37 +11,18 @@ module pipeline;
 // cap → own → the CV wasm chain. Output = the frozen protocol:
 //   REJECT:{stage}:{codes}   — the FIRST failing gate's CORE-filtered `;`-joined stream
 //   OK:{hex}                 — the whole-module lowercase-hex WASM (ai_encode_wasm)
+//   OK:{inner}|{outer}       — a program with an outer-ring module: both modules, inner first
+//                              (SHP-2b; ai_encode_wasm returns the two joined by `|`)
 // (The cap/own shadows compute their verdicts from the parse tree — pre-air — but GATE in the
 // oracle's stage positions; gating ORDER is what the differential pins, X-B2.)
 
 const BP_BYTE_PIPE: i64 = 124;
 
-// The n-th `|`-segment of `text` (0-based). Mirrors tc_seg_at, splitting on '|' instead of ';' —
+// The n-th `|`-segment of `text` (0-based): tc_seg_by on '|' where tc_seg_at splits on ';'.
 // nr_encode emits `records|pool|aliases|diags` (diags = seg 3) and tc_encode emits
 // `records|pool|diags` (diags = seg 2).
 fn bp_seg_pipe(text: str, n: i64) -> str {
-    let len: i64 = text.len();
-    let mut seg: i64 = 0;
-    let mut segstart: i64 = 0;
-    let mut i: i64 = 0;
-    while i < len {
-        let b: i64 = text.byte_at(i);
-        if b == BP_BYTE_PIPE {
-            if seg == n {
-                return text.substr(segstart, i);
-            } else {
-            }
-            seg = seg + 1;
-            segstart = i + 1;
-        } else {
-        }
-        i = i + 1;
-    }
-    if seg == n {
-        return text.substr(segstart, len);
-    } else {
-    }
-    return "";
+    return tc_seg_by(text, n, BP_BYTE_PIPE);
 }
 
 // Is `code` one of the `;`-joined entries of `allowed`? (tc_seg_at-style scan.)
@@ -147,9 +128,34 @@ pub fn sh_compile(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { All
     // cap {C003}, own {O001,O007}); this gate was the ONE consuming a raw stream.
     //
     // T060 and T062 are ENFORCED: the shadow resolves intrinsic calls (the tc_build_sigs
-    // seed table: alloc/load8/store8/vec_load/vec_store/str_from_raw) and bare
-    // unit-variant values (unique-enum rule, locals shadow variants), so an undefined
+    // seed table: alloc/load8/store8/vec_load/vec_store/str_from_raw/ct_eq/ct_lt/ct_select)
+    // and bare unit-variant values (unique-enum rule, locals shadow variants), so an undefined
     // callee or undefined local rejects HERE, at tc, with parity fixtures behind it.
+    //
+    // T160, T161, R006 and E003 (SHP-2a) are ENFORCED: the extern-row and ring checks the
+    // oracle's type check applies (tc_ring_extern_checks), each pinned by a parity fixture
+    // (SHP2A_CORPUS). Left off this list, they would be dropped here and the program would
+    // pass the gate.
+    //
+    // SH_TC_UNSUPPORTED (SHP-5c-3) is the type checker's own refusal marker — a construct it
+    // cannot type as the oracle does (an explicit instantiation `f::<T>(…)` of anything but
+    // `slot_new`, a region used as a value, a slot or cap operand it cannot name). Kept like
+    // the taint shadow's SH_TAINT_UNSUPPORTED: dropped, the program would reach the emitter
+    // with a type the oracle may not have given it.
+    //
+    // T042, T043, T068, T074, T075, T111, T191, T192, T193, T195 and P024 (SHP-5c-3) are
+    // ENFORCED: the slot-intrinsic, region and reassignment checks the oracle applies to slot
+    // and region programs (P024 at its parser), each pinned by a parity fixture
+    // (SHP5C3_CORPUS). The checker emits T074/T075 only at the slot intrinsics (every other
+    // intrinsic's argument checks stay unmirrored, see tc_build_sigs) and T042 only inside a
+    // region body (whose mutable set the oracle starts empty; rebinding elsewhere stays
+    // unmirrored), so the three are safe to keep. T183, T184, T186 and T200 (the SHP-5c-3
+    // review) are ENFORCED: a capability carried by a record field, an enum payload or an
+    // array literal (tc_cap_aggregates, tc_expr_carries_cap), and a `restrict_deadline` that
+    // cannot narrow its named cap, each pinned by a parity fixture
+    // (SHP5C3_FLOW_CORPUS). A capability, slot or region value crossing a call, a let or a
+    // return into a slot production rejects it for carries T041, T049 or T195 where the
+    // oracle's code is exact, and SH_TC_UNSUPPORTED otherwise (its T071 is dropped below).
     //
     // DROPPED by name, each with its measured reason:
     //   * T046 — cross-module TYPE annotations. The shadow deliberately does not resolve
@@ -164,7 +170,7 @@ pub fn sh_compile(nodes: Arena<PNode>, kids: Vec<i64>, root: i64) -> str ! { All
     //     parity evidence, then restore.
     let tcout: str = tc_encode(nodes, kids, root);
     let tcraw: str = bp_seg_pipe(tcout, 2);
-    let tcd: str = bp_filter_tc(tcraw, "T041;T044;T045;T049;T050;T051;T054;T055;T060;T062;T070;T087;T088;T120;T190;T248;T249;T250;T245;T246;T150;T233;T234;T236;T262");
+    let tcd: str = bp_filter_tc(tcraw, "T041;T044;T045;T049;T050;T051;T054;T055;T060;T062;T070;T087;T088;T120;T190;T248;T249;T250;T245;T246;T150;T233;T234;T236;T262;T160;T161;R006;E003;SH_TC_UNSUPPORTED;T043;T068;T074;T075;T111;T191;T192;T193;T195;P024;T042;T183;T184;T186;T200");
     if tcd.len() > 0 {
         let p2: str = "REJECT:tc:";
         let r2: str = p2.concat(tcd);

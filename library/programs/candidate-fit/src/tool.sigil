@@ -1,0 +1,250 @@
+// Fit two fixed eight-constant candidates; gradients and updates run only in SIGIL.
+module tool;
+use sigil::numeric;
+use sigil::autodiff;
+use sigil::vec;
+
+fn prediction(tape: Tape @Mut, p: Vec<i64> @ReadOnly, x: i64, candidate: i64) -> i64 {
+    let linear = autodiff::mul(tape, p.get(1), x);
+    if linear < 0 { return linear; } else {}
+    let base = autodiff::add(tape, p.get(0), linear);
+    if base < 0 { return base; } else {}
+    if candidate == 0 {
+        let left_scale = autodiff::mul(tape, p.get(3), x);
+        if left_scale < 0 { return left_scale; } else {}
+        let left_shift = autodiff::add(tape, left_scale, p.get(4));
+        if left_shift < 0 { return left_shift; } else {}
+        let left_relu = autodiff::relu(tape, left_shift);
+        if left_relu < 0 { return left_relu; } else {}
+        let left = autodiff::mul(tape, p.get(2), left_relu);
+        if left < 0 { return left; } else {}
+        let right_scale = autodiff::mul(tape, p.get(6), x);
+        if right_scale < 0 { return right_scale; } else {}
+        let right_shift = autodiff::add(tape, right_scale, p.get(7));
+        if right_shift < 0 { return right_shift; } else {}
+        let right_relu = autodiff::relu(tape, right_shift);
+        if right_relu < 0 { return right_relu; } else {}
+        let right = autodiff::mul(tape, p.get(5), right_relu);
+        if right < 0 { return right; } else {}
+        let partial = autodiff::add(tape, base, left);
+        if partial < 0 { return partial; } else {}
+        return autodiff::add(tape, partial, right);
+    } else {
+        let square = autodiff::mul(tape, x, x);
+        if square < 0 { return square; } else {}
+        let quadratic = autodiff::mul(tape, p.get(2), square);
+        if quadratic < 0 { return quadratic; } else {}
+        let with_square = autodiff::add(tape, base, quadratic);
+        if with_square < 0 { return with_square; } else {}
+        let cube = autodiff::mul(tape, square, x);
+        if cube < 0 { return cube; } else {}
+        let cubic = autodiff::mul(tape, p.get(3), cube);
+        if cubic < 0 { return cubic; } else {}
+        let polynomial = autodiff::add(tape, with_square, cubic);
+        if polynomial < 0 { return polynomial; } else {}
+        let scale = autodiff::mul(tape, p.get(5), x);
+        if scale < 0 { return scale; } else {}
+        let shift = autodiff::add(tape, scale, p.get(6));
+        if shift < 0 { return shift; } else {}
+        let hinge = autodiff::relu(tape, shift);
+        if hinge < 0 { return hinge; } else {}
+        let weighted = autodiff::mul(tape, p.get(4), hinge);
+        if weighted < 0 { return weighted; } else {}
+        let zero = autodiff::constant(tape, 0.0);
+        if zero < 0 { return zero; } else {}
+        let negative_x = autodiff::sub(tape, zero, x);
+        if negative_x < 0 { return negative_x; } else {}
+        let negative_hinge = autodiff::relu(tape, negative_x);
+        if negative_hinge < 0 { return negative_hinge; } else {}
+        let tail = autodiff::mul(tape, p.get(7), negative_hinge);
+        if tail < 0 { return tail; } else {}
+        let partial = autodiff::add(tape, polynomial, weighted);
+        if partial < 0 { return partial; } else {}
+        return autodiff::add(tape, partial, tail);
+    }
+}
+
+fn read_weights(weights: Matrix @ReadOnly, cell: Scalar @Mut, values: Vec<f64> @Mut) -> i64 {
+    let mut i = 0;
+    while i < 8 {
+        let status = numeric::get_into(weights, i, 0, cell);
+        if status < 0 { return status; } else {}
+        values.set(i, cell.value); i = i + 1;
+    }
+    return 0;
+}
+
+fn objective(tape: Tape @Mut, candidate: i64, weights: Matrix @ReadOnly, scalar: Scalar @Mut, p: Vec<i64> @Mut, xs: Vec<f64> @ReadOnly, ys: Vec<f64> @ReadOnly, terms: Vec<i64> @Mut, inverse_count: f64) -> i64 {
+    let cleared = autodiff::reset(tape);
+    if cleared < 0 { return cleared; } else {}
+    let mut i = 0;
+    while i < 8 {
+        let read = numeric::get_into(weights, i, 0, scalar);
+        if read < 0 { return read; } else {}
+        let node = autodiff::variable(tape, scalar.value);
+        if node < 0 { return node; } else {}
+        p.set(i, node); i = i + 1;
+    }
+    i = 0;
+    while i < xs.count {
+        let x = autodiff::constant(tape, xs.get(i));
+        if x < 0 { return x; } else {}
+        let y = autodiff::constant(tape, ys.get(i));
+        if y < 0 { return y; } else {}
+        let predicted = prediction(tape, p, x, candidate);
+        if predicted < 0 { return predicted; } else {}
+        let difference = autodiff::sub(tape, predicted, y);
+        if difference < 0 { return difference; } else {}
+        let square = autodiff::mul(tape, difference, difference);
+        if square < 0 { return square; } else {}
+        terms.set(i, square); i = i + 1;
+    }
+    let total = autodiff::sum(tape, terms);
+    if total < 0 { return total; } else {}
+    let factor = autodiff::constant(tape, inverse_count);
+    if factor < 0 { return factor; } else {}
+    return autodiff::mul(tape, total, factor);
+}
+
+fn read_gradient(tape: Tape @ReadOnly, p: Vec<i64> @ReadOnly, gradient: Matrix @Mut, cell: TapeCell @Mut) -> i64 {
+    let mut i = 0;
+    while i < 8 {
+        let read = autodiff::gradient_into(tape, p.get(i), cell);
+        if read < 0 { return read; } else {}
+        let written = numeric::set(gradient, i, 0, cell.value);
+        if written < 0 { return written; } else {}
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn tool_main(input_ptr: i64, input_len: i64) -> i64 ! { Alloc } {
+    let mut candidate = 0;
+    let mut steps = 16;
+    if input_len > 4 { return -413; } else {}
+    if input_len < 0 { return -422; } else {}
+    if input_len > 0 {
+        if input_len != 3 && input_len != 4 { return -422; } else {}
+        let choice = load8(input_ptr);
+        let separator = load8(input_ptr + 1);
+        let first = load8(input_ptr + 2);
+        if (choice != 48 && choice != 49) || separator != 58 || first < 48 || first > 57 { return -422; } else {}
+        candidate = choice - 48;
+        steps = first - 48;
+        if input_len == 4 {
+            let last = load8(input_ptr + 3);
+            if first == 48 || last < 48 || last > 57 { return -422; } else {}
+            steps = steps * 10 + last - 48;
+        } else {}
+        if steps > 16 { return -422; } else {}
+    } else {}
+
+    let initial: Vec<f64> = Vec::with_capacity(8);
+    if candidate == 0 {
+        initial.push(0.0); initial.push(0.1); initial.push(0.3); initial.push(0.8);
+        initial.push(0.0 - 0.1); initial.push(0.0 - 0.2);
+        initial.push(0.0 - 0.7); initial.push(0.15);
+    } else {
+        initial.push(0.0); initial.push(0.1); initial.push(0.05); initial.push(0.0);
+        initial.push(0.3); initial.push(0.8); initial.push(0.0 - 0.1); initial.push(0.0 - 0.2);
+    }
+    let train_x: Vec<f64> = Vec::with_capacity(8);
+    train_x.push(0.0 - 1.0); train_x.push(0.0 - 0.75); train_x.push(0.0 - 0.5); train_x.push(0.0 - 0.25);
+    train_x.push(0.25); train_x.push(0.5); train_x.push(0.75); train_x.push(1.0);
+    let train_y: Vec<f64> = Vec::with_capacity(8);
+    train_y.push(0.0 - 0.56); train_y.push(0.0 - 0.35500000000000004);
+    train_y.push(0.0 - 0.15000000000000002); train_y.push(0.054999999999999966);
+    train_y.push(0.7575000000000001); train_y.push(1.075); train_y.push(1.3925); train_y.push(1.71);
+    let validation_x: Vec<f64> = Vec::with_capacity(4);
+    validation_x.push(0.0 - 0.875); validation_x.push(0.0 - 0.375); validation_x.push(0.125); validation_x.push(0.625);
+    let validation_y: Vec<f64> = Vec::with_capacity(4);
+    validation_y.push(0.0 - 0.4575000000000001); validation_y.push(0.0 - 0.04750000000000004);
+    validation_y.push(0.59875); validation_y.push(1.2337500000000001);
+    let weights = numeric::zeros(8, 1);
+    let gradient = numeric::zeros(8, 1);
+    let scalar = numeric::new_scalar();
+    let cell = autodiff::new_cell();
+    let tape = autodiff::new_tape(256, 8);
+    if tape.error < 0 { return tape.error; } else {}
+    let p: Vec<i64> = Vec::with_capacity(8);
+    let values: Vec<f64> = Vec::with_capacity(8);
+    let train_terms: Vec<i64> = Vec::with_capacity(8);
+    let validation_terms: Vec<i64> = Vec::with_capacity(4);
+    let result: Vec<f64> = Vec::with_capacity(36);
+    let header: Vec<i64> = Vec::with_capacity(2);
+    header.push(candidate); header.push(steps);
+    let blob = alloc(304);
+    let mut i = 0;
+    while i < 8 {
+        p.push(0); values.push(0.0); train_terms.push(0);
+        let written = numeric::set(weights, i, 0, initial.get(i));
+        if written < 0 { return written; } else {}
+        i = i + 1;
+    }
+    i = 0;
+    while i < 4 { validation_terms.push(0); i = i + 1; }
+    i = 0;
+    while i < 36 { result.push(0.0); i = i + 1; }
+    i = 0;
+    while i < 8 { result.set(4 + i, initial.get(i)); i = i + 1; }
+
+    // Held-out data has its own graph, discarded before the training objective.
+    let initial_validation = objective(tape, candidate, weights, scalar, p, validation_x, validation_y, validation_terms, 0.25);
+    if initial_validation < 0 { return initial_validation; } else {}
+    let first_validation = autodiff::value_into(tape, initial_validation, cell);
+    if first_validation < 0 { return first_validation; } else {}
+    result.set(2, cell.value);
+    let loss = objective(tape, candidate, weights, scalar, p, train_x, train_y, train_terms, 0.125);
+    if loss < 0 { return loss; } else {}
+    let first_loss = autodiff::value_into(tape, loss, cell);
+    if first_loss < 0 { return first_loss; } else {}
+    result.set(0, cell.value);
+    let first_backward = autodiff::backward(tape, loss);
+    if first_backward < 0 { return first_backward; } else {}
+    let first_gradient = read_gradient(tape, p, gradient, cell);
+    if first_gradient < 0 { return first_gradient; } else {}
+    let first_values = read_weights(gradient, scalar, values);
+    if first_values < 0 { return first_values; } else {}
+    i = 0;
+    while i < 8 { result.set(20 + i, values.get(i)); i = i + 1; }
+
+    let before = alloc(0);
+    let mut step = 0;
+    while step < steps {
+        let update = numeric::sgd_step(weights, gradient, 0.1);
+        if update < 0 { return update; } else {}
+        let read = read_weights(weights, scalar, values);
+        if read < 0 { return read; } else {}
+        let replayed = autodiff::replay(tape, p, values);
+        if replayed < 0 { return replayed; } else {}
+        let backward = autodiff::backward(tape, loss);
+        if backward < 0 { return backward; } else {}
+        let derivative = read_gradient(tape, p, gradient, cell);
+        if derivative < 0 { return derivative; } else {}
+        step = step + 1;
+    }
+    // Fail closed on actual epoch allocation; a live allocating mutant tests it.
+    if alloc(0) != before { return -500; } else {}
+    let final_loss = autodiff::value_into(tape, loss, cell);
+    if final_loss < 0 { return final_loss; } else {}
+    result.set(1, cell.value);
+    let last_values = read_weights(weights, scalar, values);
+    if last_values < 0 { return last_values; } else {}
+    i = 0;
+    while i < 8 { result.set(12 + i, values.get(i)); i = i + 1; }
+    let last_gradient = read_weights(gradient, scalar, values);
+    if last_gradient < 0 { return last_gradient; } else {}
+    i = 0;
+    while i < 8 { result.set(28 + i, values.get(i)); i = i + 1; }
+    let validation_loss = objective(tape, candidate, weights, scalar, p, validation_x, validation_y, validation_terms, 0.25);
+    if validation_loss < 0 { return validation_loss; } else {}
+    let last_validation = autodiff::value_into(tape, validation_loss, cell);
+    if last_validation < 0 { return last_validation; } else {}
+    result.set(3, cell.value);
+
+    i = 0;
+    while i < 16 { store8(blob + i, load8(header.buf + i)); i = i + 1; }
+    i = 0;
+    while i < 288 { store8(blob + 16 + i, load8(result.buf + i)); i = i + 1; }
+    return blob * 4294967296 + 304;
+}

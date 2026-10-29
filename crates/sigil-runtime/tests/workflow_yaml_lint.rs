@@ -230,7 +230,7 @@ fn ci_keeps_formal_verifier_scaling_canary() {
                    validate::tests::selfhost_trio_completes_within_validation_budget \
                    -- --exact --nocapture";
     // The arming line. The step's `env:` sets `sigil_corpus::schema::SCALING_CANARY_ENV`
-    // to exactly `1`, which turns on the five-second `SELFHOST_TRIO_CANARY_MS` assertion
+    // to exactly `1`, which turns on the `SELFHOST_TRIO_CANARY_MS` assertion
     // inside that test. Without it the step still runs the test, but the test then asserts
     // only the corpus extractor's wider drop bound — a verifier scaling regression would
     // pass this required lane unseen. So the pin covers BOTH lines, in ONE step.
@@ -299,6 +299,64 @@ fn ci_uses_the_bounded_observable_workspace_clippy_runner() {
     }
 }
 
+/// The production-v9 suites the required `test` job names, as (crate, suite). Named, the
+/// workspace pass cannot silently lose one: cargo refuses a `--test` name that matches no target.
+const NAMED_REQUIRED_SUITES: &[(&str, &str)] = &[
+    ("sigil-compiler", "formal_rollout_contract"),
+    ("sigil-runtime", "production_lean_composition_profile"),
+    ("sigil-compiler", "formal_security"),
+    ("sigil-compiler", "public_region_probes"),
+    ("sigil-abi", "host_contract"),
+    ("sigil-abi", "host_profile_lean_parity"),
+    ("sigil-formal-bridge", "host_profile_parity"),
+    ("sigil-formal-bridge", "v9_declaration_parity"),
+    ("sigil-formal-bridge", "v9_production_verifier"),
+    ("sigil-compiler", "formal_v9_declarations"),
+    ("sigil-compiler", "compiler_context"),
+    ("sigil-compiler", "host_profile_wasm"),
+    ("sigil-runtime", "host_profile_binding"),
+    ("sigil-compiler", "taint_join_early_exit"),
+    ("sigil-compiler", "large_sibling_statements"),
+];
+
+/// Whether a crate manifest declares a `[[test]]` table named `suite`. Auto-discovered suites have
+/// none; a table could set `test = false`, which the named-suites step's `--no-run` would not see.
+fn manifest_declares_test_table(manifest: &str, suite: &str) -> bool {
+    let mut in_test_table = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_test_table = line == "[[test]]";
+            continue;
+        }
+        if in_test_table
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "name"
+            && value.trim().trim_matches('"') == suite
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// SC-P4 anti-stub for `manifest_declares_test_table`: it sees a planted table, ignores a table
+/// for another suite, and ignores a `name` key that sits outside any `[[test]]` table.
+#[test]
+fn manifest_test_table_detector_sees_a_planted_table() {
+    let planted =
+        "[package]\nname = \"crate\"\n\n[[test]]\nname = \"formal_security\"\ntest = false\n";
+    assert!(manifest_declares_test_table(planted, "formal_security"));
+    assert!(!manifest_declares_test_table(
+        planted,
+        "public_region_probes"
+    ));
+    let elsewhere = "[[test]]\nname = \"z3_corpus\"\n\n[package]\nname = \"formal_security\"\n";
+    assert!(
+        !manifest_declares_test_table(elsewhere, "formal_security"),
+        "a `name` key outside a [[test]] table must not count"
+    );
+}
+
 #[test]
 fn ci_keeps_production_v9_and_release_enforcement_commands() {
     let root = repo_root();
@@ -313,22 +371,72 @@ fn ci_keeps_production_v9_and_release_enforcement_commands() {
          certificate/R819/package/MCP/serve integration suites"
     );
 
+    // What `checks` keeps: the two measurements that need the runner to themselves.
     let checks = job_lines(&ci, "checks");
     for required in [
         "cargo test -p sigil-corpus --no-default-features --lib validate::tests::selfhost_trio_completes_within_validation_budget",
-        "cargo test -p sigil-compiler --no-default-features --test formal_rollout_contract",
-        "cargo test -p sigil-runtime --no-default-features --test production_lean_composition_profile",
-        "cargo test -p sigil-compiler --no-default-features --test formal_security",
-        "cargo test -p sigil-compiler --no-default-features --test public_region_probes",
         "cargo test -p sigil-formal-bridge --test v9_production_verifier",
-        "cargo test -p sigil-compiler --no-default-features --test compiler_context",
-        "cargo test -p sigil-compiler --no-default-features --test host_profile_wasm",
-        "cargo test -p sigil-runtime --no-default-features --test host_profile_binding",
         "production_v9_warm_small_fixture_median_stays_below_one_millisecond -- --exact",
     ] {
         assert!(
             active_job_contains(&checks, required),
             "required `checks` job lost production-v9 command fragment {required:?}"
+        );
+    }
+
+    // Every other production-v9 suite is NAMED in the required `test` job, in one step, so a
+    // deleted or renamed suite fails cargo's target selection there instead of silently
+    // dropping out of the workspace pass that executes it.
+    let named_at = test
+        .iter()
+        .position(|line| {
+            !line.trim().starts_with('#') && line.contains("--test formal_rollout_contract")
+        })
+        .unwrap_or_else(|| {
+            panic!("required `test` job lost the step that names the production-v9 suites")
+        });
+    let named_step = step_block(&test, named_at);
+    assert!(
+        active_job_contains(
+            &named_step,
+            "cargo test --workspace --no-default-features --no-run"
+        ),
+        "the named-suites step must select them with the workspace pass's own flags, or it \
+         rebuilds the stack it exists to reuse"
+    );
+    let tokens: Vec<&str> = named_step
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .collect();
+    for (krate, suite) in NAMED_REQUIRED_SUITES {
+        assert!(
+            tokens
+                .windows(2)
+                .any(|pair| pair[0] == "--test" && pair[1] == *suite),
+            "required `test` job no longer names suite `{suite}`"
+        );
+        let file = root
+            .join("crates")
+            .join(krate)
+            .join("tests")
+            .join(format!("{suite}.rs"));
+        assert!(
+            file.is_file(),
+            "named suite `{suite}` is not at {}",
+            file.display()
+        );
+        let manifest_path = root.join("crates").join(krate).join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|err| panic!("cannot read {}: {err}", manifest_path.display()));
+        assert!(
+            !manifest_declares_test_table(&manifest, suite),
+            "{} declares a [[test]] table for `{suite}`. The named-suites step builds with \
+             `--no-run`, and cargo selects an explicitly named target even when its table \
+             says `test = false`, so a table is the one way that suite could build there yet \
+             never run. Keep it auto-discovered.",
+            manifest_path.display()
         );
     }
 

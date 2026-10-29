@@ -1,0 +1,30 @@
+{
+  "allocation_requests": "24-byte decoded header, two fmt results, fixed 21-byte output backing and bounded builder record storage",
+  "builder": "bytes_out from bytes public.4; first error is sticky and finish refuses",
+  "contract_hash": "sha256:c010bdaf2b3b4a9900ac0c4d1b50f6c7baeccd3e49b74c5dfc9e5061195ed2c0",
+  "dependencies": [
+    "sigil/bytes",
+    "sigil/fmt"
+  ],
+  "effects": [
+    "Alloc"
+  ],
+  "entry": "tool::tool_main",
+  "host_imports": [],
+  "input": "exactly 48 ASCII hex characters for the first 24 PNG bytes; either letter case; no whitespace",
+  "output": "WIDTHxHEIGHT as ASCII decimal, no newline; packed pointer * 4294967296 + length",
+  "package": "png-dimensions/tool",
+  "parameters": [
+    "input_ptr:i64@Public",
+    "input_len:i64@Public"
+  ],
+  "refusal_sentinels": {
+    "dimension_range": -422,
+    "header_framing": -401,
+    "malformed_hex_or_length": -400
+  },
+  "result": "i64@Public",
+  "status": "experimental_public_source_unreviewed_not_admitted",
+  "validation_scope": "signature, IHDR length/type, dimensions in 1..2147483647; no CRC, remaining IHDR fields or image validation",
+  "version": "0.1.0-public.1"
+}
