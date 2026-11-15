@@ -350,6 +350,11 @@ fn handle_tools_list() -> Value {
                             "type": "object",
                             "description": "Optional I/O grants. `fs` is a list of canonical filesystem roots the tool may read from; `net` is a list of host patterns (e.g. `\"api.github.com\"` or `\"*.example.com\"`) the tool may HTTP GET/POST.",
                             "properties": {
+                                "http_timeout_ms": {
+                                    "type": "integer", "minimum": 1, "maximum": 60000,
+                                    "x-sigil-http-budget": "single-request-v1",
+                                    "description": "Host-authorized single-request HTTP budget including body. Redirects are refused. Omit for legacy phase windows. Does not grant network access."
+                                },
                                 "fs": {
                                     "type": "array",
                                     "items": { "type": "string" }
@@ -535,6 +540,9 @@ struct ForgeArgs {
 
 #[derive(Debug, Deserialize, Default)]
 struct GrantArgs {
+    /// Host-selected total provider deadline; validated before compilation.
+    #[serde(default)]
+    http_timeout_ms: Option<u64>,
     #[serde(default)]
     fs: Vec<String>,
     #[serde(default)]
@@ -630,6 +638,16 @@ fn require_solver_verified_from_env() -> bool {
 fn tool_sigil_forge(args: &Value, context: &CompilerContext) -> Result<String, RpcError> {
     let args: ForgeArgs = serde_json::from_value(args.clone())
         .map_err(|e| RpcError::invalid_params(format!("sigil_forge args: {e}")))?;
+    if args
+        .grants
+        .as_ref()
+        .and_then(|g| g.http_timeout_ms)
+        .is_some_and(|ms| !(1..=60_000).contains(&ms))
+    {
+        return Err(RpcError::invalid_params(
+            "http_timeout_ms must be 1..=60000",
+        ));
+    }
     let bound_context;
     let context = match args.host_profile.as_deref() {
         Some(name) => {
@@ -716,6 +734,7 @@ fn tool_sigil_forge(args: &Value, context: &CompilerContext) -> Result<String, R
     // Build I/O grants from the agent-supplied descriptors.
     let grant_args = args.grants.unwrap_or_default();
     let grants = IoGrants {
+        http_timeout_ms: grant_args.http_timeout_ms,
         fs: grant_args
             .fs
             .iter()

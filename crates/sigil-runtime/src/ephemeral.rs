@@ -296,13 +296,39 @@ fn parse_http_url(url: &str, grants: &IoGrants, method: HttpMethod) -> Result<St
     Ok(parsed.to_string())
 }
 
-fn read_http_body(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, u32> {
-    let mut reader = response
-        .into_body()
-        .into_reader()
-        .take((MAX_HTTP_BODY_BYTES + 1) as u64);
+fn read_http_body(
+    response: ureq::http::Response<ureq::Body>,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<u8>, u32> {
+    read_http_body_from(response.into_body().into_reader(), deadline)
+}
+
+fn read_http_body_from(
+    reader: impl Read,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<u8>, u32> {
+    let mut reader = reader.take((MAX_HTTP_BODY_BYTES + 1) as u64);
     let mut body = Vec::new();
-    reader.read_to_end(&mut body).map_err(|_| 502u32)?;
+    let mut chunk = [0u8; 8192];
+    loop {
+        if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+            return Err(502);
+        }
+        let count = match reader.read(&mut chunk) {
+            Ok(count) => count,
+            // Match Read::read_to_end's legacy behavior. Re-enter through
+            // the same deadline check; interruptions never renew the budget.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(502),
+        };
+        if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+            return Err(502);
+        }
+        if count == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..count]);
+    }
     if body.len() > MAX_HTTP_BODY_BYTES {
         return Err(413u32);
     }
@@ -374,6 +400,17 @@ fn http_fetch_body_bounded(
 ) -> Result<Vec<u8>, u32> {
     use std::sync::atomic::Ordering;
 
+    // An explicit budget permits one request only, including its body. The
+    // receiver and worker share one monotonic deadline; progress cannot reset it.
+    if grants
+        .http_timeout_ms
+        .is_some_and(|ms| !(1..=60_000).contains(&ms))
+    {
+        return Err(502);
+    }
+    let deadline = grants
+        .http_timeout_ms
+        .map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
     let grants = grants.clone();
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -397,13 +434,21 @@ fn http_fetch_body_bounded(
                 }
             }
             let _slot = SlotGuard;
-            let result = http_fetch(method, url, body.as_deref(), &grants, &headers, &worker_tx)
-                .and_then(|response| {
-                    // Fresh window for the body read: headers arrived, the
-                    // hop's window no longer applies.
-                    let _ = worker_tx.send(HttpProgress::Hop);
-                    read_http_body(response)
-                });
+            let result = http_fetch(
+                method,
+                url,
+                body.as_deref(),
+                &grants,
+                &headers,
+                &worker_tx,
+                deadline,
+            )
+            .and_then(|response| {
+                // Fresh window for the body read: headers arrived, the
+                // hop's window no longer applies.
+                let _ = worker_tx.send(HttpProgress::Hop);
+                read_http_body(response, deadline)
+            });
             let _ = worker_tx.send(HttpProgress::Done(result));
         });
     if spawned.is_err() {
@@ -419,8 +464,20 @@ fn http_fetch_body_bounded(
     // conforming worker can never exhaust these windows without producing
     // `Done`; if it somehow does, fail closed.
     for _ in 0..(2 + MAX_HTTP_REDIRECTS as usize) {
-        match rx.recv_timeout(HTTP_WATCHDOG_TIMEOUT) {
-            Ok(HttpProgress::Done(result)) => return result,
+        let timeout = deadline.map_or(HTTP_WATCHDOG_TIMEOUT, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        });
+        if timeout.is_zero() {
+            return Err(502u32);
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(HttpProgress::Done(result)) => {
+                return if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+                    Err(502)
+                } else {
+                    result
+                };
+            }
             Ok(HttpProgress::Hop) => continue,
             // Timeout, or the worker died without sending (its channel end
             // dropped — e.g. a panic inside ureq): fail closed either way.
@@ -430,12 +487,14 @@ fn http_fetch_body_bounded(
     Err(502u32)
 }
 
-fn http_agent() -> ureq::Agent {
+fn http_agent(deadline: Option<std::time::Instant>) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     ureq::Agent::config_builder()
         // Whole-request + connect timeouts so a slow/hung peer cannot stall the
         // sandboxed tool indefinitely.
-        .timeout_global(Some(HTTP_TOTAL_TIMEOUT))
+        .timeout_global(Some(deadline.map_or(HTTP_TOTAL_TIMEOUT, |end| {
+            end.saturating_duration_since(std::time::Instant::now())
+        })))
         .timeout_connect(Some(HTTP_IO_TIMEOUT))
         // Do NOT let ureq auto-follow redirects: it would fetch the redirect
         // target WITHOUT re-checking it against the grants, so an allowed host
@@ -523,14 +582,21 @@ fn http_fetch(
     grants: &IoGrants,
     headers: &[(String, String)],
     watchdog: &std::sync::mpsc::Sender<HttpProgress>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<ureq::http::Response<ureq::Body>, u32> {
-    let agent = http_agent();
+    if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+        return Err(502);
+    }
+    let agent = http_agent(deadline);
     let mut url = initial_url;
     let mut method = method;
     // Own the body so it can be dropped on a POST→GET downgrade.
     let mut body: Vec<u8> = body.map(<[u8]>::to_vec).unwrap_or_default();
     // initial request + up to MAX_HTTP_REDIRECTS follow-ups.
     for _ in 0..=MAX_HTTP_REDIRECTS {
+        if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+            return Err(502);
+        }
         let outcome = match method {
             HttpMethod::Get => {
                 let mut req = agent.get(&url);
@@ -551,8 +617,16 @@ fn http_fetch(
         // `max_redirects(0)`, so 3xx/4xx/5xx all come back as `Ok(response)` and
         // the only `Err` is a transport-level failure (connect/timeout/TLS).
         let response = outcome.map_err(|_| 502u32)?;
+        if deadline.is_some_and(|end| std::time::Instant::now() >= end) {
+            return Err(502);
+        }
         let status = response.status().as_u16();
         if (300..400).contains(&status) {
+            // Budgeted execution is exactly one endpoint attempt. Even a
+            // same-host redirect must not silently create a second request.
+            if deadline.is_some() {
+                return Err(403);
+            }
             // Copy the target out so the immutable borrow of `response` ends
             // before we mutate `url`/`method` and drop the response.
             let location = response
@@ -597,8 +671,87 @@ fn http_fetch(
 
 #[cfg(test)]
 mod http_redirect_tests {
-    use super::{redirect_method, validate_redirect_target};
+    use super::{
+        http_fetch_body_bounded, read_http_body_from, redirect_method, validate_redirect_target,
+    };
     use crate::grants::{HttpMethod, IoGrants, NetGrant};
+    use std::time::Duration;
+
+    struct InterruptedThenBytes {
+        interrupted: bool,
+        bytes: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for InterruptedThenBytes {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.bytes.read(buf)
+        }
+    }
+
+    #[test]
+    fn interrupted_read_retries_with_and_without_an_explicit_budget() {
+        for deadline in [
+            None,
+            Some(std::time::Instant::now() + Duration::from_secs(5)),
+        ] {
+            let reader = InterruptedThenBytes {
+                interrupted: false,
+                bytes: std::io::Cursor::new(b"observed body".to_vec()),
+            };
+            assert_eq!(
+                read_http_body_from(reader, deadline),
+                Ok(b"observed body".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_interruptions_cannot_reset_the_original_deadline() {
+        struct Interrupted;
+        impl std::io::Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                std::thread::sleep(Duration::from_millis(2));
+                Err(std::io::ErrorKind::Interrupted.into())
+            }
+        }
+        let start = std::time::Instant::now();
+        assert_eq!(
+            read_http_body_from(Interrupted, Some(start + Duration::from_millis(20))),
+            Err(502)
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn actual_read_errors_still_fail_closed() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::ConnectionReset.into())
+            }
+        }
+        assert_eq!(read_http_body_from(Broken, None), Err(502));
+    }
+
+    #[test]
+    fn extracted_body_reader_preserves_size_limit() {
+        let exact = vec![b'x'; super::MAX_HTTP_BODY_BYTES];
+        assert_eq!(
+            read_http_body_from(std::io::Cursor::new(exact.clone()), None),
+            Ok(exact)
+        );
+        assert_eq!(
+            read_http_body_from(
+                std::io::Cursor::new(vec![b'x'; super::MAX_HTTP_BODY_BYTES + 1]),
+                None
+            ),
+            Err(413)
+        );
+    }
 
     #[test]
     fn post_downgrades_to_get_on_301_302_303() {
@@ -622,6 +775,143 @@ mod http_redirect_tests {
         for status in [301u16, 302, 303, 307, 308] {
             assert_eq!(redirect_method(status, HttpMethod::Get), HttpMethod::Get);
         }
+    }
+
+    fn delayed_http(delay_ms: u64) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind local HTTP test listener");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("bound listener has a local address")
+        );
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("local test client connects");
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn provider_budget_allows_slow_response_but_default_remains_short() {
+        for (budget, expected) in [(None, Err(502)), (Some(4_000), Ok(b"ok".to_vec()))] {
+            let (url, worker) = delayed_http(2_800);
+            let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+            grants.http_timeout_ms = budget;
+            assert_eq!(
+                http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+                expected
+            );
+            worker.join().expect("local HTTP test server completes");
+        }
+    }
+
+    #[test]
+    fn provider_budget_never_follows_even_same_host_redirect() {
+        use std::io::{Read, Write};
+        let target =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind local HTTP test listener");
+        target
+            .set_nonblocking(true)
+            .expect("configure local redirect target");
+        let location = format!(
+            "http://{}/",
+            target
+                .local_addr()
+                .expect("bound listener has a local address")
+        );
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind local HTTP test listener");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("bound listener has a local address")
+        );
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("local test client connects");
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        });
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        grants.http_timeout_ms = Some(1_000);
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(403)
+        );
+        worker.join().expect("local HTTP test server completes");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            target
+                .accept()
+                .expect_err("redirect target must receive no request")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn provider_budget_includes_dribbling_body_after_headers() {
+        use std::io::{Read, Write};
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind local HTTP test listener");
+        let url = format!(
+            "http://{}/",
+            listener
+                .local_addr()
+                .expect("bound listener has a local address")
+        );
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("local test client connects");
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n");
+            for _ in 0..20 {
+                std::thread::sleep(Duration::from_millis(30));
+                if stream.write_all(b"a").is_err() {
+                    break;
+                }
+            }
+        });
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        grants.http_timeout_ms = Some(200);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        assert!(started.elapsed() < Duration::from_millis(600));
+        worker.join().expect("local HTTP test server completes");
+    }
+
+    #[test]
+    fn provider_budget_expires_and_rejects_invalid_allowances() {
+        let mut grants = grants_for("127.0.0.1", HttpMethod::Get);
+        for invalid in [0, 60_001, u64::MAX] {
+            grants.http_timeout_ms = Some(invalid);
+            assert!(grants.validate().is_err());
+        }
+        grants.http_timeout_ms = Some(100);
+        let (url, worker) = delayed_http(500);
+        let start = std::time::Instant::now();
+        assert_eq!(
+            http_fetch_body_bounded(HttpMethod::Get, url, None, &grants, vec![]),
+            Err(502)
+        );
+        assert!(start.elapsed() < Duration::from_millis(450));
+        worker.join().expect("local HTTP test server completes");
     }
 
     fn grants_for(host: &str, method: HttpMethod) -> IoGrants {
